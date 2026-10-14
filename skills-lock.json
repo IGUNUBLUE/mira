@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "iced-rs": {
+      "source": "vanillagreencom/kendex",
+      "sourceType": "github",
+      "skillPath": "skills/iced-rs/SKILL.md",
+      "computedHash": "f83e363148df87b02164cbfb75d713c6b5230e6fd23497671be2d60652821f47"
+    },
+    "rust-best-practices": {
+      "source": "apollographql/skills",
+      "sourceType": "github",
+      "skillPath": "skills/rust-best-practices/SKILL.md",
+      "computedHash": "a3db351ec552ed9d36b59e547d6c1d94077867eb5bcb98b3f802dfebb0a8a248"
+    },
+    "systematic-debugging": {
+      "source": "obra/superpowers",
+      "sourceType": "github",
+      "skillPath": "skills/systematic-debugging/SKILL.md",
+      "computedHash": "276fb0aadb002ab930cc2a56de89e16995a2e3e70b33587652bf0a5fb123148d"
+    }
+  }
+}

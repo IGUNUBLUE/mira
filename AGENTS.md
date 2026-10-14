@@ -21,6 +21,16 @@ Lightweight terminal-first workspace in Rust (iced 0.14 + iced_term 0.8).
 - `src/theme.rs` — the four LAGC palettes (source: `~/Projects/My-HyDE-dots` VSCodium/kitty themes), active
   palette via `p()`, `Choice` (auto = follow HyDE `staterc`), style fns. Never hardcode colors in views: use `p().<field>`.
 
+## Skills
+
+Repo-level skills live in `.agents/skills/` (the `.kiro/skills/` entries are symlinks to them). Third-party ones are
+pinned in `skills-lock.json` (update with `npx skills update -p`):
+
+- `rust-quality`, `iced-ui`, `herdr-client` — mira's own: quality gate, UI conventions, herdr protocol facts.
+- `rust-best-practices` (apollographql), `iced-rs` (iced 0.14 API reference), `systematic-debugging` (obra/superpowers).
+
+On conflicts, mira's own skills and this file win.
+
 ## Shortcuts
 
 App shortcuts are `Ctrl+Shift+<letter>` and are swallowed in the terminal (`new_session`).
