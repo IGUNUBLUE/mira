@@ -68,7 +68,9 @@ resize it; the width is remembered.
 Fonts default to Inter and JetBrains Mono (medium weight); set `MIRA_FONT` /
 `MIRA_MONO_FONT` to use other installed families.
 
-Linux needs the usual Wayland/X11 and Vulkan or OpenGL libraries. Force the CPU
+Linux needs the usual Wayland/X11 and OpenGL (or Vulkan) libraries. mira uses wgpu's OpenGL
+backend by default because its Vulkan path showed washed-out colors; set `WGPU_BACKEND=vulkan`
+to override. Force the CPU
 renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.
 
 ## Shortcuts

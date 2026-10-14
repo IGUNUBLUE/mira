@@ -21,7 +21,8 @@ similar = { version = "3.2.0", features = ["std", "text", "inline"] }
 tokio = { version = "1", features = ["rt"] }
 
 [lints.rust]
-unsafe_code = "forbid"
+# One documented exception: setting the renderer env var at the top of main.
+unsafe_code = "deny"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

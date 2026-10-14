@@ -18,7 +18,23 @@ mod view;
 
 use std::path::PathBuf;
 
+/// iced's wgpu renderer on Vulkan shows washed-out colors here (sRGB values
+/// gamma-encoded twice: `#3B6ADF` renders as `#84ACF0`), which is what made
+/// mira's text and herdr's tabs low-contrast. The GL backend renders exact
+/// colors. Respect an explicit choice by the user.
+fn pick_renderer() {
+    if std::env::var_os("WGPU_BACKEND").is_none() && std::env::var_os("ICED_BACKEND").is_none() {
+        // SAFETY: first statement of `main`, before any thread exists, so no
+        // other code can be reading the environment concurrently.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("WGPU_BACKEND", "gl");
+        }
+    }
+}
+
 fn main() -> iced::Result {
+    pick_renderer();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let fresh = args.iter().any(|a| a == "--fresh");
     args.retain(|a| a != "--fresh");

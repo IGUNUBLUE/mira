@@ -59,6 +59,9 @@ sits around that loop: review what the agents changed, edit, search, commit.
 
 ## Gotchas
 
+- iced's wgpu Vulkan path double-gamma-encodes colors here (washed out); `main.rs` defaults `WGPU_BACKEND=gl`.
+  Check colors with real pixels (grim) when touching rendering, not by eye.
+
 - Never stop, restart or delete the user's herdr server or sessions. Run every herdr command meant for a test
   session with `HERDR_*` unset (see the `herdr-client` skill): inside a pane `HERDR_SOCKET_PATH` overrides
   `--session` and `XDG_CONFIG_HOME`.
