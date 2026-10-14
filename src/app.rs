@@ -138,6 +138,11 @@ pub struct App {
 
     // review
     pub runs: Tracker,
+    /// Snapshots waiting for the one in flight (git is never run in parallel).
+    snapshot_queue: std::collections::VecDeque<(RunId, bool)>,
+    snapshot_running: bool,
+    /// Set when a snapshot timed out: the tree is too large to track runs.
+    snapshots_off: bool,
     pub selected_run: Option<RunId>,
     pub group_by_run: bool,
     pub confirm_revert: Option<RunId>,
@@ -366,6 +371,9 @@ impl App {
             agents: Vec::new(),
             herdr_error: None,
             runs: Tracker::from_runs(runs),
+            snapshot_queue: std::collections::VecDeque::new(),
+            snapshot_running: false,
+            snapshots_off: false,
             selected_run: None,
             group_by_run: persist::config_get("changes_view").as_deref() == Some("runs"),
             confirm_revert: None,
@@ -624,11 +632,9 @@ impl App {
             Effect::After(id) => (id, true),
         };
         let mut tasks = Vec::new();
-        if self.has_repo() {
-            let root = self.repo_root();
-            tasks.push(Task::perform(blocking(move || git::snapshot_tree(&root)), move |r| {
-                Msg::RunSnapshot(id, after, r)
-            }));
+        if self.has_repo() && !self.snapshots_off {
+            self.snapshot_queue.push_back((id, after));
+            tasks.push(self.next_snapshot());
         }
         if after
             && let Some(run) = self.runs.get(id)
@@ -642,6 +648,17 @@ impl App {
             ));
         }
         Task::batch(tasks)
+    }
+
+    /// Start the next queued snapshot unless one is running.
+    fn next_snapshot(&mut self) -> Task<Msg> {
+        if self.snapshot_running || self.snapshots_off {
+            return Task::none();
+        }
+        let Some((id, after)) = self.snapshot_queue.pop_front() else { return Task::none() };
+        self.snapshot_running = true;
+        let root = self.repo_root();
+        Task::perform(blocking(move || git::snapshot_tree(&root)), move |r| Msg::RunSnapshot(id, after, r))
     }
 
     /// Changed files of every run whose trees are known (after a restore).
@@ -1043,17 +1060,26 @@ impl App {
                 }
             }
             Msg::RunSnapshot(id, after, result) => {
+                self.snapshot_running = false;
                 let tree = match result {
                     Ok(t) => t,
-                    Err(e) => {
-                        self.set_status(format!("snapshot: {e}"), true);
+                    Err(e) if e.starts_with(git::SNAPSHOT_TIMED_OUT) => {
+                        // Too big to track: stop instead of piling up git processes.
+                        self.snapshots_off = true;
+                        self.snapshot_queue.clear();
+                        self.set_status(format!("{e}: agent change tracking is off for this folder"), true);
                         return Task::none();
                     }
+                    Err(e) => {
+                        self.set_status(format!("snapshot: {e}"), true);
+                        return self.next_snapshot();
+                    }
                 };
-                let Some(run) = self.runs.get_mut(id) else { return Task::none() };
+                let next = self.next_snapshot();
+                let Some(run) = self.runs.get_mut(id) else { return next };
                 // A late "after" of a run that reopened (quick follow-up) is stale.
                 if after && run.running() {
-                    return Task::none();
+                    return next;
                 }
                 if after {
                     run.after = Some(tree)
@@ -1063,8 +1089,9 @@ impl App {
                 self.state_dirty = true;
                 // The two snapshots race; whichever lands second computes the files.
                 if (after || run.files.is_none()) && run.trees().is_some() {
-                    return self.load_run_files(id);
+                    return Task::batch([next, self.load_run_files(id)]);
                 }
+                return next;
             }
             Msg::RunFiles(id, files) => {
                 if let Some(run) = self.runs.get_mut(id)

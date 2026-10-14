@@ -214,6 +214,41 @@ pub fn pull(root: &Path) -> Result<String, String> {
 // content-addressed: unchanged files reuse existing blobs.
 
 /// Snapshot the working tree of `root` and return the tree id.
+/// Longest a snapshot step may run. A huge working tree (e.g. a whole home
+/// directory under git) would otherwise keep `git add -A` busy for minutes.
+pub const SNAPSHOT_TIMEOUT_SECS: u32 = 20;
+
+/// Message prefix of a snapshot that hit [`SNAPSHOT_TIMEOUT_SECS`].
+pub const SNAPSHOT_TIMED_OUT: &str = "snapshot timed out";
+
+/// `git` under coreutils `timeout`, so the limit holds even if mira exits
+/// while git runs (a plain child would be orphaned and keep going).
+fn git_timed(cwd: &Path, args: &[&str], env: &[(&str, &str)], secs: u32) -> Result<String, String> {
+    let limit = secs.to_string();
+    let mut full = vec!["-k", "2", limit.as_str(), "git"];
+    full.extend_from_slice(args);
+    let mut cmd = Command::new("timeout");
+    cmd.args(&full).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = match cmd.output() {
+        Ok(out) => out,
+        // No coreutils `timeout`: run git directly.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return git_env(cwd, args, env),
+        Err(e) => return Err(format!("git: {e}")),
+    };
+    match out.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        // 124: timed out; 137: killed after the grace period.
+        Some(124 | 137) | None => Err(format!("{SNAPSHOT_TIMED_OUT} after {secs} s (working tree too large)")),
+        Some(_) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if err.is_empty() { format!("git {} failed", args.join(" ")) } else { err })
+        }
+    }
+}
+
 pub fn snapshot_tree(root: &Path) -> Result<String, String> {
     let git_dir = git(root, &["rev-parse", "--absolute-git-dir"])?;
     let index = std::env::temp_dir().join(format!(
@@ -225,8 +260,8 @@ pub fn snapshot_tree(root: &Path) -> Result<String, String> {
     let _ = std::fs::copy(PathBuf::from(git_dir.trim()).join("index"), &index);
     let index_str = index.to_string_lossy().into_owned();
     let env = [("GIT_INDEX_FILE", index_str.as_str())];
-    let result = git_env(root, &["add", "-A", "--", "."], &env)
-        .and_then(|_| git_env(root, &["write-tree"], &env))
+    let result = git_timed(root, &["add", "-A", "--", "."], &env, SNAPSHOT_TIMEOUT_SECS)
+        .and_then(|_| git_timed(root, &["write-tree"], &env, SNAPSHOT_TIMEOUT_SECS))
         .map(|s| s.trim().to_string());
     let _ = std::fs::remove_file(&index);
     result
@@ -282,6 +317,15 @@ mod tests {
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+
+    #[test]
+    fn timed_git_reports_a_timeout() {
+        let dir = std::env::temp_dir();
+        // `git -c alias.zz='!sleep 5' zz` runs a shell command through git.
+        let err = git_timed(&dir, &["-c", "alias.zz=!sleep 5", "zz"], &[], 1).unwrap_err();
+        assert!(err.starts_with(SNAPSHOT_TIMED_OUT), "{err}");
+        assert_eq!(git_timed(&dir, &["--version"], &[], 5).map(|v| v.starts_with("git version")), Ok(true));
+    }
 
     #[test]
     fn snapshot_diff_and_restore_roundtrip() {
