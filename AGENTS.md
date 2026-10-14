@@ -15,6 +15,7 @@ Lightweight terminal-first workspace in Rust (iced 0.14 + iced_term 0.8).
 - `src/git.rs` — `git` CLI wrapper (status scoped to opened folder, capped at `MAX_CHANGES`); tree snapshots via a temporary `GIT_INDEX_FILE`, tree diffs, restore.
 - `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context).
 - `src/explorer.rs` — lazy tree, only expanded dirs are read.
+- `src/commitgen.rs` — commit message prompt/diff budget; runs `codex exec` or `commit_command` (prompt on stdin), cancellable.
 - `src/search.rs` — `ignore` walker + `regex`; replace uses `NoExpand` for literal mode.
 - `src/theme.rs` — the four LAGC palettes (source: `~/Projects/My-HyDE-dots` VSCodium/kitty themes), active
   palette via `p()`, `Choice` (auto = follow HyDE `staterc`), style fns. Never hardcode colors in views: use `p().<field>`.
@@ -36,5 +37,5 @@ cargo clippy
 
 - Blocking work (git, search, diff) runs via `blocking()` (`spawn_blocking`) and returns a `Msg`.
 - Diff rows: content row is the stack base layer, backgrounds go `push_under` so wrapped lines stay aligned.
-- No network calls, no telemetry. New features must keep memory low; avoid heavy deps.
+- mira itself makes no network calls and has no telemetry (AI features go through the user's agent CLIs). New features must keep memory low; avoid heavy deps.
 - Conventional Commits; no AI attribution trailers.

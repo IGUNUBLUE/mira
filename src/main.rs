@@ -2,6 +2,7 @@
 //! committing changes made by coding agents.
 
 mod app;
+mod commitgen;
 mod diff;
 mod explorer;
 mod git;

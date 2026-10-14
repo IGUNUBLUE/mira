@@ -120,7 +120,9 @@ pub struct App {
     pub repo_prefix: String,
     pub refreshing: bool,
     pub git_busy: bool,
-    pub commit_msg: String,
+    pub commit_msg: Content,
+    /// Cancel flag of the running commit-message generation.
+    pub commit_gen: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub search: SearchState,
 
     pub status: Option<(String, bool)>,
@@ -194,8 +196,11 @@ pub enum Msg {
     OpenDiff(String, bool),
     Stage(Vec<String>),
     Unstage(Vec<String>),
-    CommitInput(String),
+    CommitEdit(text_editor::Action),
     Commit,
+    /// Generate a commit message, or cancel the running generation.
+    GenerateCommit,
+    CommitGenerated(Result<String, String>),
     Push,
     Pull,
     GitDone(Result<String, String>),
@@ -311,7 +316,8 @@ impl App {
             repo_prefix,
             refreshing: false,
             git_busy: false,
-            commit_msg: String::new(),
+            commit_msg: Content::new(),
+            commit_gen: None,
             search: SearchState::default(),
             status: None,
             status_at: Instant::now(),
@@ -1247,9 +1253,9 @@ impl App {
             Msg::OpenDiff(rel, staged) => return self.open_diff(rel, DiffSource::Index { staged }),
             Msg::Stage(paths) => return self.git_op(move |r| git::stage(r, &paths)),
             Msg::Unstage(paths) => return self.git_op(move |r| git::unstage(r, &paths)),
-            Msg::CommitInput(m) => self.commit_msg = m,
+            Msg::CommitEdit(action) => self.commit_msg.perform(action),
             Msg::Commit => {
-                let message = self.commit_msg.trim().to_string();
+                let message = self.commit_msg.text().trim().to_string();
                 if message.is_empty() {
                     self.set_status("Write a commit message first", true);
                     return Task::none();
@@ -1271,6 +1277,43 @@ impl App {
                         .map(|out| format!("COMMIT:{}", first_line(&out).unwrap_or("Committed")))
                 });
             }
+            Msg::GenerateCommit => {
+                if let Some(cancel) = self.commit_gen.take() {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.set_status("Commit message generation cancelled", false);
+                    return Task::none();
+                }
+                if self.git.root.is_none() {
+                    return Task::none();
+                }
+                let staged = !self.git.staged.is_empty();
+                if !staged && self.git.unstaged.is_empty() {
+                    self.set_status("Nothing to commit", true);
+                    return Task::none();
+                }
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                self.commit_gen = Some(cancel.clone());
+                let what = if staged { "staged changes" } else { "all changes" };
+                self.set_status(format!("Generating a commit message for {what}…"), false);
+                let root = self.repo_root();
+                return Task::perform(
+                    blocking(move || crate::commitgen::generate(&root, staged, cancel)),
+                    Msg::CommitGenerated,
+                );
+            }
+            Msg::CommitGenerated(result) => {
+                // A cancelled run already cleared `commit_gen`; drop its result.
+                if self.commit_gen.take().is_none() {
+                    return Task::none();
+                }
+                match result {
+                    Ok(message) => {
+                        self.commit_msg = Content::with_text(&message);
+                        self.set_status("Commit message ready — review it, then Commit", false);
+                    }
+                    Err(e) => self.set_status(format!("Commit message: {e}"), true),
+                }
+            }
             Msg::Push => {
                 self.set_status("Pushing…", false);
                 return self.git_op(|r| git::push(r).map(|_| "Pushed".into()));
@@ -1284,7 +1327,7 @@ impl App {
                 match result {
                     Ok(out) => {
                         if let Some(summary) = out.strip_prefix("COMMIT:") {
-                            self.commit_msg.clear();
+                            self.commit_msg = Content::new();
                             self.set_status(summary.to_string(), false);
                         } else if !out.trim().is_empty() {
                             self.set_status(first_line(&out).unwrap_or_default().to_string(), false);

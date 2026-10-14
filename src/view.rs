@@ -415,8 +415,10 @@ impl App {
         }
         let staged = &self.git.staged;
         let unstaged = &self.git.unstaged;
-        let can_commit =
-            !self.git_busy && !self.commit_msg.trim().is_empty() && (!staged.is_empty() || !unstaged.is_empty());
+        let has_changes = !staged.is_empty() || !unstaged.is_empty();
+        let can_commit = !self.git_busy && !self.commit_msg.text().trim().is_empty() && has_changes;
+        let generating = self.commit_gen.is_some();
+        let can_generate = generating || has_changes;
         let commit_label = if staged.is_empty() && !unstaged.is_empty() { "✓ Commit All" } else { "✓ Commit" };
         let open = match self.active_tab.and_then(|i| self.tabs.get(i)) {
             Some(Tab::Diff(DiffTab { rel, source: DiffSource::Index { staged }, .. })) => Some((rel.as_str(), *staged)),
@@ -494,12 +496,42 @@ impl App {
                         tip(icon_button("⟳", Msg::Tick), "Refresh"),
                     ]
                     .align_y(Alignment::Center),
-                    text_input("Commit message (Enter to commit)", &self.commit_msg)
-                        .on_input(Msg::CommitInput)
-                        .on_submit(Msg::Commit)
+                    iced::widget::text_editor(&self.commit_msg)
+                        .placeholder("Commit message (Ctrl+Enter to commit)")
+                        .on_action(Msg::CommitEdit)
                         .size(UI)
                         .padding(6)
-                        .style(theme::input),
+                        .height(Length::Shrink)
+                        .max_height(180.0)
+                        .wrapping(text::Wrapping::WordOrGlyph)
+                        .style(|_, status| {
+                            let c = p();
+                            text_editor::Style {
+                                background: c.bg.into(),
+                                border: iced::Border {
+                                    color: if matches!(status, text_editor::Status::Focused { .. }) { c.accent } else { c.border },
+                                    width: 1.0,
+                                    radius: 4.0.into(),
+                                },
+                                placeholder: c.line_no,
+                                value: c.fg,
+                                selection: c.selection,
+                            }
+                        })
+                        .key_binding(|kp| match kp.key.as_ref() {
+                            Key::Named(Named::Enter) if kp.modifiers.command() => Some(Binding::Custom(Msg::Commit)),
+                            _ => Binding::from_key_press(kp),
+                        }),
+                    row![
+                        button(
+                            container(text(if generating { "Generating… (cancel)" } else { "✦ Generate message" }).size(12))
+                                .center_x(Length::Fill)
+                        )
+                        .width(Length::Fill)
+                        .padding(4)
+                        .style(theme::flat(generating))
+                        .on_press_maybe(can_generate.then_some(Msg::GenerateCommit)),
+                    ],
                     button(container(text(commit_label).size(UI)).center_x(Length::Fill))
                         .width(Length::Fill)
                         .padding(5)

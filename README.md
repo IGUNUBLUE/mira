@@ -15,6 +15,13 @@ mira is built around that loop: ask → the agent acts → you review, correct, 
   Clicking a turn opens its first changed file in a single preview tab; `‹ ›` steps through
   the rest. Click a line, write a comment, and it is typed into the agent's prompt.
 - **Source control**: stage / unstage, commit, push, pull, recent history.
+- **Commit message generation** (`✦ Generate message` in Git): Conventional Commits from the
+  staged diff (or all changes when nothing is staged), with lockfiles excluded and the diff
+  capped at 12k chars — same prompt as the `chatgpt-commit-gen` extension. mira runs
+  `codex exec` (your ChatGPT login) in an empty temp dir with a read-only sandbox, so the
+  agent only sees the prompt. Configure in `~/.config/mira/config`:
+  `commit_model = "gpt-6-luna"`, or `commit_command = "…"` for any command that reads the
+  prompt on stdin and prints the message (e.g. a local model via ollama).
 - **Resume where you left off**: closing mira keeps your sessions. Reopening the same
   folder relaunches each agent on its own conversation (`kiro-cli --resume-id`,
   `codex resume <id>`, `claude --resume`, `opencode --session`, or "continue last") and
@@ -63,7 +70,6 @@ renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.
 ## Roadmap
 
 - Editor: line numbers, find in file, scroll-to-line, tree-sitter highlighting
-- Commit message generation (provider-agnostic: any OpenAI-compatible endpoint, local models)
 - LSP completion (optional, per language)
 - Fonts and keybindings in the config file
 - Hunk navigation and per-hunk staging
