@@ -31,8 +31,15 @@ pub const CODE_SIZE: u32 = 14;
 /// Draggable divider between the center and the inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Divider {
+    /// Vertical: between the center and the inspector.
     Inspector,
+    /// Horizontal: between Changes and History in the Changes panel.
+    History,
 }
+
+const MIN_HISTORY: f32 = 60.0;
+/// Room the Changes list keeps above History.
+const MIN_CHANGES_LIST: f32 = 120.0;
 
 const MIN_SIDE: f32 = 220.0;
 const MIN_CENTER: f32 = 360.0;
@@ -85,6 +92,8 @@ pub struct DiffTab {
     pub diff: Option<FileDiff>,
     /// Line clicked in the diff (new-side number preferred), for comments.
     pub anchor: Option<usize>,
+    /// Working file's mtime when the diff was last computed (index diffs).
+    pub loaded_mtime: Option<SystemTime>,
 }
 
 pub enum Tab {
@@ -172,6 +181,13 @@ pub struct App {
     // layout
     pub inspector_width: f32,
     pub window_width: f32,
+    pub window_height: f32,
+    /// Height of History in the Changes panel.
+    pub history_height: f32,
+    /// `(cursor y, height)` when a vertical drag started.
+    drag_anchor: Option<(f32, f32)>,
+    /// `Msg::Tick` counter, for slower refreshes in the background.
+    ticks: u64,
     pub dragging: Option<Divider>,
     pub hovered_divider: Option<Divider>,
 }
@@ -187,9 +203,9 @@ pub enum Msg {
     DividerHover(Option<Divider>),
     DividerPress(Divider),
     /// Cursor x while dragging a divider.
-    DividerDrag(f32),
+    DividerDrag(iced::Point),
     DividerRelease,
-    WindowWidth(f32),
+    WindowSize(iced::Size),
     FocusMode,
     CenterResized(pane_grid::ResizeEvent),
     Key(keyboard::Event, bool),
@@ -344,6 +360,10 @@ impl App {
         let mut app = Self {
             inspector_width: width("inspector_width", 400.0),
             window_width: 1400.0,
+            window_height: 900.0,
+            history_height: width("history_height", 180.0).max(MIN_HISTORY),
+            drag_anchor: None,
+            ticks: 0,
             dragging: None,
             hovered_divider: None,
             theme: theme_choice,
@@ -419,14 +439,14 @@ impl App {
             iced::Event::Window(iced::window::Event::Focused) => Some(Msg::WindowFocus(true)),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Msg::WindowFocus(false)),
             iced::Event::Window(iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size)) => {
-                Some(Msg::WindowWidth(size.width))
+                Some(Msg::WindowSize(size))
             }
             _ => None,
         }));
         // Only follow the mouse while a divider is being dragged.
         if self.dragging.is_some() {
             subs.push(iced::event::listen_with(|event, _, _| match event {
-                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Msg::DividerDrag(position.x)),
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Msg::DividerDrag(position)),
                 iced::Event::Mouse(
                     iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) | iced::mouse::Event::CursorLeft,
                 ) => Some(Msg::DividerRelease),
@@ -808,7 +828,8 @@ impl App {
 
     fn open_diff(&mut self, rel: String, source: DiffSource) -> Task<Msg> {
         let idx = self.tabs.iter().position(|t| matches!(t, Tab::Diff(d) if d.rel == rel && d.source == source));
-        let tab = |rel, source| Tab::Diff(DiffTab { rel, source, full: false, diff: None, anchor: None });
+        let tab =
+            |rel, source| Tab::Diff(DiffTab { rel, source, full: false, diff: None, anchor: None, loaded_mtime: None });
         let idx = match idx {
             Some(i) => i,
             // Review diffs share one preview tab instead of piling up.
@@ -833,11 +854,13 @@ impl App {
         self.reload_active_diff()
     }
 
-    fn reload_active_diff(&self) -> Task<Msg> {
-        let Some(Tab::Diff(d)) = self.active_tab.and_then(|i| self.tabs.get(i)) else {
+    fn reload_active_diff(&mut self) -> Task<Msg> {
+        let root = self.repo_root();
+        let Some(Tab::Diff(d)) = self.active_tab.and_then(|i| self.tabs.get_mut(i)) else {
             return Task::none();
         };
-        let (root, rel, source, full) = (self.repo_root(), d.rel.clone(), d.source.clone(), d.full);
+        d.loaded_mtime = mtime(&root.join(&d.rel));
+        let (rel, source, full) = (d.rel.clone(), d.source.clone(), d.full);
         Task::perform(
             blocking(move || {
                 let diff = load_diff(&root, &rel, &source, full);
@@ -845,6 +868,20 @@ impl App {
             }),
             |(rel, source, full, diff)| Msg::DiffLoaded(rel, source, full, diff),
         )
+    }
+
+    /// The active diff compares against the working tree and the file changed
+    /// since it was computed. Run diffs (between snapshots) never go stale.
+    fn active_diff_stale(&self) -> bool {
+        let root = self.repo_root();
+        matches!(
+            self.active_tab.and_then(|i| self.tabs.get(i)),
+            Some(Tab::Diff(d)) if matches!(d.source, DiffSource::Index { .. }) && mtime(&root.join(&d.rel)) != d.loaded_mtime
+        )
+    }
+
+    fn active_diff_is_index(&self) -> bool {
+        matches!(self.active_tab.and_then(|i| self.tabs.get(i)), Some(Tab::Diff(d)) if matches!(d.source, DiffSource::Index { .. }))
     }
 
     fn close_tab(&mut self, i: usize) {
@@ -975,12 +1012,21 @@ impl App {
                 }
             }
             Msg::Tick => {
+                self.ticks = self.ticks.wrapping_add(1);
                 if self.theme == theme::Choice::Auto {
                     self.apply_theme();
                 }
-                self.explorer.refresh();
+                // In the background, refresh every 10 s instead of every 2 s.
+                if !self.window_focused && !self.ticks.is_multiple_of(5) {
+                    return Task::none();
+                }
+                // The tree is only on screen in Files.
+                if self.show_inspector && self.inspector == Inspector::Files {
+                    self.explorer.refresh();
+                }
                 self.reload_changed_files();
-                return Task::batch([self.refresh_git(), self.reload_active_diff()]);
+                let diff = if self.active_diff_stale() { self.reload_active_diff() } else { Task::none() };
+                return Task::batch([self.refresh_git(), diff]);
             }
             Msg::StatusTick => {
                 let ttl = if self.status.as_ref().is_some_and(|(_, e)| *e) { 12 } else { 6 };
@@ -992,21 +1038,41 @@ impl App {
                 return self.poll_herdr();
             }
             Msg::DividerHover(d) => self.hovered_divider = d,
-            Msg::DividerPress(d) => self.dragging = Some(d),
-            Msg::DividerDrag(x) => {
-                if self.dragging == Some(Divider::Inspector) {
-                    let max = (self.window_width - MIN_CENTER).max(MIN_SIDE);
-                    self.inspector_width = (self.window_width - x - DIVIDER / 2.0).clamp(MIN_SIDE, max);
-                }
+            Msg::DividerPress(d) => {
+                self.dragging = Some(d);
+                self.drag_anchor = None;
             }
+            Msg::DividerDrag(pos) => match self.dragging {
+                Some(Divider::Inspector) => {
+                    let max = (self.window_width - MIN_CENTER).max(MIN_SIDE);
+                    self.inspector_width = (self.window_width - pos.x - DIVIDER / 2.0).clamp(MIN_SIDE, max);
+                }
+                // Relative to where the drag started: the panel's top edge isn't known here.
+                Some(Divider::History) => {
+                    let (start_y, start_h) = *self.drag_anchor.get_or_insert((pos.y, self.history_height));
+                    let max = (self.window_height - 280.0 - MIN_CHANGES_LIST).max(MIN_HISTORY);
+                    self.history_height = (start_h - (pos.y - start_y)).clamp(MIN_HISTORY, max);
+                }
+                None => {}
+            },
             Msg::DividerRelease => {
-                if self.dragging.take().is_some()
-                    && let Err(e) = persist::config_set("inspector_width", &format!("{:.0}", self.inspector_width))
-                {
+                let saved = match self.dragging.take() {
+                    Some(Divider::Inspector) => {
+                        persist::config_set("inspector_width", &format!("{:.0}", self.inspector_width))
+                    }
+                    Some(Divider::History) => {
+                        persist::config_set("history_height", &format!("{:.0}", self.history_height))
+                    }
+                    None => Ok(()),
+                };
+                if let Err(e) = saved {
                     self.set_status(format!("Could not save layout: {e}"), true);
                 }
             }
-            Msg::WindowWidth(w) => self.window_width = w,
+            Msg::WindowSize(size) => {
+                self.window_width = size.width;
+                self.window_height = size.height;
+            }
             Msg::CycleTheme => {
                 self.theme = self.theme.next();
                 self.apply_theme();
@@ -1262,7 +1328,14 @@ impl App {
             Msg::GitLoaded(result) => {
                 self.refreshing = false;
                 match result {
-                    Ok(snap) => self.git = snap,
+                    // Only a real change re-renders the panel and recomputes the diff.
+                    Ok(snap) if snap != self.git => {
+                        self.git = snap;
+                        if self.active_diff_is_index() {
+                            return self.reload_active_diff();
+                        }
+                    }
+                    Ok(_) => {}
                     Err(e) => self.set_status(e, true),
                 }
             }

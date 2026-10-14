@@ -27,7 +27,8 @@ around that loop: ask → the agent acts → you review, correct, accept.
   agent that changed that file, through herdr (not whatever pane has focus), ready for you to
   press Enter.
 - **Source control**: stage / unstage, commit, push, pull, recent history.
-- **Commit message generation** (`✦ Generate message` in Git): Conventional Commits from the
+- **Commit message generation** (the sparkle button next to the commit box, which grows with
+  the message): Conventional Commits from the
   staged diff (or all changes when nothing is staged), with lockfiles excluded and the diff
   capped at 12k chars — same prompt as the `chatgpt-commit-gen` extension. mira runs
   `codex exec` (your ChatGPT login) in an empty temp dir with a read-only sandbox, so the
@@ -44,10 +45,11 @@ so hooks, signing and credential helpers behave exactly as in your terminal.
 
 ```bash
 cargo build --release
-./target/release/mira [--fresh] [DIRECTORY]
+./target/release/mira [--fresh] [--pick] [DIRECTORY]
 ```
 
-`--fresh` forgets the recorded agent turns. Config (`~/.config/mira/config`):
+`--fresh` forgets the recorded agent turns. `--pick` asks for the folder with a native dialog
+(zenity or yad) when none is given; the desktop entry uses it. Config (`~/.config/mira/config`):
 `herdr_session = "name"` attaches to a named herdr session instead of the default one;
 `terminal = "shell"` skips herdr.
 
@@ -63,7 +65,7 @@ the choice is saved in `~/.config/mira/config` (`theme = "LAGC Tech Dark"`).
 Icons come from any installed [Nerd Font](https://www.nerdfonts.com) (codicons for the UI,
 seti/devicons for file types); set `icon_font = "…"` in the config to pick one. Without a
 Nerd Font mira falls back to plain symbols. Drag the divider next to the inspector to
-resize it; the width is remembered.
+resize it, and the one above History in Changes to split it; both sizes are remembered.
 
 Fonts default to Inter and JetBrains Mono (medium weight); set `MIRA_FONT` /
 `MIRA_MONO_FONT` to use other installed families.

@@ -75,6 +75,21 @@ fn divider<'a>(d: Divider, active: bool) -> Element<'a, Msg> {
         .into()
 }
 
+/// Draggable split between two stacked sections (Changes over History).
+fn hdivider<'a>(d: Divider, active: bool) -> Element<'a, Msg> {
+    let line = container(space()).height(if active { 2 } else { 1 }).width(Length::Fill).style(theme::bg(if active {
+        p().accent
+    } else {
+        p().border
+    }));
+    mouse_area(container(line).height(5).width(Length::Fill).center_y(5))
+        .interaction(iced::mouse::Interaction::ResizingVertically)
+        .on_press(Msg::DividerPress(d))
+        .on_enter(Msg::DividerHover(Some(d)))
+        .on_exit(Msg::DividerHover(None))
+        .into()
+}
+
 fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
     button(text(label).size(12)).padding([2, 8]).style(theme::flat(false)).on_press_maybe(msg).into()
 }
@@ -377,7 +392,7 @@ impl App {
             );
         }
 
-        list = list.push(space::vertical().height(8)).push(section("HISTORY".into(), vec![]));
+        let mut history = Column::new().spacing(1);
         for (i, c) in self.git.log.iter().enumerate() {
             let mut r = row![
                 text(if i == 0 { "○" } else { "●" }).size(SMALL).color(p().accent),
@@ -388,7 +403,7 @@ impl App {
             if !c.refs.is_empty() {
                 r = r.push(badge(c.refs.replace("HEAD -> ", ""), p().accent));
             }
-            list = list.push(tooltip(
+            history = history.push(tooltip(
                 container(r).padding([2, 10]).width(Length::Fill).clip(true),
                 container(text(format!("{}  {} · {}", c.hash, c.author, c.when)).size(12))
                     .padding(6)
@@ -416,53 +431,59 @@ impl App {
                         tip(icon_button(Icon::Refresh, Msg::Tick), "Refresh"),
                     ]
                     .align_y(Alignment::Center),
-                    iced::widget::text_editor(&self.commit_msg)
-                        .placeholder("Commit message (Ctrl+Enter to commit)")
-                        .on_action(Msg::CommitEdit)
-                        .size(UI)
-                        .padding(6)
-                        .height(Length::Shrink)
-                        .max_height(180.0)
-                        .wrapping(text::Wrapping::WordOrGlyph)
-                        .style(|_, status| {
-                            let c = p();
-                            text_editor::Style {
-                                background: c.bg.into(),
-                                border: iced::Border {
-                                    color: if matches!(status, text_editor::Status::Focused { .. }) {
-                                        c.accent
-                                    } else {
-                                        c.border
-                                    },
-                                    width: 1.0,
-                                    radius: 4.0.into(),
-                                },
-                                placeholder: c.line_no,
-                                value: c.fg,
-                                selection: c.selection,
-                            }
-                        })
-                        .key_binding(|kp| match kp.key.as_ref() {
-                            Key::Named(Named::Enter) if kp.modifiers.command() => Some(Binding::Custom(Msg::Commit)),
-                            _ => Binding::from_key_press(kp),
-                        }),
                     row![
-                        button(
+                        // Grows with the message (wrapped to the panel width), then scrolls.
+                        iced::widget::text_editor(&self.commit_msg)
+                            .placeholder("Commit message (Ctrl+Enter to commit)")
+                            .on_action(Msg::CommitEdit)
+                            .size(UI)
+                            .padding(6)
+                            .height(Length::Shrink)
+                            .max_height(320.0)
+                            .wrapping(text::Wrapping::WordOrGlyph)
+                            .style(|_, status| {
+                                let c = p();
+                                text_editor::Style {
+                                    background: c.bg.into(),
+                                    border: iced::Border {
+                                        color: if matches!(status, text_editor::Status::Focused { .. }) {
+                                            c.accent
+                                        } else {
+                                            c.border
+                                        },
+                                        width: 1.0,
+                                        radius: 4.0.into(),
+                                    },
+                                    placeholder: c.line_no,
+                                    value: c.fg,
+                                    selection: c.selection,
+                                }
+                            })
+                            .key_binding(|kp| match kp.key.as_ref() {
+                                Key::Named(Named::Enter) if kp.modifiers.command() =>
+                                    Some(Binding::Custom(Msg::Commit)),
+                                _ => Binding::from_key_press(kp),
+                            }),
+                        tooltip(
+                            button(ico(if generating { Icon::Close } else { Icon::Sparkle }, 16).color(p().accent))
+                                .padding([6, 7])
+                                .style(theme::flat(generating))
+                                .on_press_maybe(can_generate.then_some(Msg::GenerateCommit)),
                             container(
-                                row![
-                                    ico(if generating { Icon::Close } else { Icon::Sparkle }, 13).color(p().accent),
-                                    text(if generating { "Generating… (cancel)" } else { "Generate message" }).size(12),
-                                ]
-                                .spacing(6)
-                                .align_y(Alignment::Center),
+                                text(if generating {
+                                    "Generating… click to cancel"
+                                } else {
+                                    "Generate commit message"
+                                })
+                                .size(12)
                             )
-                            .center_x(Length::Fill)
-                        )
-                        .width(Length::Fill)
-                        .padding(4)
-                        .style(theme::flat(generating))
-                        .on_press_maybe(can_generate.then_some(Msg::GenerateCommit)),
-                    ],
+                            .padding(6)
+                            .style(theme::bordered(p().bg)),
+                            tooltip::Position::Left,
+                        ),
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Start),
                     button(
                         container(
                             row![ico(Icon::Check, 14), text(commit_label).size(UI)]
@@ -482,6 +503,12 @@ impl App {
             self.view_changes_toolbar(),
             hrule(),
             scrollable(if self.group_by_run { self.view_runs() } else { list }).height(Length::Fill),
+            hdivider(
+                Divider::History,
+                self.dragging == Some(Divider::History) || self.hovered_divider == Some(Divider::History),
+            ),
+            section("HISTORY".into(), vec![]),
+            scrollable(history).height(self.history_height),
         ]
         .into()
     }

@@ -38,22 +38,56 @@ fn pick_renderer() {
     }
 }
 
+/// Ask for a folder with the desktop's own dialog (zenity or yad), starting in
+/// `~/Projects` when it exists. `None` if cancelled. Without a dialog tool,
+/// fall back to the current directory.
+fn pick_folder() -> Option<String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let start = [home.join("Projects"), home.clone()].into_iter().find(|p| p.is_dir()).unwrap_or(home);
+    let start = format!("{}/", start.display());
+    let title = "Open a folder in mira";
+    let tools: [(&str, Vec<&str>); 2] = [
+        ("zenity", vec!["--file-selection", "--directory", "--title", title, "--filename", &start]),
+        ("yad", vec!["--file", "--directory", "--title", title, "--filename", &start]),
+    ];
+    for (tool, args) in tools {
+        match std::process::Command::new(tool).args(&args).output() {
+            Ok(out) if out.status.success() => {
+                let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                return (!dir.is_empty()).then_some(dir);
+            }
+            Ok(_) => return None,
+            Err(_) => continue,
+        }
+    }
+    std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned())
+}
+
 fn main() -> iced::Result {
     pick_renderer();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let fresh = args.iter().any(|a| a == "--fresh");
-    args.retain(|a| a != "--fresh");
-    let arg = args.into_iter().next();
+    let pick = args.iter().any(|a| a == "--pick");
+    args.retain(|a| a != "--fresh" && a != "--pick");
+    let mut arg = args.into_iter().next();
     if matches!(arg.as_deref(), Some("-h" | "--help")) {
         println!(
-            "Usage: mira [--fresh] [DIRECTORY]\n\nOpens DIRECTORY (default: current directory) in mira.\n\
-             Agent sessions open there last time are resumed; --fresh starts clean."
+            "Usage: mira [--fresh] [--pick] [DIRECTORY]\n\nOpens DIRECTORY (default: current directory) in mira.\n\
+             --fresh forgets the recorded agent turns; --pick asks for the folder when none is given."
         );
         return Ok(());
     }
     if matches!(arg.as_deref(), Some("-V" | "--version")) {
         println!("mira {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
+    }
+
+    if pick && arg.is_none() {
+        match pick_folder() {
+            Some(dir) => arg = Some(dir),
+            // Cancelled: nothing to open.
+            None => return Ok(()),
+        }
     }
 
     let root = arg

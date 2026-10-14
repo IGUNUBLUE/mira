@@ -31,8 +31,10 @@ sits around that loop: review what the agents changed, edit, search, commit.
 
 - `src/main.rs` — CLI args, iced application setup.
 - `src/app.rs` — state, `Msg`, `update`, keyboard. One terminal running herdr (`TermKind`), herdr polled on
-  `Msg::StatusTick` (700 ms), runs fed to `runs::Tracker`; Changes shows git files with their run (`Tracker::origin`, `is_new`) or grouped by run. `Msg::Tick` (2 s): explorer, git,
-  reload clean tabs, active diff. Every terminal command goes through `termio::Gate` (see Gotchas).
+  `Msg::StatusTick` (700 ms), runs fed to `runs::Tracker`; Changes shows git files with their run (`Tracker::origin`, `is_new`) or grouped by run. `Msg::Tick` (2 s; every 5th tick while unfocused): git,
+  explorer only while Files is visible, reload clean tabs, active diff only when its file changed (`active_diff_stale`).
+  `GitLoaded` is a no-op when the snapshot is unchanged. Dividers (`Divider::Inspector`, `Divider::History`) persist
+  `inspector_width` / `history_height`. Every terminal command goes through `termio::Gate` (see Gotchas).
 - `src/view.rs` — all views. Layout: pane_grid(document / terminal) | inspector (Changes · Search · Files) + status bar.
 - `src/herdr.rs` — blocking client of herdr's socket (NDJSON); `launch_command` strips `HERDR_*`. Facts: `herdr-client` skill.
 - `src/runs.rs` — pure run state machine (`Tracker::observe` → `Effect::Before/After`), tested without IO.
