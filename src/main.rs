@@ -18,17 +18,25 @@ mod view;
 
 use std::path::PathBuf;
 
-/// iced's wgpu renderer on Vulkan shows washed-out colors here (sRGB values
-/// gamma-encoded twice: `#3B6ADF` renders as `#84ACF0`), which is what made
-/// mira's text and herdr's tabs low-contrast. The GL backend renders exact
-/// colors. Respect an explicit choice by the user.
+/// Default to iced's CPU renderer (tiny-skia). For a text UI it is the better
+/// trade, measured on the owner's machine (same window, herdr inside):
+///
+/// | renderer      | RSS idle | RSS streaming | CPU streaming |
+/// |---------------|----------|---------------|---------------|
+/// | wgpu Vulkan   | 199 MB   | 231 MB        | 134 %         |
+/// | wgpu GL       | 112 MB   | 145 MB        | 133 %         |
+/// | tiny-skia     |  32 MB   |  65 MB        |  55 %         |
+///
+/// It also draws exact colors, while wgpu on Vulkan gamma-encoded them twice
+/// here (`#3B6ADF` showed as `#84ACF0`). An explicit `ICED_BACKEND` or
+/// `WGPU_BACKEND` from the user wins (`ICED_BACKEND=wgpu` for the GPU).
 fn pick_renderer() {
     if std::env::var_os("WGPU_BACKEND").is_none() && std::env::var_os("ICED_BACKEND").is_none() {
         // SAFETY: first statement of `main`, before any thread exists, so no
         // other code can be reading the environment concurrently.
         #[allow(unsafe_code)]
         unsafe {
-            std::env::set_var("WGPU_BACKEND", "gl");
+            std::env::set_var("ICED_BACKEND", "tiny-skia");
         }
     }
 }

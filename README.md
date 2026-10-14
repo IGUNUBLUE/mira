@@ -68,10 +68,10 @@ resize it; the width is remembered.
 Fonts default to Inter and JetBrains Mono (medium weight); set `MIRA_FONT` /
 `MIRA_MONO_FONT` to use other installed families.
 
-Linux needs the usual Wayland/X11 and OpenGL (or Vulkan) libraries. mira uses wgpu's OpenGL
-backend by default because its Vulkan path showed washed-out colors; set `WGPU_BACKEND=vulkan`
-to override. Force the CPU
-renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.
+Linux needs the usual Wayland/X11 libraries. mira draws with iced's CPU renderer (tiny-skia) by
+default: for a text UI it used about a quarter of the memory of the GPU path (32 MB vs 112 MB idle)
+and less CPU while a terminal streams output, with exact colors. `ICED_BACKEND=wgpu` uses the GPU
+(add `WGPU_BACKEND=gl` if colors look washed out with Vulkan).
 
 ## Shortcuts
 

@@ -59,7 +59,8 @@ sits around that loop: review what the agents changed, edit, search, commit.
 
 ## Gotchas
 
-- iced's wgpu Vulkan path double-gamma-encodes colors here (washed out); `main.rs` defaults `WGPU_BACKEND=gl`.
+- Renderer: `main.rs` defaults `ICED_BACKEND=tiny-skia` (lowest RAM/CPU for this UI, measured). wgpu's Vulkan path
+  double-gamma-encodes colors here (washed out); GPU users should add `WGPU_BACKEND=gl`.
   Check colors with real pixels (grim) when touching rendering, not by eye.
 
 - Never stop, restart or delete the user's herdr server or sessions. Run every herdr command meant for a test
