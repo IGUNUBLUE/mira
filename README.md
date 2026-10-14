@@ -45,6 +45,11 @@ follows the active HyDE theme live (`~/.local/state/hyde/staterc`) and falls bac
 LAGC Tech Light. `Ctrl+Shift+T` or the status-bar button cycles auto → each palette;
 the choice is saved in `~/.config/mira/config` (`theme = "LAGC Tech Dark"`).
 
+Icons come from any installed [Nerd Font](https://www.nerdfonts.com) (codicons for the UI,
+seti/devicons for file types); set `icon_font = "…"` in the config to pick one. Without a
+Nerd Font mira falls back to plain symbols. Drag the dividers next to the sessions list and
+the inspector to resize them; widths are remembered.
+
 Fonts default to Inter and JetBrains Mono (medium weight); set `MIRA_FONT` /
 `MIRA_MONO_FONT` to use other installed families.
 

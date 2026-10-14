@@ -17,6 +17,7 @@ Lightweight terminal-first workspace in Rust (iced 0.14 + iced_term 0.8).
 - `src/explorer.rs` — lazy tree, only expanded dirs are read.
 - `src/commitgen.rs` — commit message prompt/diff budget; runs `codex exec` or `commit_command` (prompt on stdin), cancellable.
 - `src/search.rs` — `ignore` walker + `regex`; replace uses `NoExpand` for literal mode.
+- `src/icons.rs` — `Icon` (Nerd Font codicons + Unicode fallback) and `file_icon` (seti/devicons). Font detected via `fc-list`, never bundled.
 - `src/theme.rs` — the four LAGC palettes (source: `~/Projects/My-HyDE-dots` VSCodium/kitty themes), active
   palette via `p()`, `Choice` (auto = follow HyDE `staterc`), style fns. Never hardcode colors in views: use `p().<field>`.
 

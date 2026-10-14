@@ -10,6 +10,7 @@ use crate::app::*;
 use crate::diff::{self, Item, Kind};
 use crate::explorer;
 use crate::git::Change;
+use crate::icons::{self, Icon};
 use crate::search;
 use crate::session::Status;
 use crate::theme::{self, *};
@@ -27,8 +28,6 @@ use iced::{Alignment, Color, Element, Font, Length, Padding};
 const UI: u32 = 14;
 const SMALL: u32 = 12;
 const MAX_RESULT_LINES: usize = 1_500;
-const LEFT_WIDTH: f32 = 230.0;
-const INSPECTOR_WIDTH: f32 = 380.0;
 
 fn hrule<'a>() -> Element<'a, Msg> {
     container(space()).width(Length::Fill).height(1).style(theme::bg(p().border)).into()
@@ -38,8 +37,40 @@ fn vrule<'a>() -> Element<'a, Msg> {
     container(space()).width(1).height(Length::Fill).style(theme::bg(p().border)).into()
 }
 
-fn icon_button<'a>(label: &'a str, msg: Msg) -> Element<'a, Msg> {
-    button(text(label).size(14).font(theme::mono_font())).padding([0, 5]).style(theme::flat(false)).on_press(msg).into()
+/// An icon glyph as text.
+fn ico<'a>(i: Icon, size: u32) -> text::Text<'a> {
+    let t = text(i.glyph()).size(size).line_height(1.0);
+    match icons::font() {
+        Some(f) => t.font(f),
+        None => t.font(theme::mono_font()),
+    }
+}
+
+fn icon_button<'a>(i: Icon, msg: Msg) -> Element<'a, Msg> {
+    button(ico(i, 15)).padding([3, 5]).style(theme::flat(false)).on_press(msg).into()
+}
+
+/// Small button with a leading icon.
+fn icon_label<'a>(i: Icon, label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
+    button(row![ico(i, 13), text(label).size(12)].spacing(5).align_y(Alignment::Center))
+        .padding([2, 8])
+        .style(theme::flat(false))
+        .on_press_maybe(msg)
+        .into()
+}
+
+/// Draggable split between a side panel and the center.
+fn divider<'a>(d: Divider, active: bool) -> Element<'a, Msg> {
+    let line = container(space())
+        .width(if active { 2 } else { 1 })
+        .height(Length::Fill)
+        .style(theme::bg(if active { p().accent } else { p().border }));
+    mouse_area(container(line).width(5).height(Length::Fill).center_x(5))
+        .interaction(iced::mouse::Interaction::ResizingHorizontally)
+        .on_press(Msg::DividerPress(d))
+        .on_enter(Msg::DividerHover(Some(d)))
+        .on_exit(Msg::DividerHover(None))
+        .into()
 }
 
 fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
@@ -81,13 +112,13 @@ fn split_path(p: &str) -> (&str, &str) {
     }
 }
 
-fn status_style(s: Status, attention: bool) -> (&'static str, Color, &'static str) {
+fn status_style(s: Status, attention: bool) -> (Icon, Color, &'static str) {
     match (s, attention) {
-        (_, true) => ("◉", p().modified, "needs you"),
-        (Status::Working, _) => ("●", p().accent, "working"),
-        (Status::Waiting, _) => ("◐", p().modified, "waiting"),
-        (Status::Idle, _) => ("○", p().muted, "idle"),
-        (Status::Exited, _) => ("×", p().deleted, "exited"),
+        (_, true) => (Icon::Attention, p().modified, "needs you"),
+        (Status::Working, _) => (Icon::DotFilled, p().accent, "working"),
+        (Status::Waiting, _) => (Icon::DotFilled, p().modified, "waiting"),
+        (Status::Idle, _) => (Icon::DotOutline, p().muted, "idle"),
+        (Status::Exited, _) => (Icon::Exited, p().deleted, "exited"),
     }
 }
 
@@ -121,11 +152,13 @@ impl App {
 
         let mut body = row![];
         if !self.focus_mode {
-            body = body.push(self.view_sessions()).push(vrule());
+            let active = self.dragging == Some(Divider::Sessions) || self.hovered_divider == Some(Divider::Sessions);
+            body = body.push(self.view_sessions()).push(divider(Divider::Sessions, active));
         }
         body = body.push(container(center).style(theme::bg(p().border)).width(Length::Fill).height(Length::Fill));
         if self.show_inspector && !self.focus_mode {
-            body = body.push(vrule()).push(self.view_inspector());
+            let active = self.dragging == Some(Divider::Inspector) || self.hovered_divider == Some(Divider::Inspector);
+            body = body.push(divider(Divider::Inspector, active)).push(self.view_inspector());
         }
         column![body.height(Length::Fill), self.view_status_bar()].into()
     }
@@ -136,14 +169,18 @@ impl App {
         let mut list = Column::new().spacing(1);
         list = list.push(section(
             "SESSIONS".into(),
-            vec![tip(icon_button("+", Msg::TogglePresets), "New session (Ctrl+Shift+N)")],
+            vec![tip(icon_button(Icon::Add, Msg::TogglePresets), "New session (Ctrl+Shift+N)")],
         ));
 
         if self.show_presets || self.sessions.is_empty() {
             let mut menu = Column::new().spacing(2).padding([6, 10]);
             for (name, bin) in &self.presets {
                 menu = menu.push(
-                    button(row![text(*name).size(UI), space::horizontal(), text(*bin).size(SMALL).color(p().muted)])
+                    button(
+                        row![ico(Icon::Agent, 14).color(p().accent), text(*name).size(UI), space::horizontal(), text(*bin).size(SMALL).color(p().muted)]
+                            .spacing(8)
+                            .align_y(Alignment::Center),
+                    )
                         .width(Length::Fill)
                         .padding([3, 8])
                         .style(theme::flat(false))
@@ -151,7 +188,7 @@ impl App {
                 );
             }
             menu = menu.push(
-                button(text("shell").size(UI))
+                button(row![ico(Icon::Terminal, 14).color(p().muted), text("shell").size(UI)].spacing(8).align_y(Alignment::Center))
                     .width(Length::Fill)
                     .padding([3, 8])
                     .style(theme::flat(false))
@@ -174,11 +211,11 @@ impl App {
                 meta = meta.push(text(format!("{} turns", s.turns.len())).size(SMALL).color(p().muted));
             }
             let item = row![
-                text(dot).size(14).color(color).width(16),
+                ico(dot, 14).color(color).width(16),
                 column![text(s.name.clone()).size(UI), meta].spacing(1),
                 space::horizontal(),
                 tip(
-                    button(text(if self.confirm_close == Some(s.id) { "kill?" } else { "×" }).size(12))
+                    button(if self.confirm_close == Some(s.id) { text("kill?").size(12) } else { ico(Icon::Close, 13) })
                         .padding([0, 4])
                         .style(if self.confirm_close == Some(s.id) { theme::danger } else { theme::flat_fn })
                         .on_press(Msg::CloseSession(i)),
@@ -239,7 +276,7 @@ impl App {
         }
 
         container(scrollable(list).height(Length::Fill))
-            .width(LEFT_WIDTH)
+            .width(self.left_width)
             .height(Length::Fill)
             .style(theme::panel(p().sidebar))
             .into()
@@ -248,7 +285,10 @@ impl App {
     fn view_terminal(&self) -> Element<'_, Msg> {
         let Some(s) = self.session() else {
             return container(
-                button(text("+ New session").size(UI)).style(theme::primary).padding([4, 10]).on_press(Msg::TogglePresets),
+                button(row![ico(Icon::Add, 14), text("New session").size(UI)].spacing(6).align_y(Alignment::Center))
+                    .style(theme::primary)
+                    .padding([5, 12])
+                    .on_press(Msg::TogglePresets),
             )
             .center(Length::Fill)
             .style(theme::panel(p().bg))
@@ -256,11 +296,14 @@ impl App {
         };
         let (dot, color, label) = status_style(s.status, s.attention);
         let header = row![
-            text(dot).size(13).color(color),
+            ico(dot, 13).color(color),
             text(s.name.clone()).size(UI),
             text(label).size(SMALL).color(color),
             space::horizontal(),
-            tip(small_button(if self.focus_mode { "Exit focus" } else { "Focus" }, Some(Msg::FocusMode)), "Ctrl+Shift+M"),
+            tip(
+                icon_button(if self.focus_mode { Icon::ScreenNormal } else { Icon::ScreenFull }, Msg::FocusMode),
+                if self.focus_mode { "Exit focus (Ctrl+Shift+M)" } else { "Focus (Ctrl+Shift+M)" },
+            ),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
@@ -268,8 +311,8 @@ impl App {
             header
         } else {
             header.push(tip(
-                small_button(if self.show_inspector { "Hide panel" } else { "Show panel" }, Some(Msg::ToggleInspector)),
-                "Ctrl+B",
+                icon_button(if self.show_inspector { Icon::PanelRight } else { Icon::PanelRightOff }, Msg::ToggleInspector),
+                if self.show_inspector { "Hide panel (Ctrl+B)" } else { "Show panel (Ctrl+B)" },
             ))
         };
         column![
@@ -286,19 +329,20 @@ impl App {
     fn view_inspector(&self) -> Element<'_, Msg> {
         let review_badge = self.session().map(|s| s.changed_files()).filter(|n| *n > 0);
         let git_badge = Some(self.git.staged.len() + self.git.unstaged.len()).filter(|n| *n > 0);
-        let tab = |label: &'static str, which: Inspector, count: Option<usize>| {
+        let tab = |i: Icon, label: &'static str, which: Inspector, count: Option<usize>| {
             let active = self.inspector == which;
-            let mut r = row![text(label).size(UI)].spacing(4).align_y(Alignment::Center);
+            let color = if active { p().accent } else { p().muted };
+            let mut r = row![ico(i, 14).color(color), text(label).size(UI)].spacing(6).align_y(Alignment::Center);
             if let Some(n) = count {
                 r = r.push(text(n.to_string()).size(10).color(p().accent));
             }
             button(r).padding([6, 9]).style(theme::tab(active)).on_press(Msg::InspectorTab(which))
         };
         let tabs = row![
-            tab("Review", Inspector::Review, review_badge),
-            tab("Git", Inspector::Git, git_badge),
-            tab("Search", Inspector::Search, None),
-            tab("Files", Inspector::Files, None),
+            tab(Icon::Diff, "Review", Inspector::Review, review_badge),
+            tab(Icon::SourceControl, "Git", Inspector::Git, git_badge),
+            tab(Icon::Search, "Search", Inspector::Search, None),
+            tab(Icon::Files, "Files", Inspector::Files, None),
         ];
         let body = match self.inspector {
             Inspector::Review => self.view_review(),
@@ -307,7 +351,7 @@ impl App {
             Inspector::Files => self.view_explorer(),
         };
         container(column![container(tabs).width(Length::Fill).style(theme::panel(p().sidebar)), hrule(), body])
-            .width(INSPECTOR_WIDTH)
+            .width(self.inspector_width)
             .height(Length::Fill)
             .style(theme::panel(p().sidebar))
             .into()
@@ -374,16 +418,16 @@ impl App {
         let has_files = files.is_some_and(|f| !f.is_empty()) && !running;
         let confirming = self.confirm_revert.is_some();
         let actions = row![
-            button(text(if confirming { "Confirm revert" } else { "Revert" }).size(12))
+            button(row![ico(Icon::Discard, 13), text(if confirming { "Confirm revert" } else { "Revert" }).size(12)].spacing(5).align_y(Alignment::Center))
                 .padding([3, 10])
                 .style(if confirming { theme::danger } else { theme::flat_fn })
                 .on_press_maybe(has_files.then_some(Msg::RevertReview)),
-            button(text("Stage these").size(12))
+            button(row![ico(Icon::Add, 13), text("Stage these").size(12)].spacing(5).align_y(Alignment::Center))
                 .padding([3, 10])
                 .style(theme::flat(false))
                 .on_press_maybe(has_files.then(|| Msg::Stage(files.map(|f| f.iter().map(|c| c.path.clone()).collect()).unwrap_or_default()))),
             space::horizontal(),
-            button(text("Git ›").size(12)).padding([3, 10]).style(theme::primary).on_press(Msg::Inspector(Inspector::Git)),
+            button(row![ico(Icon::SourceControl, 13), text("Git").size(12)].spacing(5).align_y(Alignment::Center)).padding([3, 10]).style(theme::primary).on_press(Msg::Inspector(Inspector::Git)),
         ]
         .spacing(6);
 
@@ -419,7 +463,7 @@ impl App {
         let can_commit = !self.git_busy && !self.commit_msg.text().trim().is_empty() && has_changes;
         let generating = self.commit_gen.is_some();
         let can_generate = generating || has_changes;
-        let commit_label = if staged.is_empty() && !unstaged.is_empty() { "✓ Commit All" } else { "✓ Commit" };
+        let commit_label = if staged.is_empty() && !unstaged.is_empty() { "Commit All" } else { "Commit" };
         let open = match self.active_tab.and_then(|i| self.tabs.get(i)) {
             Some(Tab::Diff(DiffTab { rel, source: DiffSource::Index { staged }, .. })) => Some((rel.as_str(), *staged)),
             _ => None,
@@ -428,27 +472,27 @@ impl App {
         let mut list = Column::new().spacing(1);
         if !staged.is_empty() {
             let all: Vec<String> = staged.iter().map(|c| c.path.clone()).collect();
-            list = list.push(section(format!("STAGED  {}", staged.len()), vec![icon_button("−", Msg::Unstage(all))]));
+            list = list.push(section(format!("STAGED  {}", staged.len()), vec![icon_button(Icon::Remove, Msg::Unstage(all))]));
             for c in staged {
                 list = list.push(self.change_button(
                     c,
                     open == Some((c.path.as_str(), true)),
                     Msg::OpenDiff(c.path.clone(), true),
-                    Some(icon_button("−", Msg::Unstage(vec![c.path.clone()]))),
+                    Some(icon_button(Icon::Remove, Msg::Unstage(vec![c.path.clone()]))),
                 ));
             }
         }
         let all: Vec<String> = unstaged.iter().map(|c| c.path.clone()).collect();
         list = list.push(section(
             format!("CHANGES  {}", unstaged.len()),
-            if all.is_empty() { vec![] } else { vec![icon_button("+", Msg::Stage(all))] },
+            if all.is_empty() { vec![] } else { vec![icon_button(Icon::Add, Msg::Stage(all))] },
         ));
         for c in unstaged {
             list = list.push(self.change_button(
                 c,
                 open == Some((c.path.as_str(), false)),
                 Msg::OpenDiff(c.path.clone(), false),
-                Some(icon_button("+", Msg::Stage(vec![c.path.clone()]))),
+                Some(icon_button(Icon::Add, Msg::Stage(vec![c.path.clone()]))),
             ));
         }
         if self.git.truncated {
@@ -478,7 +522,7 @@ impl App {
             ));
         }
 
-        let mut branch = format!("⑂ {}", self.git.branch);
+        let mut branch = self.git.branch.clone();
         if self.git.ahead > 0 {
             branch.push_str(&format!("  ↑{}", self.git.ahead));
         }
@@ -489,11 +533,12 @@ impl App {
             container(
                 column![
                     row![
+                        ico(Icon::Branch, 14).color(p().accent),
                         text(branch).size(UI),
                         space::horizontal(),
-                        tip(icon_button("↓", Msg::Pull), "Pull (fast-forward)"),
-                        tip(icon_button("↑", Msg::Push), "Push"),
-                        tip(icon_button("⟳", Msg::Tick), "Refresh"),
+                        tip(icon_button(Icon::ArrowDown, Msg::Pull), "Pull (fast-forward)"),
+                        tip(icon_button(Icon::ArrowUp, Msg::Push), "Push"),
+                        tip(icon_button(Icon::Refresh, Msg::Tick), "Refresh"),
                     ]
                     .align_y(Alignment::Center),
                     iced::widget::text_editor(&self.commit_msg)
@@ -524,7 +569,14 @@ impl App {
                         }),
                     row![
                         button(
-                            container(text(if generating { "Generating… (cancel)" } else { "✦ Generate message" }).size(12))
+                            container(
+                                row![
+                                    ico(if generating { Icon::Close } else { Icon::Sparkle }, 13).color(p().accent),
+                                    text(if generating { "Generating… (cancel)" } else { "Generate message" }).size(12),
+                                ]
+                                .spacing(6)
+                                .align_y(Alignment::Center),
+                            )
                                 .center_x(Length::Fill)
                         )
                         .width(Length::Fill)
@@ -532,7 +584,10 @@ impl App {
                         .style(theme::flat(generating))
                         .on_press_maybe(can_generate.then_some(Msg::GenerateCommit)),
                     ],
-                    button(container(text(commit_label).size(UI)).center_x(Length::Fill))
+                    button(
+                        container(row![ico(Icon::Check, 14), text(commit_label).size(UI)].spacing(6).align_y(Alignment::Center))
+                            .center_x(Length::Fill),
+                    )
                         .width(Length::Fill)
                         .padding(5)
                         .style(theme::primary)
@@ -637,7 +692,7 @@ impl App {
                             .padding(Padding { top: 1.0, right: 4.0, bottom: 1.0, left: 26.0 })
                             .style(theme::flat(false))
                             .on_press(Msg::OpenFile(f.path.clone(), Some(m.line))),
-                        tip(icon_button("›", Msg::SendToAgent(format!("{reference} "))), "Send reference to agent"),
+                        tip(icon_button(Icon::Send, Msg::SendToAgent(format!("{reference} "))), "Send reference to agent"),
                     ]
                     .align_y(Alignment::Center),
                 );
@@ -667,16 +722,27 @@ impl App {
                 (_, Some(c)) => theme::status_color(c),
                 _ => p().fg,
             };
-            let chevron = match (e.is_dir, self.explorer.expanded.contains(&e.path)) {
-                (true, true) => "▾",
-                (true, false) => "▸",
-                _ => " ",
+            let expanded = self.explorer.expanded.contains(&e.path);
+            let chevron: Element<'_, Msg> = if e.is_dir {
+                ico(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, 13).color(p().muted).width(14).into()
+            } else {
+                space().width(14).into()
+            };
+            let kind: Element<'_, Msg> = match (e.is_dir, icons::font()) {
+                (true, _) => ico(if expanded { Icon::FolderOpen } else { Icon::Folder }, 15).color(p().accent).width(18).into(),
+                (false, Some(f)) => {
+                    let (glyph, c) = icons::file_icon(&e.name);
+                    let c = if ignored { c.scale_alpha(0.55) } else { c };
+                    text(glyph.to_string()).font(f).size(15).line_height(1.0).color(c).width(18).into()
+                }
+                (false, None) => space().width(0).into(),
             };
             let open = matches!(self.active_tab.and_then(|i| self.tabs.get(i)), Some(Tab::File(t)) if t.path == e.path);
             let mut line = row![
                 space::horizontal().width(e.depth as f32 * 12.0),
-                text(chevron).size(UI).width(12).color(p().muted),
-                text(e.name.clone()).size(UI).color(color),
+                chevron,
+                kind,
+                text(e.name.clone()).size(UI).color(color).wrapping(text::Wrapping::None),
                 space::horizontal(),
             ]
             .align_y(Alignment::Center)
@@ -789,7 +855,7 @@ impl App {
                 row![
                     text(rel).size(12).color(p().muted),
                     space::horizontal(),
-                    small_button("Send line to agent", Some(Msg::SendToAgent(format!("{rel_ref}:{line} ")))),
+                    icon_label(Icon::Send, "Send line to agent", Some(Msg::SendToAgent(format!("{rel_ref}:{line} ")))),
                 ]
                 .align_y(Alignment::Center)
             )
@@ -820,13 +886,13 @@ impl App {
             && let Some((i, n)) = self.review_position(&d.rel)
         {
             header = header
-                .push(tip(icon_button("‹", Msg::ReviewStep(-1)), "Previous file"))
+                .push(tip(icon_button(Icon::ChevronLeft, Msg::ReviewStep(-1)), "Previous file"))
                 .push(text(format!("{}/{n}", i + 1)).size(SMALL).color(p().muted))
-                .push(tip(icon_button("›", Msg::ReviewStep(1)), "Next file"));
+                .push(tip(icon_button(Icon::ChevronRight, Msg::ReviewStep(1)), "Next file"));
         }
         header = header
-            .push(small_button(if d.full { "Hunks" } else { "Full file" }, Some(Msg::DiffFull(!d.full))))
-            .push(small_button("Open file", path.is_file().then(|| Msg::OpenFile(path.clone(), d.anchor.map(|l| l.saturating_sub(1))))));
+            .push(icon_label(if d.full { Icon::Fold } else { Icon::Unfold }, if d.full { "Hunks" } else { "Full file" }, Some(Msg::DiffFull(!d.full))))
+            .push(icon_label(Icon::GoToFile, "Open file", path.is_file().then(|| Msg::OpenFile(path.clone(), d.anchor.map(|l| l.saturating_sub(1))))));
         if let DiffSource::Index { staged } = d.source {
             header = header.push(
                 button(text(if staged { "Unstage" } else { "Stage" }).size(12))
@@ -873,7 +939,7 @@ impl App {
                 .size(UI)
                 .padding(6)
                 .style(theme::input),
-            button(text("Send to agent").size(12))
+            button(row![ico(Icon::Send, 13), text("Send to agent").size(12)].spacing(5).align_y(Alignment::Center))
                 .padding([5, 10])
                 .style(theme::primary)
                 .on_press_maybe((!self.comment.trim().is_empty() && self.session().is_some()).then_some(Msg::SendComment)),
@@ -895,7 +961,7 @@ impl App {
         let mut left = row![].spacing(14).align_y(Alignment::Center);
         if !self.git.branch.is_empty() {
             left = left.push(
-                button(text(format!("⑂ {}", self.git.branch)).size(12))
+                button(row![ico(Icon::Branch, 12), text(self.git.branch.clone()).size(12)].spacing(4).align_y(Alignment::Center))
                     .padding([1, 4])
                     .style(theme::flat(false))
                     .on_press(Msg::Inspector(Inspector::Git)),
@@ -903,7 +969,11 @@ impl App {
         }
         let waiting = self.sessions.iter().filter(|s| s.attention || s.status == Status::Waiting).count();
         if waiting > 0 {
-            left = left.push(text(format!("◐ {waiting} waiting")).size(12).color(p().modified));
+            left = left.push(
+                row![ico(Icon::Bell, 12).color(p().modified), text(format!("{waiting} waiting")).size(12).color(p().modified)]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+            );
         }
         if let Some((msg, err)) = &self.status {
             left = left.push(text(msg.clone()).size(12).color(if *err { p().deleted } else { p().muted }));
@@ -919,11 +989,11 @@ impl App {
             right = right.push(text("working…").size(12).color(p().muted));
         }
         let theme_label = match self.theme {
-            theme::Choice::Auto => format!("◐ {} (auto)", p().name),
-            theme::Choice::Fixed(_) => format!("◐ {}", p().name),
+            theme::Choice::Auto => format!("{} (auto)", p().name),
+            theme::Choice::Fixed(_) => p().name.to_string(),
         };
         right = right.push(tooltip(
-            button(text(theme_label).size(12)).padding([1, 4]).style(theme::flat(false)).on_press(Msg::CycleTheme),
+            button(row![ico(Icon::ColorMode, 12), text(theme_label).size(12)].spacing(4).align_y(Alignment::Center)).padding([1, 4]).style(theme::flat(false)).on_press(Msg::CycleTheme),
             container(text("Switch theme (Ctrl+Shift+T)").size(12)).padding(6).style(theme::bordered(p().bg)),
             tooltip::Position::Top,
         ));

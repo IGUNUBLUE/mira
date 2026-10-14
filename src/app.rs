@@ -22,6 +22,17 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const CODE_SIZE: u32 = 14;
+
+/// Draggable vertical dividers around the center area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Divider {
+    Sessions,
+    Inspector,
+}
+
+const MIN_SIDE: f32 = 160.0;
+const MIN_CENTER: f32 = 320.0;
+const DIVIDER: f32 = 5.0;
 const MAX_OPEN_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +143,13 @@ pub struct App {
 
     pub theme: theme::Choice,
 
+    // layout
+    pub left_width: f32,
+    pub inspector_width: f32,
+    pub window_width: f32,
+    pub dragging: Option<Divider>,
+    pub hovered_divider: Option<Divider>,
+
     // persistence
     state_dirty: bool,
     discovering: bool,
@@ -153,6 +171,12 @@ pub enum Msg {
     InspectorTab(Inspector),
     ToggleInspector,
     CycleTheme,
+    DividerHover(Option<Divider>),
+    DividerPress(Divider),
+    /// Cursor x while dragging a divider.
+    DividerDrag(f32),
+    DividerRelease,
+    WindowWidth(f32),
     FocusMode,
     CenterResized(pane_grid::ResizeEvent),
     Key(keyboard::Event, bool),
@@ -290,7 +314,15 @@ impl App {
         let theme_choice =
             persist::config_get("theme").and_then(|v| theme::Choice::parse(&v)).unwrap_or(theme::Choice::Auto);
         theme::set_current(theme_choice.resolve());
+        let width = |key: &str, default: f32| {
+            persist::config_get(key).and_then(|v| v.parse::<f32>().ok()).filter(|w| w.is_finite()).unwrap_or(default)
+        };
         let mut app = Self {
+            left_width: width("sessions_width", 230.0),
+            inspector_width: width("inspector_width", 380.0),
+            window_width: 1400.0,
+            dragging: None,
+            hovered_divider: None,
             theme: theme_choice,
             explorer: Explorer::new(root.clone()),
             root,
@@ -350,8 +382,20 @@ impl App {
             }
             iced::Event::Window(iced::window::Event::Focused) => Some(Msg::WindowFocus(true)),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Msg::WindowFocus(false)),
+            iced::Event::Window(iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size)) => {
+                Some(Msg::WindowWidth(size.width))
+            }
             _ => None,
         }));
+        // Only follow the mouse while a divider is being dragged.
+        if self.dragging.is_some() {
+            subs.push(iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Msg::DividerDrag(position.x)),
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left))
+                | iced::Event::Mouse(iced::mouse::Event::CursorLeft) => Some(Msg::DividerRelease),
+                _ => None,
+            }));
+        }
         Subscription::batch(subs)
     }
 
@@ -1048,6 +1092,33 @@ impl App {
                 self.save_state();
                 return self.status_tick();
             }
+            Msg::DividerHover(d) => self.hovered_divider = d,
+            Msg::DividerPress(d) => self.dragging = Some(d),
+            Msg::DividerDrag(x) => match self.dragging {
+                Some(Divider::Sessions) => {
+                    let right = if self.show_inspector && !self.focus_mode { self.inspector_width } else { 0.0 };
+                    let max = (self.window_width - right - MIN_CENTER).max(MIN_SIDE);
+                    self.left_width = (x - DIVIDER / 2.0).clamp(MIN_SIDE, max);
+                }
+                Some(Divider::Inspector) => {
+                    let left = if self.focus_mode { 0.0 } else { self.left_width };
+                    let max = (self.window_width - left - MIN_CENTER).max(MIN_SIDE);
+                    self.inspector_width = (self.window_width - x - DIVIDER / 2.0).clamp(MIN_SIDE, max);
+                }
+                None => {}
+            },
+            Msg::DividerRelease => {
+                if let Some(d) = self.dragging.take() {
+                    let (key, w) = match d {
+                        Divider::Sessions => ("sessions_width", self.left_width),
+                        Divider::Inspector => ("inspector_width", self.inspector_width),
+                    };
+                    if let Err(e) = persist::config_set(key, &format!("{w:.0}")) {
+                        self.set_status(format!("Could not save layout: {e}"), true);
+                    }
+                }
+            }
+            Msg::WindowWidth(w) => self.window_width = w,
             Msg::CycleTheme => {
                 self.theme = self.theme.next();
                 self.apply_theme();

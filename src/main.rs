@@ -5,6 +5,7 @@ mod app;
 mod commitgen;
 mod diff;
 mod explorer;
+mod icons;
 mod git;
 mod persist;
 mod search;
