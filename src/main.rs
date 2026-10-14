@@ -18,25 +18,22 @@ mod view;
 
 use std::path::PathBuf;
 
-/// Default to iced's CPU renderer (tiny-skia). For a text UI it is the better
-/// trade, measured on the owner's machine (same window, herdr inside):
+/// Default to iced's GPU renderer on the OpenGL backend.
 ///
-/// | renderer      | RSS idle | RSS streaming | CPU streaming |
-/// |---------------|----------|---------------|---------------|
-/// | wgpu Vulkan   | 199 MB   | 231 MB        | 134 %         |
-/// | wgpu GL       | 112 MB   | 145 MB        | 133 %         |
-/// | tiny-skia     |  32 MB   |  65 MB        |  55 %         |
+/// - wgpu on Vulkan gamma-encoded colors twice on the owner's machine
+///   (`#3B6ADF` showed as `#84ACF0`): washed out, low contrast. GL is exact.
+/// - The CPU renderer (tiny-skia) uses far less memory (32 MB vs 112 MB idle)
+///   but typing and resizing panels lag visibly at this window size, so it is
+///   opt-in: `ICED_BACKEND=tiny-skia`.
 ///
-/// It also draws exact colors, while wgpu on Vulkan gamma-encoded them twice
-/// here (`#3B6ADF` showed as `#84ACF0`). An explicit `ICED_BACKEND` or
-/// `WGPU_BACKEND` from the user wins (`ICED_BACKEND=wgpu` for the GPU).
+/// An explicit `ICED_BACKEND` or `WGPU_BACKEND` from the user wins.
 fn pick_renderer() {
     if std::env::var_os("WGPU_BACKEND").is_none() && std::env::var_os("ICED_BACKEND").is_none() {
         // SAFETY: first statement of `main`, before any thread exists, so no
         // other code can be reading the environment concurrently.
         #[allow(unsafe_code)]
         unsafe {
-            std::env::set_var("ICED_BACKEND", "tiny-skia");
+            std::env::set_var("WGPU_BACKEND", "gl");
         }
     }
 }
