@@ -140,6 +140,9 @@ pub struct App {
     pub env: EnvState,
 
     pub status: Option<(String, bool)>,
+    status_at: Instant,
+    /// Session id whose close is awaiting a second click.
+    pub confirm_close: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -151,7 +154,11 @@ pub enum SnapshotFor {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    /// Shortcut: show this inspector, or hide it if it is already shown.
     Inspector(Inspector),
+    /// Tab click: just switch.
+    InspectorTab(Inspector),
+    ToggleInspector,
     FocusMode,
     CenterResized(pane_grid::ResizeEvent),
     Key(keyboard::Event, bool),
@@ -170,6 +177,8 @@ pub enum Msg {
     Review(ReviewTarget),
     SessionFiles(u64, Vec<Change>),
     OpenTurnDiff(String),
+    /// Previous/next file of the review list.
+    ReviewStep(isize),
     RevertReview,
     Comment(String),
     SendComment,
@@ -191,7 +200,7 @@ pub enum Msg {
     OpenDiff(String, bool),
     Stage(Vec<String>),
     Unstage(Vec<String>),
-    CommitMsg(String),
+    CommitInput(String),
     Commit,
     Push,
     Pull,
@@ -320,6 +329,8 @@ impl App {
             search: SearchState::default(),
             env: EnvState::default(),
             status: None,
+            status_at: Instant::now(),
+            confirm_close: None,
         };
         let shell = app.new_session(None);
         let refresh = app.refresh_git();
@@ -357,6 +368,7 @@ impl App {
 
     fn set_status(&mut self, msg: impl Into<String>, error: bool) {
         self.status = Some((msg.into(), error));
+        self.status_at = Instant::now();
     }
 
     pub fn session(&self) -> Option<&Session> {
@@ -407,7 +419,8 @@ impl App {
         };
         let cs = keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT;
         let mut bindings: Vec<_> =
-            ["r", "g", "v", "f", "e", "m", "n", "b"].iter().map(|c| swallow(c, cs)).collect();
+            // Not "v"/"c": Ctrl+Shift+V/C are the terminal's paste/copy.
+            ["r", "g", "d", "f", "e", "m", "n", "b", "j", "k"].iter().map(|c| swallow(c, cs)).collect();
         bindings.push(swallow("`", keyboard::Modifiers::CTRL));
         term.handle(iced_term::Command::AddBindings(bindings));
 
@@ -437,6 +450,15 @@ impl App {
         Task::batch([focus, self.snapshot(id, vec![SnapshotFor::Base])])
     }
 
+    fn cycle_session(&mut self, step: isize) -> Task<Msg> {
+        let n = self.sessions.len() as isize;
+        if n < 2 {
+            return Task::none();
+        }
+        let next = (self.active as isize + step).rem_euclid(n) as usize;
+        self.update(Msg::SelectSession(next))
+    }
+
     fn snapshot(&self, id: u64, purposes: Vec<SnapshotFor>) -> Task<Msg> {
         if !self.has_repo() {
             return Task::none();
@@ -459,6 +481,8 @@ impl App {
             return Task::none();
         };
         s.term.handle(iced_term::Command::ProxyToBackend(BackendCommand::Write(text.as_bytes().to_vec())));
+        // Count it as typed so the next Enter opens a turn labelled with it.
+        let _ = s.track_input(text.as_bytes());
         let name = s.name.clone();
         self.set_status(format!("Sent to {name} — review and press Enter"), false);
         self.focus_terminal()
@@ -516,7 +540,7 @@ impl App {
             }
             BackendCommand::ProcessAlacrittyEvent(AlacrittyEvent::Bell) => {
                 let s = &mut self.sessions[idx];
-                if s.agent.is_some() && (idx != self.active || !self.window_focused) {
+                if s.agent.is_some() && (idx != self.active || !self.window_focused) && !s.attention {
                     s.attention = true;
                     notify(&format!("{} needs you", s.name), "The agent rang the bell");
                 }
@@ -539,7 +563,7 @@ impl App {
             let running = s.running_turn();
             // Plain shells just finish commands; only agents "wait for you".
             s.status = if s.agent.is_some() { Status::Waiting } else { Status::Idle };
-            if s.status == Status::Waiting && (!focused || !is_active) {
+            if s.status == Status::Waiting && (!focused || !is_active) && !s.attention {
                 s.attention = true;
                 notify(&format!("{} is waiting", s.name), "The agent went quiet — review its changes");
             }
@@ -626,6 +650,12 @@ impl App {
         }
     }
 
+    /// `(index, total)` of `rel` in the current review list.
+    pub fn review_position(&self, rel: &str) -> Option<(usize, usize)> {
+        let files = self.review_files()?;
+        files.iter().position(|c| c.path == rel).map(|i| (i, files.len()))
+    }
+
     // --------------------------------------------------------------- documents
 
     fn sync_center(&mut self) {
@@ -680,10 +710,22 @@ impl App {
         let idx = self
             .tabs
             .iter()
-            .position(|t| matches!(t, Tab::Diff(d) if d.rel == rel && d.source == source))
-            .unwrap_or_else(|| {
-                self.open_tab(Tab::Diff(DiffTab { rel, source, full: false, diff: None, anchor: None }))
-            });
+            .position(|t| matches!(t, Tab::Diff(d) if d.rel == rel && d.source == source));
+        let tab = |rel, source| Tab::Diff(DiffTab { rel, source, full: false, diff: None, anchor: None });
+        let idx = match idx {
+            Some(i) => i,
+            // Review diffs share one preview tab instead of piling up.
+            None if matches!(source, DiffSource::Trees { .. }) => {
+                match self.tabs.iter().position(|t| matches!(t, Tab::Diff(d) if matches!(d.source, DiffSource::Trees { .. }))) {
+                    Some(i) => {
+                        self.tabs[i] = tab(rel, source);
+                        i
+                    }
+                    None => self.open_tab(tab(rel, source)),
+                }
+            }
+            None => self.open_tab(tab(rel, source)),
+        };
         self.active_tab = Some(idx);
         self.focus_mode = false;
         self.sync_center();
@@ -843,7 +885,12 @@ impl App {
                 self.doc_ratio = e.ratio;
             }
             Msg::Key(event, captured) => return self.on_key(event, captured),
-            Msg::WindowFocus(f) => self.window_focused = f,
+            Msg::WindowFocus(f) => {
+                self.window_focused = f;
+                if f && let Some(s) = self.sessions.get_mut(self.active) {
+                    s.attention = false;
+                }
+            }
             Msg::Tick => {
                 self.explorer.refresh();
                 self.reload_changed_files();
@@ -853,7 +900,26 @@ impl App {
                 }
                 return Task::batch(tasks);
             }
-            Msg::StatusTick => return self.status_tick(),
+            Msg::StatusTick => {
+                let ttl = if self.status.as_ref().is_some_and(|(_, e)| *e) { 12 } else { 6 };
+                if self.status.is_some() && self.status_at.elapsed() > Duration::from_secs(ttl) {
+                    self.status = None;
+                    self.confirm_revert = None;
+                    self.confirm_close = None;
+                }
+                return self.status_tick();
+            }
+            Msg::ToggleInspector => {
+                self.show_inspector = !self.show_inspector;
+                self.focus_mode = false;
+                self.sync_center();
+            }
+            Msg::InspectorTab(i) => {
+                self.inspector = i;
+                if i == Inspector::Env {
+                    return self.load_env();
+                }
+            }
 
             Msg::TogglePresets => self.show_presets = !self.show_presets,
             Msg::NewSession(agent) => return self.new_session(agent),
@@ -867,6 +933,17 @@ impl App {
                 }
             }
             Msg::CloseSession(i) => {
+                if let Some(s) = self.sessions.get(i)
+                    && s.agent.is_some()
+                    && s.status != Status::Exited
+                    && self.confirm_close != Some(s.id)
+                {
+                    self.confirm_close = Some(s.id);
+                    let name = s.name.clone();
+                    self.set_status(format!("{name} is still running — click × again to kill it"), true);
+                    return Task::none();
+                }
+                self.confirm_close = None;
                 if i < self.sessions.len() {
                     self.sessions.remove(i);
                     self.active = self.active.min(self.sessions.len().saturating_sub(1));
@@ -902,6 +979,10 @@ impl App {
                 if target == ReviewTarget::All {
                     return self.load_session_files();
                 }
+                // Jump straight to the first changed file of the turn.
+                if let Some(first) = self.review_files().and_then(|f| f.first()).map(|c| c.path.clone()) {
+                    return self.update(Msg::OpenTurnDiff(first));
+                }
             }
             Msg::SessionFiles(id, files) => {
                 if self.session().is_some_and(|s| s.id == id) {
@@ -911,6 +992,17 @@ impl App {
             Msg::OpenTurnDiff(rel) => {
                 if let Some((from, to, label)) = self.review_trees() {
                     return self.open_diff(rel, DiffSource::Trees { from, to, label });
+                }
+            }
+            Msg::ReviewStep(step) => {
+                let Some(Tab::Diff(d)) = self.active_tab.and_then(|i| self.tabs.get(i)) else {
+                    return Task::none();
+                };
+                if let Some((i, n)) = self.review_position(&d.rel) {
+                    let next = (i as isize + step).rem_euclid(n as isize) as usize;
+                    if let Some(c) = self.review_files().and_then(|f| f.get(next)) {
+                        return self.update(Msg::OpenTurnDiff(c.path.clone()));
+                    }
                 }
             }
             Msg::RevertReview => {
@@ -1000,7 +1092,7 @@ impl App {
             Msg::OpenDiff(rel, staged) => return self.open_diff(rel, DiffSource::Index { staged }),
             Msg::Stage(paths) => return self.git_op(move |r| git::stage(r, &paths)),
             Msg::Unstage(paths) => return self.git_op(move |r| git::unstage(r, &paths)),
-            Msg::CommitMsg(m) => self.commit_msg = m,
+            Msg::CommitInput(m) => self.commit_msg = m,
             Msg::Commit => {
                 let message = self.commit_msg.trim().to_string();
                 if message.is_empty() {
@@ -1197,10 +1289,12 @@ impl App {
                     self.close_tab(i);
                 }
             }
-            (Some('b'), _) => self.show_inspector = !self.show_inspector,
+            (Some('b'), _) => return self.update(Msg::ToggleInspector),
             (Some('r'), true) => return self.update(Msg::Inspector(Inspector::Review)),
             (Some('g'), true) => return self.update(Msg::Inspector(Inspector::Git)),
-            (Some('v'), true) => return self.update(Msg::Inspector(Inspector::Env)),
+            (Some('d'), true) => return self.update(Msg::Inspector(Inspector::Env)),
+            (Some('j'), true) => return self.cycle_session(1),
+            (Some('k'), true) => return self.cycle_session(-1),
             (Some('f'), true) => return self.update(Msg::Inspector(Inspector::Search)),
             (Some('e'), true) => return self.update(Msg::Inspector(Inspector::Files)),
             (Some('n'), true) => self.show_presets = !self.show_presets,

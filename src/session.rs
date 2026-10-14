@@ -55,6 +55,14 @@ impl Turn {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Escape {
+    None,
+    Start,
+    Csi,
+    Ss3,
+}
+
 pub struct Session {
     pub id: u64,
     pub name: String,
@@ -66,7 +74,7 @@ pub struct Session {
     pub attention: bool,
     /// What the user is typing (best effort; reset on Enter).
     pub input: String,
-    in_escape: bool,
+    escape: Escape,
     pub turns: Vec<Turn>,
     /// Tree at session start (for "all changes in this session").
     pub base: Option<String>,
@@ -85,7 +93,7 @@ impl Session {
             last_input: Instant::now(),
             attention: false,
             input: String::new(),
-            in_escape: false,
+            escape: Escape::None,
             turns: Vec::new(),
             base: None,
             latest: None,
@@ -100,15 +108,31 @@ impl Session {
         let text = String::from_utf8_lossy(bytes);
         let mut submitted = None;
         for c in text.chars() {
-            if self.in_escape {
-                // CSI/SS3 sequences end with a letter or `~`.
-                if c.is_ascii_alphabetic() || c == '~' {
-                    self.in_escape = false;
+            // Skip escape sequences: CSI (`ESC [ … final`), SS3 (`ESC O x`)
+            // and Alt+key (`ESC x`).
+            match self.escape {
+                Escape::None => {}
+                Escape::Start => {
+                    self.escape = match c {
+                        '[' => Escape::Csi,
+                        'O' => Escape::Ss3,
+                        _ => Escape::None,
+                    };
+                    continue;
                 }
-                continue;
+                Escape::Csi => {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        self.escape = Escape::None;
+                    }
+                    continue;
+                }
+                Escape::Ss3 => {
+                    self.escape = Escape::None;
+                    continue;
+                }
             }
             match c {
-                '\x1b' => self.in_escape = true,
+                '\x1b' => self.escape = Escape::Start,
                 '\r' | '\n' => {
                     let line = self.input.trim().to_string();
                     self.input.clear();
@@ -161,5 +185,12 @@ mod tests {
         assert_eq!(s.track_input(b"\x7fs\x1b[D"), None);
         assert_eq!(s.track_input(b"\r").as_deref(), Some("agrega tests"));
         assert_eq!(s.track_input(b"\r"), None);
+    }
+
+    #[test]
+    fn skips_ss3_alt_and_bracketed_paste_markers() {
+        let mut s = session();
+        // SS3 arrow, Alt+b, bracketed paste around "hola".
+        assert_eq!(s.track_input(b"a\x1bOAb\x1bbc\x1b[200~hola\x1b[201~\r").as_deref(), Some("abchola"));
     }
 }

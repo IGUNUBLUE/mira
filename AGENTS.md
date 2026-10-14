@@ -17,6 +17,11 @@ Lightweight terminal-first workspace in Rust (iced 0.14 + iced_term 0.8).
 - `src/search.rs` — `ignore` walker + `regex`; replace uses `NoExpand` for literal mode.
 - `src/theme.rs` — LAGC Tech Light palette and style fns.
 
+## Shortcuts
+
+App shortcuts are `Ctrl+Shift+<letter>` and are swallowed in the terminal (`new_session`).
+Never take `C`/`V` (terminal copy/paste).
+
 ## Commands
 
 ```bash

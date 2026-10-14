@@ -179,7 +179,13 @@ impl App {
                 text(dot).size(14).color(color).width(16),
                 column![text(s.name.clone()).size(UI), meta].spacing(1),
                 space::horizontal(),
-                button(text("×").size(12)).padding([0, 4]).style(theme::flat(false)).on_press(Msg::CloseSession(i)),
+                tip(
+                    button(text(if self.confirm_close == Some(s.id) { "kill?" } else { "×" }).size(12))
+                        .padding([0, 4])
+                        .style(if self.confirm_close == Some(s.id) { theme::danger } else { theme::flat_fn })
+                        .on_press(Msg::CloseSession(i)),
+                    "Close session",
+                ),
             ]
             .spacing(6)
             .align_y(Alignment::Center);
@@ -256,10 +262,18 @@ impl App {
             text(s.name.clone()).size(UI),
             text(label).size(SMALL).color(color),
             space::horizontal(),
-            small_button(if self.focus_mode { "Exit focus" } else { "Focus" }, Some(Msg::FocusMode)),
+            tip(small_button(if self.focus_mode { "Exit focus" } else { "Focus" }, Some(Msg::FocusMode)), "Ctrl+Shift+M"),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
+        let header = if self.focus_mode {
+            header
+        } else {
+            header.push(tip(
+                small_button(if self.show_inspector { "Hide panel" } else { "Show panel" }, Some(Msg::ToggleInspector)),
+                "Ctrl+B",
+            ))
+        };
         column![
             container(header).padding([4, 12]).width(Length::Fill).style(theme::panel(SIDEBAR)),
             container(iced_term::TerminalView::show(&s.term).map(Msg::Term))
@@ -288,7 +302,7 @@ impl App {
             if let Some(n) = count {
                 r = r.push(text(n.to_string()).size(10).color(if which == Inspector::Env { MODIFIED } else { ACCENT }));
             }
-            button(r).padding([6, 9]).style(theme::tab(active)).on_press(Msg::Inspector(which))
+            button(r).padding([6, 9]).style(theme::tab(active)).on_press(Msg::InspectorTab(which))
         };
         let tabs = row![
             tab("Review", Inspector::Review, review_badge),
@@ -374,7 +388,7 @@ impl App {
         let actions = row![
             button(text(if confirming { "Confirm revert" } else { "Revert" }).size(12))
                 .padding([3, 10])
-                .style(theme::flat(confirming))
+                .style(if confirming { theme::danger } else { theme::flat_fn })
                 .on_press_maybe(has_files.then_some(Msg::RevertReview)),
             button(text("Stage these").size(12))
                 .padding([3, 10])
@@ -493,7 +507,7 @@ impl App {
                     ]
                     .align_y(Alignment::Center),
                     text_input("Commit message (Enter to commit)", &self.commit_msg)
-                        .on_input(Msg::CommitMsg)
+                        .on_input(Msg::CommitInput)
                         .on_submit(Msg::Commit)
                         .size(UI)
                         .padding(6)
@@ -948,8 +962,16 @@ impl App {
                 .push(text(format!("−{}", diff.removed)).size(12).color(DELETED));
         }
         let path = root.join(&d.rel);
+        header = header.push(space::horizontal());
+        if matches!(d.source, DiffSource::Trees { .. })
+            && let Some((i, n)) = self.review_position(&d.rel)
+        {
+            header = header
+                .push(tip(icon_button("‹", Msg::ReviewStep(-1)), "Previous file"))
+                .push(text(format!("{}/{n}", i + 1)).size(SMALL).color(MUTED))
+                .push(tip(icon_button("›", Msg::ReviewStep(1)), "Next file"));
+        }
         header = header
-            .push(space::horizontal())
             .push(small_button(if d.full { "Hunks" } else { "Full file" }, Some(Msg::DiffFull(!d.full))))
             .push(small_button("Open file", path.is_file().then(|| Msg::OpenFile(path.clone(), d.anchor.map(|l| l.saturating_sub(1))))));
         if let DiffSource::Index { staged } = d.source {
@@ -1043,7 +1065,7 @@ impl App {
         if self.git_busy || self.search.running {
             right = right.push(text("working…").size(12).color(MUTED));
         }
-        right = right.push(text("Ctrl+Shift+N new · R review · G git · V env · M focus").size(11).color(LINE_NO));
+        right = right.push(text("Ctrl+Shift+ N new · J/K switch · R review · G git · D env · M focus").size(11).color(LINE_NO));
         container(row![left, space::horizontal(), right].align_y(Alignment::Center))
             .padding([2, 10])
             .width(Length::Fill)

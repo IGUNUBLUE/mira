@@ -93,6 +93,26 @@ pub fn flat(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     }
 }
 
+/// `flat(false)` as a plain fn, so it can share a type with `danger`.
+pub fn flat_fn(t: &Theme, status: button::Status) -> button::Style {
+    flat(false)(t, status)
+}
+
+/// Destructive action awaiting confirmation.
+pub fn danger(_: &Theme, status: button::Status) -> button::Style {
+    let base = match status {
+        button::Status::Hovered | button::Status::Pressed => color!(0xB04F3B),
+        button::Status::Disabled => DELETED.scale_alpha(0.45),
+        button::Status::Active => DELETED,
+    };
+    button::Style {
+        background: Some(base.into()),
+        text_color: BG,
+        border: Border::default().rounded(4),
+        ..Default::default()
+    }
+}
+
 pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| button::Style {
         background: Some(

@@ -12,6 +12,8 @@ mira is built around that loop: ask → the agent acts → you review, correct, 
   working tree (temporary git index, no commits), so each turn has its own before/after
   diff and can be reverted.
 - **Review**: side-by-side diff with intra-line highlights, per turn or for the whole session.
+  Clicking a turn opens its first changed file in a single preview tab; `‹ ›` steps through
+  the rest. Click a line, write a comment, and it is typed into the agent's prompt.
 - **Env**: discovers `.env*` files, masks values, compares against `.env.example`,
   shows per-turn key changes and warns when a `.env` is tracked or not ignored.
 - **Source control**: stage / unstage, commit, push, pull, recent history.
@@ -38,8 +40,10 @@ renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.
 | ``Ctrl+` `` | Focus the agent terminal |
 | `Ctrl+Shift+N` | New session (agent presets) |
 | `Ctrl+Shift+M` | Focus mode (hide side panels) |
-| `Ctrl+Shift+R` / `G` / `V` / `F` / `E` | Inspector: Review / Git / Env / Search / Files |
+| `Ctrl+Shift+J` / `K` | Next / previous session |
+| `Ctrl+Shift+R` / `G` / `D` / `F` / `E` | Inspector: Review / Git / .env / Search / Files (again to hide) |
 | `Ctrl+B` | Toggle inspector |
+| `Ctrl+Shift+C` / `V` | Copy / paste in the terminal |
 | `Ctrl+S` / `Ctrl+W` | Save / close tab |
 
 `Ctrl+Shift+…` and `` Ctrl+` `` work even while the terminal has focus.
