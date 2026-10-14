@@ -303,30 +303,6 @@ mod tests {
 }
 
 
-/// Which of `rels` (relative to `dir`) are tracked, and which are ignored.
-/// Outside a repository both sets are empty.
-pub fn tracked_and_ignored(
-    dir: &Path,
-    rels: &[String],
-) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
-    use std::collections::HashSet;
-    if rels.is_empty() || repo_root(dir).is_none() {
-        return (HashSet::new(), HashSet::new());
-    }
-    let mut args = vec!["ls-files", "-z", "--"];
-    args.extend(rels.iter().map(String::as_str));
-    let tracked = git(dir, &args)
-        .map(|s| s.split('\0').filter(|p| !p.is_empty()).map(String::from).collect())
-        .unwrap_or_default();
-    let mut args = vec!["check-ignore", "--"];
-    args.extend(rels.iter().map(String::as_str));
-    // Exit code 1 means "none ignored".
-    let ignored = git(dir, &args)
-        .map(|s| s.lines().filter(|p| !p.is_empty()).map(String::from).collect())
-        .unwrap_or_default();
-    (tracked, ignored)
-}
-
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;

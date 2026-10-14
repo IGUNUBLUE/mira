@@ -5,7 +5,6 @@ mod app;
 mod diff;
 mod explorer;
 mod git;
-mod envfiles;
 mod persist;
 mod search;
 mod session;

@@ -14,8 +14,6 @@ mira is built around that loop: ask → the agent acts → you review, correct, 
 - **Review**: side-by-side diff with intra-line highlights, per turn or for the whole session.
   Clicking a turn opens its first changed file in a single preview tab; `‹ ›` steps through
   the rest. Click a line, write a comment, and it is typed into the agent's prompt.
-- **Env**: discovers `.env*` files, masks values, compares against `.env.example`,
-  shows per-turn key changes and warns when a `.env` is tracked or not ignored.
 - **Source control**: stage / unstage, commit, push, pull, recent history.
 - **Resume where you left off**: closing mira keeps your sessions. Reopening the same
   folder relaunches each agent on its own conversation (`kiro-cli --resume-id`,
@@ -54,7 +52,7 @@ renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.
 | `Ctrl+Shift+N` | New session (agent presets) |
 | `Ctrl+Shift+M` | Focus mode (hide side panels) |
 | `Ctrl+Shift+J` / `K` | Next / previous session |
-| `Ctrl+Shift+R` / `G` / `D` / `F` / `E` | Inspector: Review / Git / .env / Search / Files (again to hide) |
+| `Ctrl+Shift+R` / `G` / `F` / `E` | Inspector: Review / Git / Search / Files (again to hide) |
 | `Ctrl+B` | Toggle inspector |
 | `Ctrl+Shift+T` | Cycle theme |
 | `Ctrl+Shift+C` / `V` | Copy / paste in the terminal |

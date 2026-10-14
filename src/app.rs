@@ -5,7 +5,6 @@
 //! working tree, so each turn has a reviewable before/after diff.
 
 use crate::diff::{self, FileDiff};
-use crate::envfiles::{self, EnvFile};
 use crate::explorer::Explorer;
 use crate::git::{self, Change, Snapshot};
 use crate::search::{self, FileMatches, Options};
@@ -18,7 +17,7 @@ use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::text_editor::{self, Content};
 use iced::{Subscription, Task};
 use iced_term::{AlacrittyEvent, BackendCommand};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -29,7 +28,6 @@ const MAX_OPEN_BYTES: usize = 8 * 1024 * 1024;
 pub enum Inspector {
     Review,
     Git,
-    Env,
     Search,
     Files,
 }
@@ -91,20 +89,6 @@ pub struct SearchState {
     pub error: Option<String>,
 }
 
-#[derive(Default)]
-pub struct EnvState {
-    pub files: Vec<EnvFile>,
-    /// Fingerprints per file at the last "mark reviewed".
-    pub reviewed: HashMap<PathBuf, HashMap<String, u64>>,
-    /// `(file, key)` pairs whose value is revealed.
-    pub revealed: HashSet<(PathBuf, String)>,
-    /// `(file, key, buffer)` being edited.
-    pub editing: Option<(PathBuf, String, String)>,
-    /// `(file, "KEY=value")` add-key buffer.
-    pub adding: Option<(PathBuf, String)>,
-    pub loading: bool,
-}
-
 pub struct App {
     pub root: PathBuf,
     pub center: pane_grid::State<CenterPane>,
@@ -138,7 +122,6 @@ pub struct App {
     pub git_busy: bool,
     pub commit_msg: String,
     pub search: SearchState,
-    pub env: EnvState,
 
     pub status: Option<(String, bool)>,
     status_at: Instant,
@@ -226,19 +209,6 @@ pub enum Msg {
     ReplaceAll,
     ReplaceDone(Result<usize, String>),
 
-    // env
-    EnvLoaded(Vec<EnvFile>),
-    EnvReveal(PathBuf, String),
-    EnvHideAll(PathBuf),
-    EnvEdit(PathBuf, String),
-    EnvEditInput(String),
-    EnvEditSave,
-    EnvEditCancel,
-    EnvAdd(PathBuf),
-    EnvAddInput(String),
-    EnvAddSave,
-    EnvMarkReviewed(PathBuf),
-    EnvSendMissing(PathBuf),
 }
 
 pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -271,7 +241,7 @@ fn read_text(path: &Path) -> Result<String, String> {
 }
 
 fn load_diff(root: &Path, rel: &str, source: &DiffSource, full: bool) -> FileDiff {
-    let (mut old, mut new) = match source {
+    let (old, new) = match source {
         DiffSource::Index { staged: true } => (git::show(root, "HEAD", rel), git::show(root, "", rel)),
         DiffSource::Index { staged: false } => {
             let disk = std::fs::read(root.join(rel))
@@ -281,11 +251,6 @@ fn load_diff(root: &Path, rel: &str, source: &DiffSource, full: bool) -> FileDif
         }
         DiffSource::Trees { from, to, .. } => (git::show(root, from, rel), git::show(root, to, rel)),
     };
-    // Never render secrets in diffs.
-    if envfiles::is_env_name(rel.rsplit('/').next().unwrap_or(rel)) {
-        old = envfiles::mask_text(&old);
-        new = envfiles::mask_text(&new);
-    }
     diff::compute(&old, &new, if full { None } else { Some(3) })
 }
 
@@ -348,7 +313,6 @@ impl App {
             git_busy: false,
             commit_msg: String::new(),
             search: SearchState::default(),
-            env: EnvState::default(),
             status: None,
             status_at: Instant::now(),
             confirm_close: None,
@@ -362,8 +326,7 @@ impl App {
             None => app.new_session(None, Resume::New, None),
         };
         let refresh = app.refresh_git();
-        let env = app.load_env();
-        (app, Task::batch([shell, refresh, env]))
+        (app, Task::batch([shell, refresh]))
     }
 
     pub fn title(&self) -> String {
@@ -452,7 +415,7 @@ impl App {
         let cs = keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT;
         let mut bindings: Vec<_> =
             // Not "v"/"c": Ctrl+Shift+V/C are the terminal's paste/copy.
-            ["r", "g", "d", "f", "e", "m", "n", "b", "j", "k", "t"].iter().map(|c| swallow(c, cs)).collect();
+            ["r", "g", "f", "e", "m", "n", "b", "j", "k", "t"].iter().map(|c| swallow(c, cs)).collect();
         bindings.push(swallow("`", keyboard::Modifiers::CTRL));
         term.handle(iced_term::Command::AddBindings(bindings));
 
@@ -867,10 +830,13 @@ impl App {
             Some(i) => i,
             None => match read_text(&path) {
                 Ok(text) => {
-                    let syntax = path
-                        .extension()
-                        .map(|e| e.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| file_name(&path));
+                    let name = file_name(&path);
+                    let syntax = if name == ".env" || name.starts_with(".env.") || name.ends_with(".env") {
+                        // KEY=value with # comments reads well as shell.
+                        "sh".to_string()
+                    } else {
+                        path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or(name)
+                    };
                     self.open_tab(Tab::File(FileTab {
                         mtime: mtime(&path),
                         content: Content::with_text(&text),
@@ -1027,28 +993,6 @@ impl App {
         })
     }
 
-    fn load_env(&mut self) -> Task<Msg> {
-        if self.env.loading {
-            return Task::none();
-        }
-        self.env.loading = true;
-        let root = self.root.clone();
-        Task::perform(blocking(move || envfiles::load(&root)), Msg::EnvLoaded)
-    }
-
-    fn env_write(&mut self, path: &Path, key: &str, value: &str) -> Task<Msg> {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
-        match std::fs::write(path, envfiles::set_value(&text, key, value)) {
-            Ok(()) => self.set_status(format!("Saved {key} in {}", file_name(path)), false),
-            Err(e) => self.set_status(format!("{}: {e}", file_name(path)), true),
-        }
-        self.load_env()
-    }
-
-    pub fn env_changes(&self, f: &EnvFile) -> std::collections::BTreeMap<String, envfiles::KeyChange> {
-        self.env.reviewed.get(&f.path).map(|r| envfiles::changes(r, &f.entries)).unwrap_or_default()
-    }
-
     // ------------------------------------------------------------------ update
 
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
@@ -1061,9 +1005,6 @@ impl App {
                     self.show_inspector = true;
                     self.focus_mode = false;
                     self.sync_center();
-                }
-                if i == Inspector::Env {
-                    return self.load_env();
                 }
             }
             Msg::FocusMode => {
@@ -1088,10 +1029,7 @@ impl App {
                 }
                 self.explorer.refresh();
                 self.reload_changed_files();
-                let mut tasks = vec![self.refresh_git(), self.reload_active_diff(), self.discover_conversations()];
-                if self.show_inspector && self.inspector == Inspector::Env {
-                    tasks.push(self.load_env());
-                }
+                let tasks = vec![self.refresh_git(), self.reload_active_diff(), self.discover_conversations()];
                 return Task::batch(tasks);
             }
             Msg::StatusTick => {
@@ -1124,9 +1062,6 @@ impl App {
             }
             Msg::InspectorTab(i) => {
                 self.inspector = i;
-                if i == Inspector::Env {
-                    return self.load_env();
-                }
             }
 
             Msg::TogglePresets => self.show_presets = !self.show_presets,
@@ -1414,74 +1349,6 @@ impl App {
                 return self.run_search();
             }
 
-            Msg::EnvLoaded(files) => {
-                self.env.loading = false;
-                for f in &files {
-                    // First sight of a file = baseline for "changed since review".
-                    self.env.reviewed.entry(f.path.clone()).or_insert_with(|| envfiles::key_map(&f.entries));
-                }
-                self.env.files = files;
-            }
-            Msg::EnvReveal(path, key) => {
-                let k = (path, key);
-                if !self.env.revealed.remove(&k) {
-                    self.env.revealed.insert(k);
-                }
-            }
-            Msg::EnvHideAll(path) => self.env.revealed.retain(|(p, _)| *p != path),
-            Msg::EnvEdit(path, key) => {
-                let value = self
-                    .env
-                    .files
-                    .iter()
-                    .find(|f| f.path == path)
-                    .and_then(|f| f.entries.iter().find(|e| e.key == key))
-                    .map(|e| e.value.clone())
-                    .unwrap_or_default();
-                self.env.editing = Some((path, key, value));
-            }
-            Msg::EnvEditInput(v) => {
-                if let Some((_, _, buf)) = &mut self.env.editing {
-                    *buf = v;
-                }
-            }
-            Msg::EnvEditCancel => {
-                self.env.editing = None;
-                self.env.adding = None;
-            }
-            Msg::EnvEditSave => {
-                if let Some((path, key, value)) = self.env.editing.take() {
-                    return self.env_write(&path, &key, &value);
-                }
-            }
-            Msg::EnvAdd(path) => self.env.adding = Some((path, String::new())),
-            Msg::EnvAddInput(v) => {
-                if let Some((_, buf)) = &mut self.env.adding {
-                    *buf = v;
-                }
-            }
-            Msg::EnvAddSave => {
-                if let Some((path, buf)) = self.env.adding.take() {
-                    match buf.split_once('=') {
-                        Some((k, v)) if !k.trim().is_empty() => {
-                            return self.env_write(&path, k.trim(), v.trim());
-                        }
-                        _ => self.set_status("Use KEY=value", true),
-                    }
-                }
-            }
-            Msg::EnvMarkReviewed(path) => {
-                if let Some(f) = self.env.files.iter().find(|f| f.path == path) {
-                    self.env.reviewed.insert(path, envfiles::key_map(&f.entries));
-                }
-            }
-            Msg::EnvSendMissing(path) => {
-                // Only key *names* ever leave mira; values never do.
-                if let Some(f) = self.env.files.iter().find(|f| f.path == path) {
-                    let text = format!("Faltan estas claves en {}: {}", f.rel, f.missing.join(", "));
-                    return self.write_to_session(&text);
-                }
-            }
         }
         Task::none()
     }
@@ -1512,7 +1379,6 @@ impl App {
             (Some('b'), _) => return self.update(Msg::ToggleInspector),
             (Some('r'), true) => return self.update(Msg::Inspector(Inspector::Review)),
             (Some('g'), true) => return self.update(Msg::Inspector(Inspector::Git)),
-            (Some('d'), true) => return self.update(Msg::Inspector(Inspector::Env)),
             (Some('t'), true) => return self.update(Msg::CycleTheme),
             (Some('j'), true) => return self.cycle_session(1),
             (Some('k'), true) => return self.cycle_session(-1),

@@ -2,13 +2,12 @@
 //!
 //! ```text
 //! ┌ sessions + turns ┬ document (optional) ───────┬ inspector ─────────┐
-//! │                  ├ agent terminal ────────────┤ Review·Git·Env·…   │
+//! │                  ├ agent terminal ────────────┤ Review·Git·Search·Files│
 //! └──────────────────┴────────────────────────────┴────────────────────┘
 //! ```
 
 use crate::app::*;
 use crate::diff::{self, Item, Kind};
-use crate::envfiles::KeyChange;
 use crate::explorer;
 use crate::git::Change;
 use crate::search;
@@ -287,33 +286,23 @@ impl App {
     fn view_inspector(&self) -> Element<'_, Msg> {
         let review_badge = self.session().map(|s| s.changed_files()).filter(|n| *n > 0);
         let git_badge = Some(self.git.staged.len() + self.git.unstaged.len()).filter(|n| *n > 0);
-        let env_badge = Some(
-            self.env
-                .files
-                .iter()
-                .filter(|f| f.risky() || !f.missing.is_empty() || !self.env_changes(f).is_empty())
-                .count(),
-        )
-        .filter(|n| *n > 0);
         let tab = |label: &'static str, which: Inspector, count: Option<usize>| {
             let active = self.inspector == which;
             let mut r = row![text(label).size(UI)].spacing(4).align_y(Alignment::Center);
             if let Some(n) = count {
-                r = r.push(text(n.to_string()).size(10).color(if which == Inspector::Env { p().modified } else { p().accent }));
+                r = r.push(text(n.to_string()).size(10).color(p().accent));
             }
             button(r).padding([6, 9]).style(theme::tab(active)).on_press(Msg::InspectorTab(which))
         };
         let tabs = row![
             tab("Review", Inspector::Review, review_badge),
             tab("Git", Inspector::Git, git_badge),
-            tab(".env", Inspector::Env, env_badge),
             tab("Search", Inspector::Search, None),
             tab("Files", Inspector::Files, None),
         ];
         let body = match self.inspector {
             Inspector::Review => self.view_review(),
             Inspector::Git => self.view_git(),
-            Inspector::Env => self.view_env(),
             Inspector::Search => self.view_search(),
             Inspector::Files => self.view_explorer(),
         };
@@ -518,173 +507,6 @@ impl App {
                         .on_press_maybe(can_commit.then_some(Msg::Commit)),
                 ]
                 .spacing(6)
-            )
-            .padding(10),
-            scrollable(list).height(Length::Fill),
-        ]
-        .into()
-    }
-
-    fn view_env(&self) -> Element<'_, Msg> {
-        let mut list = Column::new().spacing(1);
-        if self.env.files.is_empty() {
-            list = list.push(
-                container(
-                    text(if self.env.loading { "Looking for .env files…" } else { "No .env files in this folder." })
-                        .size(UI)
-                        .color(p().muted),
-                )
-                .padding(12),
-            );
-        }
-        for f in &self.env.files {
-            let changes = self.env_changes(f);
-            let mut header = row![text(f.rel.clone()).size(UI).wrapping(text::Wrapping::None)]
-                .spacing(6)
-                .align_y(Alignment::Center);
-            if f.example {
-                header = header.push(badge("example", p().muted));
-            }
-            if f.tracked && !f.example {
-                header = header.push(badge("tracked by git!", p().deleted));
-            } else if f.risky() {
-                header = header.push(badge("not ignored", p().modified));
-            }
-            if !changes.is_empty() {
-                header = header.push(badge(format!("{} changed", changes.len()), p().modified));
-            }
-            header = header.push(space::horizontal());
-            header = header.push(tip(icon_button("◌", Msg::EnvHideAll(f.path.clone())), "Hide all values"));
-            header = header.push(tip(icon_button("+", Msg::EnvAdd(f.path.clone())), "Add key"));
-            header = header.push(tip(icon_button("↗", Msg::OpenFile(f.path.clone(), None)), "Open in editor (shows values)"));
-            list = list.push(container(header).padding([5, 10]).width(Length::Fill).style(theme::panel(p().section)));
-
-            if !f.missing.is_empty() {
-                list = list.push(
-                    container(
-                        row![
-                            text(format!("Missing vs example: {}", f.missing.join(", ")))
-                                .size(SMALL)
-                                .color(p().deleted)
-                                .width(Length::Fill),
-                            small_button("Tell agent", Some(Msg::EnvSendMissing(f.path.clone()))),
-                        ]
-                        .align_y(Alignment::Center),
-                    )
-                    .padding([3, 10]),
-                );
-            }
-            if !f.duplicates.is_empty() {
-                list = list.push(
-                    container(text(format!("Defined twice: {}", f.duplicates.join(", "))).size(SMALL).color(p().modified))
-                        .padding([3, 10]),
-                );
-            }
-
-            for e in &f.entries {
-                let editing = matches!(&self.env.editing, Some((p, k, _)) if *p == f.path && *k == e.key);
-                let revealed = self.env.revealed.contains(&(f.path.clone(), e.key.clone()));
-                let change = changes.get(&e.key).copied();
-                let key_color = match change {
-                    Some(KeyChange::Added) => p().added,
-                    Some(KeyChange::Changed) => p().modified,
-                    _ => p().fg,
-                };
-                let value: Element<'_, Msg> = if editing {
-                    let buf = self.env.editing.as_ref().map(|(_, _, b)| b.as_str()).unwrap_or("");
-                    row![
-                        text_input("value", buf)
-                            .on_input(Msg::EnvEditInput)
-                            .on_submit(Msg::EnvEditSave)
-                            .secure(!revealed)
-                            .size(12)
-                            .font(theme::mono_font())
-                            .padding(3)
-                            .style(theme::input),
-                        icon_button("✓", Msg::EnvEditSave),
-                        icon_button("×", Msg::EnvEditCancel),
-                    ]
-                    .spacing(2)
-                    .align_y(Alignment::Center)
-                    .into()
-                } else {
-                    let shown = if revealed { e.value.clone() } else { crate::envfiles::mask(&e.value) };
-                    row![
-                        text(shown)
-                            .size(12)
-                            .font(theme::mono_font())
-                            .color(if e.value.is_empty() { p().modified } else { p().muted })
-                            .wrapping(text::Wrapping::None)
-                            .width(Length::Fill),
-                        tip(icon_button(if revealed { "◉" } else { "◎" }, Msg::EnvReveal(f.path.clone(), e.key.clone())), "Reveal"),
-                        tip(icon_button("✎", Msg::EnvEdit(f.path.clone(), e.key.clone())), "Edit"),
-                    ]
-                    .spacing(2)
-                    .align_y(Alignment::Center)
-                    .into()
-                };
-                list = list.push(
-                    container(
-                        column![
-                            row![
-                                text(e.key.clone()).size(12).font(theme::mono_font()).color(key_color),
-                                text(match change {
-                                    Some(KeyChange::Added) => "new",
-                                    Some(KeyChange::Changed) => "changed",
-                                    _ => "",
-                                })
-                                .size(10)
-                                .color(key_color),
-                            ]
-                            .spacing(6),
-                            container(value).clip(true),
-                        ]
-                        .spacing(1),
-                    )
-                    .padding([3, 10]),
-                );
-            }
-            for (k, c) in &changes {
-                if *c == KeyChange::Removed {
-                    list = list.push(
-                        container(text(format!("{k}  removed")).size(12).font(theme::mono_font()).color(p().deleted)).padding([3, 10]),
-                    );
-                }
-            }
-            if let Some((p, buf)) = &self.env.adding
-                && *p == f.path {
-                    list = list.push(
-                        container(
-                            row![
-                                text_input("NEW_KEY=value", buf)
-                                    .on_input(Msg::EnvAddInput)
-                                    .on_submit(Msg::EnvAddSave)
-                                    .size(12)
-                                    .font(theme::mono_font())
-                                    .padding(3)
-                                    .style(theme::input),
-                                icon_button("✓", Msg::EnvAddSave),
-                                icon_button("×", Msg::EnvEditCancel),
-                            ]
-                            .spacing(2)
-                            .align_y(Alignment::Center),
-                        )
-                        .padding([3, 10]),
-                    );
-                }
-            if !changes.is_empty() {
-                list = list.push(
-                    container(small_button("Mark as reviewed", Some(Msg::EnvMarkReviewed(f.path.clone())))).padding([2, 6]),
-                );
-            }
-            list = list.push(space::vertical().height(6));
-        }
-
-        column![
-            container(
-                text("Values stay masked and are never sent to agents. Changes are tracked since you opened mira or last marked a file as reviewed.")
-                    .size(SMALL)
-                    .color(p().muted)
             )
             .padding(10),
             scrollable(list).height(Length::Fill),
@@ -1073,7 +895,7 @@ impl App {
             container(text("Switch theme (Ctrl+Shift+T)").size(12)).padding(6).style(theme::bordered(p().bg)),
             tooltip::Position::Top,
         ));
-        right = right.push(text("Ctrl+Shift+ N new · J/K switch · R review · G git · D env · T theme · M focus").size(SMALL).color(p().line_no));
+        right = right.push(text("Ctrl+Shift+ N new · J/K switch · R review · G git · F search · E files · T theme · M focus").size(SMALL).color(p().line_no));
         container(row![left, space::horizontal(), right].align_y(Alignment::Center))
             .padding([2, 10])
             .width(Length::Fill)
