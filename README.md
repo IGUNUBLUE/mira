@@ -17,6 +17,11 @@ mira is built around that loop: ask → the agent acts → you review, correct, 
 - **Env**: discovers `.env*` files, masks values, compares against `.env.example`,
   shows per-turn key changes and warns when a `.env` is tracked or not ignored.
 - **Source control**: stage / unstage, commit, push, pull, recent history.
+- **Resume where you left off**: closing mira keeps your sessions. Reopening the same
+  folder relaunches each agent on its own conversation (`kiro-cli --resume-id`,
+  `codex resume <id>`, `claude --resume`, `opencode --session`, or "continue last") and
+  restores the turns. Agents started by hand in a shell are adopted too. `mira --fresh`
+  starts clean. State is kept in `~/.local/state/mira/` (mode 0600), never in the project.
 - **Search & replace** (respects `.gitignore`), **explorer** and a syntax-highlighted editor
   whose clean tabs reload when an agent changes the file.
 
@@ -27,8 +32,11 @@ so hooks, signing and credential helpers behave exactly as in your terminal.
 
 ```bash
 cargo build --release
-./target/release/mira [DIRECTORY]
+./target/release/mira [--fresh] [DIRECTORY]
 ```
+
+Fonts default to Inter and JetBrains Mono (medium weight); set `MIRA_FONT` /
+`MIRA_MONO_FONT` to use other installed families.
 
 Linux needs the usual Wayland/X11 and Vulkan or OpenGL libraries. Force the CPU
 renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.

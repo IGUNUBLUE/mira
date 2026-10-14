@@ -25,9 +25,8 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Font, Length, Padding};
 
-const MONO: Font = Font::MONOSPACE;
-const UI: u32 = 13;
-const SMALL: u32 = 11;
+const UI: u32 = 14;
+const SMALL: u32 = 12;
 const MAX_RESULT_LINES: usize = 1_500;
 const LEFT_WIDTH: f32 = 230.0;
 const INSPECTOR_WIDTH: f32 = 380.0;
@@ -41,7 +40,7 @@ fn vrule<'a>() -> Element<'a, Msg> {
 }
 
 fn icon_button<'a>(label: &'a str, msg: Msg) -> Element<'a, Msg> {
-    button(text(label).size(14).font(MONO)).padding([0, 5]).style(theme::flat(false)).on_press(msg).into()
+    button(text(label).size(14).font(theme::mono_font())).padding([0, 5]).style(theme::flat(false)).on_press(msg).into()
 }
 
 fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
@@ -599,7 +598,7 @@ impl App {
                             .on_submit(Msg::EnvEditSave)
                             .secure(!revealed)
                             .size(12)
-                            .font(MONO)
+                            .font(theme::mono_font())
                             .padding(3)
                             .style(theme::input),
                         icon_button("✓", Msg::EnvEditSave),
@@ -613,7 +612,7 @@ impl App {
                     row![
                         text(shown)
                             .size(12)
-                            .font(MONO)
+                            .font(theme::mono_font())
                             .color(if e.value.is_empty() { MODIFIED } else { MUTED })
                             .wrapping(text::Wrapping::None)
                             .width(Length::Fill),
@@ -628,7 +627,7 @@ impl App {
                     container(
                         column![
                             row![
-                                text(e.key.clone()).size(12).font(MONO).color(key_color),
+                                text(e.key.clone()).size(12).font(theme::mono_font()).color(key_color),
                                 text(match change {
                                     Some(KeyChange::Added) => "new",
                                     Some(KeyChange::Changed) => "changed",
@@ -648,7 +647,7 @@ impl App {
             for (k, c) in &changes {
                 if *c == KeyChange::Removed {
                     list = list.push(
-                        container(text(format!("{k}  removed")).size(12).font(MONO).color(DELETED)).padding([3, 10]),
+                        container(text(format!("{k}  removed")).size(12).font(theme::mono_font()).color(DELETED)).padding([3, 10]),
                     );
                 }
             }
@@ -661,7 +660,7 @@ impl App {
                                     .on_input(Msg::EnvAddInput)
                                     .on_submit(Msg::EnvAddSave)
                                     .size(12)
-                                    .font(MONO)
+                                    .font(theme::mono_font())
                                     .padding(3)
                                     .style(theme::input),
                                 icon_button("✓", Msg::EnvAddSave),
@@ -696,7 +695,7 @@ impl App {
     fn view_search(&self) -> Element<'_, Msg> {
         let s = &self.search;
         let toggle = |label: &'static str, on: bool, which: u8| {
-            button(text(label).size(12).font(MONO)).padding([2, 5]).style(theme::flat(on)).on_press(Msg::SearchToggle(which))
+            button(text(label).size(12).font(theme::mono_font())).padding([2, 5]).style(theme::flat(on)).on_press(Msg::SearchToggle(which))
         };
         let inputs = column![
             row![
@@ -907,7 +906,7 @@ impl App {
         let rel = t.path.strip_prefix(&self.root).unwrap_or(&t.path).to_string_lossy().replace('/', " › ");
         let editor = iced::widget::text_editor(&t.content)
             .on_action(Msg::Edit)
-            .font(MONO)
+            .font(theme::mono_font())
             .size(CODE_SIZE)
             .height(Length::Fill)
             .padding(Padding { top: 6.0, right: 12.0, bottom: 6.0, left: 16.0 })
@@ -1065,7 +1064,7 @@ impl App {
         if self.git_busy || self.search.running {
             right = right.push(text("working…").size(12).color(MUTED));
         }
-        right = right.push(text("Ctrl+Shift+ N new · J/K switch · R review · G git · D env · M focus").size(11).color(LINE_NO));
+        right = right.push(text("Ctrl+Shift+ N new · J/K switch · R review · G git · D env · M focus").size(SMALL).color(LINE_NO));
         container(row![left, space::horizontal(), right].align_y(Alignment::Center))
             .padding([2, 10])
             .width(Length::Fill)
@@ -1133,12 +1132,12 @@ fn diff_side(side: &diff::Side) -> Element<'_, Msg> {
         row![
             text(side.number.map(|n| n.to_string()).unwrap_or_default())
                 .size(12)
-                .font(MONO)
+                .font(theme::mono_font())
                 .color(LINE_NO)
                 .width(44)
                 .align_x(iced::alignment::Horizontal::Right),
-            text(marker).size(12).font(MONO).color(LINE_NO).width(14).align_x(iced::alignment::Horizontal::Center),
-            rich_text(spans).size(13).font(MONO).color(FG).width(Length::Fill),
+            text(marker).size(12).font(theme::mono_font()).color(LINE_NO).width(14).align_x(iced::alignment::Horizontal::Center),
+            rich_text(spans).size(13).font(theme::mono_font()).color(FG).width(Length::Fill),
         ]
         .spacing(4),
     )

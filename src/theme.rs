@@ -1,15 +1,16 @@
 //! Colors and widget styles. Default palette: LAGC Tech Light.
 
 use iced::widget::{button, container, text_input};
-use iced::{Background, Border, Color, Theme, color, theme::Palette};
+use iced::font::{Family, Weight};
+use iced::{Background, Border, Color, Font, Theme, color, theme::Palette};
 
 pub const BG: Color = color!(0xEFF6F7);
 pub const SIDEBAR: Color = color!(0xE3EEF1);
 pub const SECTION: Color = color!(0xD4E3E8);
 pub const BORDER: Color = color!(0xB2CBD3);
-pub const FG: Color = color!(0x1C3038);
-pub const MUTED: Color = color!(0x46606D);
-pub const LINE_NO: Color = color!(0x5E707C);
+pub const FG: Color = color!(0x10242C);
+pub const MUTED: Color = color!(0x37505C);
+pub const LINE_NO: Color = color!(0x526571);
 pub const ACCENT: Color = color!(0x12717C);
 pub const SELECTION: Color = color!(0x8CC4CC);
 pub const MODIFIED: Color = color!(0xB0662E);
@@ -21,6 +22,25 @@ pub const INSERT_TEXT: Color = color!(0x12717C, 0.28);
 pub const DELETE_LINE: Color = color!(0xC9614B, 0.13);
 pub const DELETE_TEXT: Color = color!(0xC9614B, 0.28);
 pub const FILLER: Color = color!(0xB2CBD3, 0.25);
+
+/// UI font. Medium weight: the regular cut renders too thin on light themes.
+/// Override the family with `MIRA_FONT`.
+pub fn ui_font() -> Font {
+    font_from_env("MIRA_FONT", "Inter")
+}
+
+/// Code and terminal font. Override with `MIRA_MONO_FONT`.
+pub fn mono_font() -> Font {
+    font_from_env("MIRA_MONO_FONT", "JetBrains Mono")
+}
+
+fn font_from_env(var: &str, default: &'static str) -> Font {
+    let family: &'static str = match std::env::var(var) {
+        Ok(v) if !v.trim().is_empty() => Box::leak(v.trim().to_string().into_boxed_str()),
+        _ => default,
+    };
+    Font { family: Family::Name(family), weight: Weight::Medium, ..Font::DEFAULT }
+}
 
 pub fn theme() -> Theme {
     Theme::custom(

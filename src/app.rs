@@ -9,7 +9,8 @@ use crate::envfiles::{self, EnvFile};
 use crate::explorer::Explorer;
 use crate::git::{self, Change, Snapshot};
 use crate::search::{self, FileMatches, Options};
-use crate::session::{self, Session, Status, Turn};
+use crate::persist;
+use crate::session::{self, Resume, Session, Status, Turn};
 use crate::theme;
 
 use iced::keyboard;
@@ -143,6 +144,11 @@ pub struct App {
     status_at: Instant,
     /// Session id whose close is awaiting a second click.
     pub confirm_close: Option<u64>,
+
+    // persistence
+    state_dirty: bool,
+    discovering: bool,
+    last_discovery: Instant,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -183,6 +189,8 @@ pub enum Msg {
     Comment(String),
     SendComment,
     SendToAgent(String),
+    /// `(session id, agent conversation id, its folder)` found on disk.
+    Discovered(Vec<(u64, String, PathBuf)>),
 
     // documents
     OpenFile(PathBuf, Option<usize>),
@@ -232,6 +240,12 @@ pub enum Msg {
 
 pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     tokio::task::spawn_blocking(f).await.expect("background task panicked")
+}
+
+/// The `Instant` corresponding to wall-clock time `t` (clamped to now).
+fn instant_at(t: SystemTime) -> Instant {
+    let ago = SystemTime::now().duration_since(t).unwrap_or_default();
+    Instant::now().checked_sub(ago).unwrap_or_else(Instant::now)
 }
 
 pub fn file_name(p: &Path) -> String {
@@ -294,7 +308,7 @@ fn notify(summary: &str, body: &str) {
 }
 
 impl App {
-    pub fn new(root: PathBuf) -> (Self, Task<Msg>) {
+    pub fn new(root: PathBuf, fresh: bool) -> (Self, Task<Msg>) {
         let repo_prefix = git::repo_root(&root)
             .and_then(|r| root.strip_prefix(&r).ok().map(|p| p.to_string_lossy().into_owned()))
             .map(|p| if p.is_empty() { p } else { format!("{p}/") })
@@ -331,8 +345,15 @@ impl App {
             status: None,
             status_at: Instant::now(),
             confirm_close: None,
+            state_dirty: false,
+            discovering: false,
+            last_discovery: Instant::now(),
         };
-        let shell = app.new_session(None);
+        let saved = if fresh { None } else { persist::load(&app.root).filter(|s| !s.sessions.is_empty()) };
+        let shell = match saved {
+            Some(state) => app.restore(state),
+            None => app.new_session(None, Resume::New, None),
+        };
         let refresh = app.refresh_git();
         let env = app.load_env();
         (app, Task::batch([shell, refresh, env]))
@@ -381,7 +402,7 @@ impl App {
 
     // ---------------------------------------------------------------- sessions
 
-    fn new_session(&mut self, agent: Option<&'static str>) -> Task<Msg> {
+    fn new_session(&mut self, agent: Option<&'static str>, resume: Resume, cwd: Option<PathBuf>) -> Task<Msg> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let mut env = HashMap::new();
         env.insert("TERM".to_string(), "xterm-256color".to_string());
@@ -395,7 +416,11 @@ impl App {
                 working_directory: Some(self.root.clone()),
             },
             theme: iced_term::settings::ThemeSettings::new(Box::new(theme::terminal_palette())),
-            font: iced_term::settings::FontSettings { size: CODE_SIZE as f32, ..Default::default() },
+            font: iced_term::settings::FontSettings {
+                size: CODE_SIZE as f32,
+                font_type: theme::mono_font(),
+                ..Default::default()
+            },
         };
         let mut term = match iced_term::Terminal::new(self.next_id, settings) {
             Ok(t) => t,
@@ -425,12 +450,15 @@ impl App {
         term.handle(iced_term::Command::AddBindings(bindings));
 
         // Launch the agent as if typed, so the shell stays when it exits.
-        let (name, agent_name) = match agent.and_then(|a| self.presets.iter().find(|(n, _)| *n == a)) {
-            Some((name, bin)) => {
-                term.handle(iced_term::Command::ProxyToBackend(BackendCommand::Write(
-                    format!("{bin}\r").into_bytes(),
-                )));
-                (name.to_string(), Some(*name))
+        let preset = agent.and_then(|a| self.presets.iter().find(|(n, _)| *n == a));
+        let (name, agent_name) = match preset.and_then(|(n, _)| Some((*n, session::launch_command(n, &resume)?))) {
+            Some((name, cmd)) => {
+                let cmd = match cwd.as_deref().filter(|d| *d != self.root && d.is_dir()) {
+                    Some(d) => format!("cd {} && {cmd}", session::shell_quote(&d.to_string_lossy())),
+                    None => cmd,
+                };
+                term.handle(iced_term::Command::ProxyToBackend(BackendCommand::Write(format!("{cmd}\r").into_bytes())));
+                (name.to_string(), Some(name))
             }
             None => ("shell".to_string(), None),
         };
@@ -442,12 +470,145 @@ impl App {
         if agent_name.is_some() {
             s.status = Status::Working;
         }
+        if let Resume::Id(rid) = resume {
+            s.resume_id = Some(rid);
+        }
+        s.cwd = cwd;
+        self.state_dirty = true;
         self.sessions.push(s);
         self.active = self.sessions.len() - 1;
         self.review = ReviewTarget::All;
         self.session_files = None;
         self.show_presets = false;
         Task::batch([focus, self.snapshot(id, vec![SnapshotFor::Base])])
+    }
+
+    /// Reopen the sessions saved for this folder, resuming each agent.
+    fn restore(&mut self, state: persist::State) -> Task<Msg> {
+        let mut tasks = Vec::new();
+        let root = self.repo_root();
+        let n = state.sessions.len();
+        for saved in state.sessions {
+            let agent = saved.agent.as_deref().and_then(|a| self.presets.iter().find(|(n, _)| *n == a)).map(|(n, _)| *n);
+            let resume = match &saved.resume_id {
+                Some(id) if session::valid_id(id) => Resume::Id(id.clone()),
+                _ => Resume::Last,
+            };
+            let before = self.sessions.len();
+            tasks.push(self.new_session(agent, resume, saved.cwd.clone()));
+            if self.sessions.len() == before {
+                continue;
+            }
+            let s = self.sessions.last_mut().expect("just pushed");
+            if agent.is_some() || saved.agent.is_none() {
+                s.name = saved.name;
+            }
+            s.base = saved.base;
+            s.latest = saved.latest;
+            s.started_at = persist::from_unix(saved.started_at);
+            s.turns = saved
+                .turns
+                .into_iter()
+                .map(|t| Turn {
+                    label: t.label,
+                    before: t.before,
+                    after: t.after,
+                    files: None,
+                    started: instant_at(persist::from_unix(t.started_at)),
+                    snapshotting: false,
+                })
+                .collect();
+            let id = s.id;
+            for (i, t) in s.turns.iter().enumerate() {
+                if let (Some(b), Some(a)) = (t.before.clone(), t.after.clone()) {
+                    let root = root.clone();
+                    tasks.push(Task::perform(
+                        blocking(move || git::diff_trees(&root, &b, &a).unwrap_or_default()),
+                        move |files| Msg::TurnFiles(id, i, files),
+                    ));
+                }
+            }
+        }
+        if !self.sessions.is_empty() {
+            self.active = state.active.min(self.sessions.len() - 1);
+            tasks.push(self.focus_terminal());
+            tasks.push(self.load_session_files());
+            self.set_status(format!("Restored {n} session(s) — start fresh with `mira --fresh`"), false);
+        } else {
+            tasks.push(self.new_session(None, Resume::New, None));
+        }
+        Task::batch(tasks)
+    }
+
+    fn save_state(&mut self) {
+        if !self.state_dirty {
+            return;
+        }
+        self.state_dirty = false;
+        let state = persist::State {
+            root: self.root.clone(),
+            active: self.active,
+            sessions: self
+                .sessions
+                .iter()
+                .filter(|s| s.status != Status::Exited)
+                .map(|s| persist::SavedSession {
+                    name: s.name.clone(),
+                    agent: s.agent.map(str::to_string),
+                    resume_id: s.resume_id.clone(),
+                    cwd: s.cwd.clone(),
+                    base: s.base.clone(),
+                    latest: s.latest.clone(),
+                    started_at: persist::unix(s.started_at),
+                    turns: s
+                        .turns
+                        .iter()
+                        .map(|t| persist::SavedTurn {
+                            label: t.label.clone(),
+                            before: t.before.clone(),
+                            after: t.after.clone(),
+                            started_at: persist::unix(SystemTime::now() - t.started.elapsed()),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
+        if let Err(e) = persist::save(&state) {
+            self.set_status(format!("Could not save sessions: {e}"), true);
+        }
+    }
+
+    /// Look up the conversation ids of agents that do not have one yet.
+    fn discover_conversations(&mut self) -> Task<Msg> {
+        if self.discovering || self.last_discovery.elapsed() < Duration::from_secs(6) {
+            return Task::none();
+        }
+        let wanted: Vec<(u64, &'static str, u64)> = self
+            .sessions
+            .iter()
+            .filter(|s| s.resume_id.is_none() && s.status != Status::Exited)
+            .filter_map(|s| Some((s.id, s.agent.filter(|a| persist::discoverable(a))?, persist::unix(s.started_at))))
+            .collect();
+        if wanted.is_empty() {
+            return Task::none();
+        }
+        self.discovering = true;
+        self.last_discovery = Instant::now();
+        let mut claimed: Vec<String> = self.sessions.iter().filter_map(|s| s.resume_id.clone()).collect();
+        let root = self.root.clone();
+        Task::perform(
+            blocking(move || {
+                let mut found = Vec::new();
+                for (id, agent, since) in wanted {
+                    if let Some((conv, cwd)) = persist::find_conversation(agent, &root, since, &claimed) {
+                        claimed.push(conv.clone());
+                        found.push((id, conv, cwd));
+                    }
+                }
+                found
+            }),
+            Msg::Discovered,
+        )
     }
 
     fn cycle_session(&mut self, step: isize) -> Task<Msg> {
@@ -491,9 +652,22 @@ impl App {
     /// The user submitted a line in session `idx`.
     fn on_prompt(&mut self, idx: usize, line: String) -> Task<Msg> {
         let id = self.sessions[idx].id;
+        self.state_dirty = true;
         let s = &mut self.sessions[idx];
         s.status = Status::Working;
         s.last_output = Instant::now();
+
+        // An agent started by hand in a plain shell: adopt it, so it gets
+        // status, notifications and is resumed next time.
+        if s.agent.is_none()
+            && let Some((name, rid)) = session::detect_launch(&line)
+        {
+            s.agent = Some(name);
+            s.name = name.to_string();
+            s.started_at = SystemTime::now();
+            s.resume_id = rid;
+            return Task::none();
+        }
 
         // Short replies ("y", "1") continue the previous turn (approvals, menus).
         if line.chars().count() <= 2
@@ -579,6 +753,7 @@ impl App {
     fn on_snapshot(&mut self, id: u64, purposes: Vec<SnapshotFor>, tree: String) -> Task<Msg> {
         let Some(idx) = self.session_index(id) else { return Task::none() };
         let root = self.repo_root();
+        self.state_dirty = true;
         let s = &mut self.sessions[idx];
         s.latest = Some(tree.clone());
         let mut tasks = Vec::new();
@@ -894,7 +1069,7 @@ impl App {
             Msg::Tick => {
                 self.explorer.refresh();
                 self.reload_changed_files();
-                let mut tasks = vec![self.refresh_git(), self.reload_active_diff()];
+                let mut tasks = vec![self.refresh_git(), self.reload_active_diff(), self.discover_conversations()];
                 if self.show_inspector && self.inspector == Inspector::Env {
                     tasks.push(self.load_env());
                 }
@@ -907,6 +1082,7 @@ impl App {
                     self.confirm_revert = None;
                     self.confirm_close = None;
                 }
+                self.save_state();
                 return self.status_tick();
             }
             Msg::ToggleInspector => {
@@ -922,10 +1098,11 @@ impl App {
             }
 
             Msg::TogglePresets => self.show_presets = !self.show_presets,
-            Msg::NewSession(agent) => return self.new_session(agent),
+            Msg::NewSession(agent) => return self.new_session(agent, Resume::New, None),
             Msg::SelectSession(i) => {
                 if i < self.sessions.len() {
                     self.active = i;
+                    self.state_dirty = true;
                     self.sessions[i].attention = false;
                     self.review = ReviewTarget::All;
                     self.session_files = None;
@@ -946,6 +1123,7 @@ impl App {
                 self.confirm_close = None;
                 if i < self.sessions.len() {
                     self.sessions.remove(i);
+                    self.state_dirty = true;
                     self.active = self.active.min(self.sessions.len().saturating_sub(1));
                     self.session_files = None;
                     return self.load_session_files();
@@ -1037,6 +1215,16 @@ impl App {
                 return self.write_to_session(&format!("En {place} — {comment}"));
             }
             Msg::SendToAgent(text) => return self.write_to_session(&text),
+            Msg::Discovered(found) => {
+                self.discovering = false;
+                for (id, conv, cwd) in found {
+                    if let Some(i) = self.session_index(id) {
+                        self.sessions[i].resume_id = Some(conv);
+                        self.sessions[i].cwd = Some(cwd);
+                        self.state_dirty = true;
+                    }
+                }
+            }
 
             Msg::OpenFile(path, line) => self.open_file(path, line),
             Msg::SelectTab(i) => {

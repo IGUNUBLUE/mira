@@ -6,6 +6,7 @@ mod diff;
 mod explorer;
 mod git;
 mod envfiles;
+mod persist;
 mod search;
 mod session;
 mod theme;
@@ -14,9 +15,15 @@ mod view;
 use std::path::PathBuf;
 
 fn main() -> iced::Result {
-    let arg = std::env::args().nth(1);
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let fresh = args.iter().any(|a| a == "--fresh");
+    args.retain(|a| a != "--fresh");
+    let arg = args.into_iter().next();
     if matches!(arg.as_deref(), Some("-h" | "--help")) {
-        println!("Usage: mira [DIRECTORY]\n\nOpens DIRECTORY (default: current directory) in mira.");
+        println!(
+            "Usage: mira [--fresh] [DIRECTORY]\n\nOpens DIRECTORY (default: current directory) in mira.\n\
+             Agent sessions open there last time are resumed; --fresh starts clean."
+        );
         return Ok(());
     }
     if matches!(arg.as_deref(), Some("-V" | "--version")) {
@@ -34,10 +41,11 @@ fn main() -> iced::Result {
             std::process::exit(2);
         });
 
-    iced::application(move || app::App::new(root.clone()), app::App::update, app::App::view)
+    iced::application(move || app::App::new(root.clone(), fresh), app::App::update, app::App::view)
         .title(app::App::title)
         .subscription(app::App::subscription)
         .theme(|_: &app::App| theme::theme())
+        .default_font(theme::ui_font())
         .window_size((1400.0, 900.0))
         .antialiasing(true)
         .run()
