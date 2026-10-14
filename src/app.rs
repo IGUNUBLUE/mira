@@ -279,9 +279,8 @@ fn load_diff(root: &Path, rel: &str, source: &DiffSource, full: bool) -> FileDif
     let (old, new) = match source {
         DiffSource::Index { staged: true } => (git::show(root, "HEAD", rel), git::show(root, "", rel)),
         DiffSource::Index { staged: false } => {
-            let disk = std::fs::read(root.join(rel))
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-                .unwrap_or_default();
+            let disk =
+                std::fs::read(root.join(rel)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
             (git::show(root, "", rel), disk)
         }
         DiffSource::Trees { from, to, .. } => (git::show(root, from, rel), git::show(root, to, rel)),
@@ -302,8 +301,10 @@ fn center_layout(with_document: bool, ratio: f32) -> pane_grid::State<CenterPane
     }
 }
 
-
-fn swallow(c: &str, m: keyboard::Modifiers) -> (iced_term::bindings::Binding<iced_term::bindings::InputKind>, iced_term::bindings::BindingAction) {
+fn swallow(
+    c: &str,
+    m: keyboard::Modifiers,
+) -> (iced_term::bindings::Binding<iced_term::bindings::InputKind>, iced_term::bindings::BindingAction) {
     (
         iced_term::bindings::Binding {
             target: iced_term::bindings::InputKind::Char(c.to_string()),
@@ -584,7 +585,9 @@ impl App {
         let mut tasks = Vec::new();
         if self.has_repo() {
             let root = self.repo_root();
-            tasks.push(Task::perform(blocking(move || git::snapshot_tree(&root)), move |r| Msg::RunSnapshot(id, after, r)));
+            tasks.push(Task::perform(blocking(move || git::snapshot_tree(&root)), move |r| {
+                Msg::RunSnapshot(id, after, r)
+            }));
         }
         if after
             && let Some(run) = self.runs.get(id)
@@ -724,10 +727,8 @@ impl App {
         };
         if let (Some(line), Tab::File(t)) = (line, &mut self.tabs[idx]) {
             let line = line.min(t.content.line_count().saturating_sub(1));
-            t.content.move_to(text_editor::Cursor {
-                position: text_editor::Position { line, column: 0 },
-                selection: None,
-            });
+            t.content
+                .move_to(text_editor::Cursor { position: text_editor::Position { line, column: 0 }, selection: None });
         }
         self.active_tab = Some(idx);
         self.focus_mode = false;
@@ -735,16 +736,17 @@ impl App {
     }
 
     fn open_diff(&mut self, rel: String, source: DiffSource) -> Task<Msg> {
-        let idx = self
-            .tabs
-            .iter()
-            .position(|t| matches!(t, Tab::Diff(d) if d.rel == rel && d.source == source));
+        let idx = self.tabs.iter().position(|t| matches!(t, Tab::Diff(d) if d.rel == rel && d.source == source));
         let tab = |rel, source| Tab::Diff(DiffTab { rel, source, full: false, diff: None, anchor: None });
         let idx = match idx {
             Some(i) => i,
             // Review diffs share one preview tab instead of piling up.
             None if matches!(source, DiffSource::Trees { .. }) => {
-                match self.tabs.iter().position(|t| matches!(t, Tab::Diff(d) if matches!(d.source, DiffSource::Trees { .. }))) {
+                match self
+                    .tabs
+                    .iter()
+                    .position(|t| matches!(t, Tab::Diff(d) if matches!(d.source, DiffSource::Trees { .. })))
+                {
                     Some(i) => {
                         self.tabs[i] = tab(rel, source);
                         i
@@ -990,7 +992,11 @@ impl App {
                     }
                 };
                 let Some(run) = self.runs.get_mut(id) else { return Task::none() };
-                if after { run.after = Some(tree) } else { run.before = Some(tree) }
+                if after {
+                    run.after = Some(tree)
+                } else {
+                    run.before = Some(tree)
+                }
                 self.state_dirty = true;
                 // The two snapshots race; whichever lands second computes the files.
                 if run.files.is_none() && run.trees().is_some() {
@@ -1122,9 +1128,12 @@ impl App {
             Msg::DiffLoaded(rel, source, full, diff) => {
                 for tab in &mut self.tabs {
                     if let Tab::Diff(d) = tab
-                        && d.rel == rel && d.source == source && d.full == full {
-                            d.diff = Some(diff.clone());
-                        }
+                        && d.rel == rel
+                        && d.source == source
+                        && d.full == full
+                    {
+                        d.diff = Some(diff.clone());
+                    }
                 }
             }
             Msg::DiffFull(full) => {
@@ -1176,8 +1185,7 @@ impl App {
                     if !stage_all.is_empty() {
                         git::stage(r, &stage_all)?;
                     }
-                    git::commit(r, &message)
-                        .map(|out| format!("COMMIT:{}", first_line(&out).unwrap_or("Committed")))
+                    git::commit(r, &message).map(|out| format!("COMMIT:{}", first_line(&out).unwrap_or("Committed")))
                 });
             }
             Msg::GenerateCommit => {
@@ -1294,7 +1302,6 @@ impl App {
                 self.reload_changed_files();
                 return self.run_search();
             }
-
         }
         Task::none()
     }

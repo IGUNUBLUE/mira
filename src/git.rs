@@ -58,10 +58,7 @@ fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 
 fn git_env(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
     let mut cmd = Command::new("git");
-    cmd.args(args)
-        .current_dir(cwd)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0");
+    cmd.args(args).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0");
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -70,28 +67,19 @@ fn git_env(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, St
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if err.is_empty() {
-            format!("git {} failed", args.join(" "))
-        } else {
-            err
-        })
+        Err(if err.is_empty() { format!("git {} failed", args.join(" ")) } else { err })
     }
 }
 
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
-    git(dir, &["rev-parse", "--show-toplevel"])
-        .ok()
-        .map(|s| PathBuf::from(s.trim()))
+    git(dir, &["rev-parse", "--show-toplevel"]).ok().map(|s| PathBuf::from(s.trim()))
 }
 
 pub fn snapshot(dir: &Path) -> Result<Snapshot, String> {
     let Some(root) = repo_root(dir) else {
         return Ok(Snapshot::default());
     };
-    let mut snap = Snapshot {
-        root: Some(root.clone()),
-        ..Default::default()
-    };
+    let mut snap = Snapshot { root: Some(root.clone()), ..Default::default() };
 
     // Scoped to the opened folder: opening a subfolder of a large repo stays fast.
     let status = git(dir, &["status", "--porcelain=v1", "-z", "-uall", "--branch", "--", "."])?;
@@ -133,10 +121,7 @@ pub fn snapshot(dir: &Path) -> Result<Snapshot, String> {
         }
     }
 
-    if let Ok(log) = git(
-        &root,
-        &["log", "-n", "40", "--pretty=format:%h%x1f%s%x1f%an%x1f%ar%x1f%D"],
-    ) {
+    if let Ok(log) = git(&root, &["log", "-n", "40", "--pretty=format:%h%x1f%s%x1f%an%x1f%ar%x1f%D"]) {
         snap.log = log
             .lines()
             .filter_map(|l| {
@@ -156,12 +141,7 @@ pub fn snapshot(dir: &Path) -> Result<Snapshot, String> {
         dir,
         &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--full-name", "-z", "--", "."],
     ) {
-        snap.ignored = ignored
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .take(MAX_CHANGES)
-            .collect();
+        snap.ignored = ignored.split('\0').filter(|s| !s.is_empty()).map(String::from).take(MAX_CHANGES).collect();
     }
 
     Ok(snap)
@@ -239,10 +219,7 @@ pub fn snapshot_tree(root: &Path) -> Result<String, String> {
     let index = std::env::temp_dir().join(format!(
         "mira-index-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
     ));
     // Seeding from the real index lets git reuse cached stat info (fast).
     let _ = std::fs::copy(PathBuf::from(git_dir.trim()).join("index"), &index);
@@ -301,7 +278,6 @@ mod tests {
         assert_eq!(s.branch, "dev");
     }
 }
-
 
 #[cfg(test)]
 mod snapshot_tests {

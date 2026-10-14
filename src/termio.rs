@@ -30,7 +30,13 @@ pub enum Button {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
-    Mouse { button: Button, pressed: bool, line: usize, col: usize, mods: Modifiers },
+    Mouse {
+        button: Button,
+        pressed: bool,
+        line: usize,
+        col: usize,
+        mods: Modifiers,
+    },
     /// Raw bytes to write (Alt+key as `ESC key`).
     Bytes(Vec<u8>),
     /// Clipboard text to paste.
@@ -134,7 +140,13 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for TermInput<'_, Mes
         self.content.as_widget_mut().layout(&mut tree.children[0], renderer, limits)
     }
 
-    fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &iced::Renderer, operation: &mut dyn Operation) {
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
         self.content.as_widget_mut().operate(&mut tree.children[0], layout, renderer, operation);
     }
 

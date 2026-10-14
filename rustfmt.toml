@@ -1,0 +1,3 @@
+# The codebase uses long, flat lines; 120 keeps diffs and views readable.
+max_width = 120
+use_small_heuristics = "Max"

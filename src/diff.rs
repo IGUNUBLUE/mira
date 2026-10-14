@@ -28,7 +28,10 @@ impl Side {
 
 #[derive(Debug, Clone)]
 pub enum Item {
-    Row { left: Side, right: Side },
+    Row {
+        left: Side,
+        right: Side,
+    },
     /// Unchanged lines hidden in hunk mode.
     Gap(usize),
 }
@@ -49,10 +52,8 @@ pub fn compute(old: &str, new: &str, context: Option<usize>) -> FileDiff {
         return FileDiff { binary: true, ..Default::default() };
     }
 
-    let diff = TextDiff::configure()
-        .algorithm(Algorithm::Patience)
-        .timeout(Duration::from_millis(800))
-        .diff_lines(old, new);
+    let diff =
+        TextDiff::configure().algorithm(Algorithm::Patience).timeout(Duration::from_millis(800)).diff_lines(old, new);
     let inline = old.len() + new.len() < MAX_INLINE_BYTES;
 
     let groups = match context {
@@ -75,16 +76,19 @@ pub fn compute(old: &str, new: &str, context: Option<usize>) -> FileDiff {
             let mut dels = Vec::new();
             let mut ins = Vec::new();
 
-            let mut push = |tag: ChangeTag, old_i: Option<usize>, new_i: Option<usize>, segs: Vec<(bool, String)>| {
-                match tag {
+            let mut push =
+                |tag: ChangeTag, old_i: Option<usize>, new_i: Option<usize>, segs: Vec<(bool, String)>| match tag {
                     ChangeTag::Equal => out.items.push(Item::Row {
                         left: Side { number: old_i.map(|i| i + 1), kind: Kind::Equal, segments: segs.clone() },
                         right: Side { number: new_i.map(|i| i + 1), kind: Kind::Equal, segments: segs },
                     }),
-                    ChangeTag::Delete => dels.push(Side { number: old_i.map(|i| i + 1), kind: Kind::Delete, segments: segs }),
-                    ChangeTag::Insert => ins.push(Side { number: new_i.map(|i| i + 1), kind: Kind::Insert, segments: segs }),
-                }
-            };
+                    ChangeTag::Delete => {
+                        dels.push(Side { number: old_i.map(|i| i + 1), kind: Kind::Delete, segments: segs })
+                    }
+                    ChangeTag::Insert => {
+                        ins.push(Side { number: new_i.map(|i| i + 1), kind: Kind::Insert, segments: segs })
+                    }
+                };
 
             if inline {
                 for change in diff.iter_inline_changes(op) {

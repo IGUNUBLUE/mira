@@ -68,8 +68,8 @@ pub const PALETTES: [Palette; 4] = [
         filler: a(color!(0xB2CBD3), 0.25),
         syntax: iced::highlighter::Theme::InspiredGitHub,
         ansi: [
-            "#435763", "#E48458", "#23838C", "#B15837", "#3B6ADF", "#3057B5", "#375967", "#0C1C28",
-            "#5E707C", "#EA9E7B", "#34BFCB", "#CD6C44", "#628AE5", "#81A0EA", "#74D1D9", "#D9ECF0",
+            "#435763", "#E48458", "#23838C", "#B15837", "#3B6ADF", "#3057B5", "#375967", "#0C1C28", "#5E707C",
+            "#EA9E7B", "#34BFCB", "#CD6C44", "#628AE5", "#81A0EA", "#74D1D9", "#D9ECF0",
         ],
     },
     Palette {
@@ -96,8 +96,8 @@ pub const PALETTES: [Palette; 4] = [
         filler: a(color!(0x204756), 0.35),
         syntax: iced::highlighter::Theme::Base16Ocean,
         ansi: [
-            "#122638", "#E48458", "#34BFCB", "#EFB79D", "#628AE5", "#9ADFE4", "#B1C2C9", "#DDEEF2",
-            "#435763", "#EA9E7B", "#74D1D9", "#F6D8CB", "#81A0EA", "#C2D0F5", "#C7F0F3", "#D9ECF0",
+            "#122638", "#E48458", "#34BFCB", "#EFB79D", "#628AE5", "#9ADFE4", "#B1C2C9", "#DDEEF2", "#435763",
+            "#EA9E7B", "#74D1D9", "#F6D8CB", "#81A0EA", "#C2D0F5", "#C7F0F3", "#D9ECF0",
         ],
     },
     Palette {
@@ -124,8 +124,8 @@ pub const PALETTES: [Palette; 4] = [
         filler: a(color!(0xC9BCA6), 0.3),
         syntax: iced::highlighter::Theme::InspiredGitHub,
         ansi: [
-            "#DDD2BE", "#B05A4E", "#5C7040", "#8A5A1E", "#55655E", "#9E5F4A", "#6B8350", "#3A342C",
-            "#8C7D6C", "#C96B5C", "#7F9A5E", "#A06830", "#71807A", "#B07156", "#8FA66B", "#FDF9EF",
+            "#DDD2BE", "#B05A4E", "#5C7040", "#8A5A1E", "#55655E", "#9E5F4A", "#6B8350", "#3A342C", "#8C7D6C",
+            "#C96B5C", "#7F9A5E", "#A06830", "#71807A", "#B07156", "#8FA66B", "#FDF9EF",
         ],
     },
     Palette {
@@ -152,8 +152,8 @@ pub const PALETTES: [Palette; 4] = [
         filler: a(color!(0x4A423B), 0.35),
         syntax: iced::highlighter::Theme::Base16Mocha,
         ansi: [
-            "#352E29", "#D67A6E", "#A9C080", "#D4A55C", "#8FA8A0", "#C98A6B", "#9DB8A0", "#E9DFCE",
-            "#6B5F53", "#E0877B", "#B9CC94", "#E0B876", "#A8BDB0", "#D8A188", "#ADD0B8", "#F4EEE2",
+            "#352E29", "#D67A6E", "#A9C080", "#D4A55C", "#8FA8A0", "#C98A6B", "#9DB8A0", "#E9DFCE", "#6B5F53",
+            "#E0877B", "#B9CC94", "#E0B876", "#A8BDB0", "#D8A188", "#ADD0B8", "#F4EEE2",
         ],
     },
 ];
@@ -221,9 +221,7 @@ fn hyde_theme() -> Option<String> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?
         .join("hyde/staterc");
     let from_file = std::fs::read_to_string(state).ok().and_then(|text| {
-        text.lines()
-            .find_map(|l| l.strip_prefix("HYDE_THEME="))
-            .map(|v| v.trim().trim_matches('"').to_string())
+        text.lines().find_map(|l| l.strip_prefix("HYDE_THEME=")).map(|v| v.trim().trim_matches('"').to_string())
     });
     from_file.or_else(|| std::env::var("HYDE_THEME").ok()).filter(|t| !t.is_empty())
 }
@@ -278,11 +276,7 @@ pub fn status_color(code: char) -> Color {
 }
 
 pub fn panel(bg: Color) -> impl Fn(&Theme) -> container::Style {
-    move |_| container::Style {
-        background: Some(bg.into()),
-        text_color: Some(p().fg),
-        ..Default::default()
-    }
+    move |_| container::Style { background: Some(bg.into()), text_color: Some(p().fg), ..Default::default() }
 }
 
 pub fn bordered(bg: Color) -> impl Fn(&Theme) -> container::Style {
@@ -347,12 +341,7 @@ pub fn primary(_: &Theme, status: button::Status) -> button::Style {
 }
 
 fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
-        b: a.b + (b.b - a.b) * t,
-        a: a.a,
-    }
+    Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a }
 }
 
 pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {

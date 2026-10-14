@@ -49,18 +49,14 @@ impl Explorer {
                 if name == ".git" {
                     return None;
                 }
-                let is_dir = e.file_type().ok()?.is_dir()
-                    || (e.file_type().ok()?.is_symlink() && e.path().is_dir());
+                let is_dir = e.file_type().ok()?.is_dir() || (e.file_type().ok()?.is_symlink() && e.path().is_dir());
                 Some((e.path(), name, is_dir))
             })
             .collect();
         items.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
 
         for (path, name, is_dir) in items {
-            let rel = path
-                .strip_prefix(&self.root)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
+            let rel = path.strip_prefix(&self.root).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
             let expanded = is_dir && self.expanded.contains(&path);
             out.push(Entry { path: path.clone(), rel, name, is_dir, depth });
             if expanded {
@@ -81,8 +77,5 @@ pub fn is_ignored(rel: &str, ignored: &[String]) -> bool {
 /// Aggregate status of a directory from its changed descendants.
 pub fn dir_status(rel: &str, decorations: &std::collections::HashMap<String, char>) -> Option<char> {
     let prefix = format!("{rel}/");
-    decorations
-        .iter()
-        .find(|(p, _)| p.starts_with(&prefix))
-        .map(|(_, c)| *c)
+    decorations.iter().find(|(p, _)| p.starts_with(&prefix)).map(|(_, c)| *c)
 }

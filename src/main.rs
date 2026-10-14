@@ -1,14 +1,14 @@
 //! mira — a lightweight, terminal-first workspace for reviewing and
 //! committing changes made by coding agents.
 
+mod agentlog;
 mod app;
 mod commitgen;
 mod diff;
 mod explorer;
-mod icons;
 mod git;
 mod herdr;
-mod agentlog;
+mod icons;
 mod persist;
 mod runs;
 mod search;

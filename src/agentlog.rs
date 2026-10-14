@@ -129,7 +129,8 @@ fn codex(home: &Path, dir: &Path, started: u64, until: u64) -> Option<String> {
         {
             continue;
         }
-        let text: Vec<&str> = item["content"].as_array().into_iter().flatten().filter_map(|x| x["text"].as_str()).collect();
+        let text: Vec<&str> =
+            item["content"].as_array().into_iter().flatten().filter_map(|x| x["text"].as_str()).collect();
         let text = text.join("\n");
         if !text.trim().is_empty() {
             last = Some(text);
@@ -164,7 +165,11 @@ mod tests {
 
     fn temp_home() -> PathBuf {
         static N: AtomicU32 = AtomicU32::new(0);
-        let d = std::env::temp_dir().join(format!("mira-agentlog-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let d = std::env::temp_dir().join(format!(
+            "mira-agentlog-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("temp home");
         d

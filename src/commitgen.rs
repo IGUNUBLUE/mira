@@ -160,11 +160,8 @@ fn on_path(bin: &str) -> bool {
 
 fn scratch_dir() -> Result<PathBuf, String> {
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "mira-commit-{}-{}",
-        std::process::id(),
-        N.fetch_add(1, Ordering::Relaxed)
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("mira-commit-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }

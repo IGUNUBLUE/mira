@@ -110,7 +110,10 @@ pub enum Error {
     /// The reply was not what the protocol promises.
     Protocol(String),
     /// herdr answered with an error object.
-    Server { code: String, message: String },
+    Server {
+        code: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -170,7 +173,9 @@ pub fn installed() -> bool {
 /// identity to the new client.
 pub fn launch_command(session: Option<&str>) -> (String, Vec<String>) {
     let mut args: Vec<String> = Vec::new();
-    for var in ["HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"] {
+    for var in
+        ["HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_WORKSPACE_ID", "HERDR_TAB_ID", "HERDR_PANE_ID"]
+    {
         args.push("-u".into());
         args.push(var.into());
     }
@@ -298,7 +303,11 @@ pub(crate) mod tests {
 
     pub(crate) fn fake_server(respond: impl Fn(&str, &Value) -> Value + Send + 'static) -> FakeServer {
         static N: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!("mira-herdr-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let dir = std::env::temp_dir().join(format!(
+            "mira-herdr-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let socket = dir.join("herdr.sock");
         let listener = UnixListener::bind(&socket).expect("bind");
@@ -347,7 +356,8 @@ pub(crate) mod tests {
 
     #[test]
     fn server_errors_and_missing_server_are_typed() {
-        let server = fake_server(|_, _| json!({"error": {"code": "pane_not_found", "message": "pane w9:p9 not found"}}));
+        let server =
+            fake_server(|_, _| json!({"error": {"code": "pane_not_found", "message": "pane w9:p9 not found"}}));
         let err = Client::new(server.socket.clone()).focus_pane(&PaneId("w9:p9".into())).unwrap_err();
         assert_eq!(err, Error::Server { code: "pane_not_found".into(), message: "pane w9:p9 not found".into() });
 

@@ -114,7 +114,10 @@ impl Tracker {
     }
 
     pub fn unreviewed(&self) -> usize {
-        self.runs.iter().filter(|r| !r.running() && !r.reviewed && r.files.as_ref().is_none_or(|f| !f.is_empty())).count()
+        self.runs
+            .iter()
+            .filter(|r| !r.running() && !r.reviewed && r.files.as_ref().is_none_or(|f| !f.is_empty()))
+            .count()
     }
 
     /// Feed one poll of herdr's agents (only those in this folder). `now` is
@@ -185,7 +188,8 @@ impl Tracker {
 
     fn trim(&mut self) {
         while self.runs.len() > MAX_RUNS {
-            let victim = self.runs.iter().position(|r| r.reviewed).or_else(|| self.runs.iter().position(|r| !r.running()));
+            let victim =
+                self.runs.iter().position(|r| r.reviewed).or_else(|| self.runs.iter().position(|r| !r.running()));
             match victim {
                 Some(i) => {
                     self.runs.remove(i);
@@ -243,7 +247,10 @@ mod tests {
         let mut t = Tracker::default();
         let both = [seen("w1:p1", Working, None), seen("w1:p2", Idle, None)];
         assert_eq!(t.observe(&both, 1), vec![Effect::Before(RunId(0))]);
-        assert_eq!(t.observe(&[seen("w1:p2", Working, None)], 2), vec![Effect::Before(RunId(1)), Effect::After(RunId(0))]);
+        assert_eq!(
+            t.observe(&[seen("w1:p2", Working, None)], 2),
+            vec![Effect::Before(RunId(1)), Effect::After(RunId(0))]
+        );
         assert!(t.get(RunId(0)).is_some_and(|r| !r.running()));
         assert!(t.get(RunId(1)).is_some_and(Run::running));
     }

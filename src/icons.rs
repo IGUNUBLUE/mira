@@ -14,9 +14,7 @@ static FONT: OnceLock<Option<Font>> = OnceLock::new();
 /// The icon font, if one is installed. Detected once.
 pub fn font() -> Option<Font> {
     *FONT.get_or_init(|| {
-        let name = crate::persist::config_get("icon_font")
-            .filter(|f| !f.trim().is_empty())
-            .or_else(detect)?;
+        let name = crate::persist::config_get("icon_font").filter(|f| !f.trim().is_empty()).or_else(detect)?;
         let name: &'static str = Box::leak(name.into_boxed_str());
         Some(Font::with_name(name))
     })
@@ -140,15 +138,8 @@ impl Icon {
 /// File-type icon and its color (seti-like hues taken from the palette).
 pub fn file_icon(name: &str) -> (char, Color) {
     let c = p();
-    let (blue, green, yellow, orange, red, purple, grey) = (
-        hex(c.ansi[12]),
-        c.added,
-        hex(c.ansi[11]),
-        c.modified,
-        c.deleted,
-        hex(c.ansi[13]),
-        c.muted,
-    );
+    let (blue, green, yellow, orange, red, purple, grey) =
+        (hex(c.ansi[12]), c.added, hex(c.ansi[11]), c.modified, c.deleted, hex(c.ansi[13]), c.muted);
     let lower = name.to_ascii_lowercase();
     let ext = lower.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     let by_name = match lower.as_str() {

@@ -8,7 +8,7 @@ description: Quality gate and Rust conventions for mira. Use before finishing an
 General Rust idioms (ownership, errors, clippy, tests, docs): see the `rust-best-practices` skill. Bugs and test failures: follow `systematic-debugging` (root cause before fixes). This file holds what is specific to mira and wins on conflicts (e.g. no `anyhow`/`thiserror`, no new deps without a reason).
 
 ## Gate (all must pass before reporting a change as done)
-1. `cargo fmt --check` (once rustfmt.toml exists; until then don't reformat unrelated code)
+1. `cargo fmt --check` (rustfmt.toml: max_width 120)
 2. `cargo clippy --all-targets -- -D warnings`
 3. `cargo test`
 4. `cargo build --release` when touching main.rs, Cargo.toml or features
@@ -32,13 +32,6 @@ General Rust idioms (ownership, errors, clippy, tests, docs): see the `rust-best
 - Bug fix = a regression test that fails before the fix.
 - Protocol clients (herdr): decode recorded JSON fixtures, including unknown extra fields and error lines.
 
-## Planned lint table (not enabled yet; enable together with the fixes)
-```toml
-[lints.rust]
-unsafe_code = "deny"   # tests use unsafe set_var; allow locally there
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
-unwrap_used = "warn"
-expect_used = "warn"
-```
+## Lints
+`Cargo.toml [lints]`: `unsafe_code = "forbid"`, clippy `all`, `unwrap_used`/`expect_used` (allowed in tests via
+clippy.toml), `dbg_macro`, `todo`. CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings` and tests.

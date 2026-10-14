@@ -20,6 +20,16 @@ serde_json = "=1.0.154"
 similar = { version = "3.2.0", features = ["std", "text", "inline"] }
 tokio = { version = "1", features = ["rt"] }
 
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

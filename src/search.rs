@@ -37,10 +37,7 @@ pub fn build_regex(query: &str, opts: &Options) -> Result<Regex, String> {
     if opts.whole_word {
         pattern = format!(r"\b(?:{pattern})\b");
     }
-    RegexBuilder::new(&pattern)
-        .case_insensitive(!opts.case_sensitive)
-        .build()
-        .map_err(|e| e.to_string())
+    RegexBuilder::new(&pattern).case_insensitive(!opts.case_sensitive).build().map_err(|e| e.to_string())
 }
 
 fn files(root: &Path) -> impl Iterator<Item = PathBuf> {
@@ -74,11 +71,8 @@ pub fn search(root: &Path, query: &str, opts: &Options) -> Result<(Vec<FileMatch
         }
         let mut lines = Vec::new();
         for (i, line) in content.lines().enumerate() {
-            let ranges: Vec<(usize, usize)> = re
-                .find_iter(line)
-                .filter(|m| m.end() > m.start())
-                .map(|m| (m.start(), m.end()))
-                .collect();
+            let ranges: Vec<(usize, usize)> =
+                re.find_iter(line).filter(|m| m.end() > m.start()).map(|m| (m.start(), m.end())).collect();
             if ranges.is_empty() {
                 continue;
             }

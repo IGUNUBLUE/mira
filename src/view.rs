@@ -10,9 +10,9 @@ use crate::app::*;
 use crate::diff::{self, Item, Kind};
 use crate::explorer;
 use crate::git::Change;
+use crate::herdr::AgentStatus;
 use crate::icons::{self, Icon};
 use crate::search;
-use crate::herdr::AgentStatus;
 use crate::termio;
 use crate::theme::{self, *};
 
@@ -21,8 +21,8 @@ use iced::widget::pane_grid;
 use iced::widget::text::Span;
 use iced::widget::text_editor::{self, Binding};
 use iced::widget::{
-    Column, Stack, button, column, container, mouse_area, pane_grid as grid, rich_text, row,
-    scrollable, space, span, text, text_input, tooltip,
+    Column, Stack, button, column, container, mouse_area, pane_grid as grid, rich_text, row, scrollable, space, span,
+    text, text_input, tooltip,
 };
 use iced::{Alignment, Color, Element, Font, Length, Padding};
 
@@ -62,10 +62,11 @@ fn icon_label<'a>(i: Icon, label: impl text::IntoFragment<'a>, msg: Option<Msg>)
 
 /// Draggable split between a side panel and the center.
 fn divider<'a>(d: Divider, active: bool) -> Element<'a, Msg> {
-    let line = container(space())
-        .width(if active { 2 } else { 1 })
-        .height(Length::Fill)
-        .style(theme::bg(if active { p().accent } else { p().border }));
+    let line = container(space()).width(if active { 2 } else { 1 }).height(Length::Fill).style(theme::bg(if active {
+        p().accent
+    } else {
+        p().border
+    }));
     mouse_area(container(line).width(5).height(Length::Fill).center_x(5))
         .interaction(iced::mouse::Interaction::ResizingHorizontally)
         .on_press(Msg::DividerPress(d))
@@ -171,12 +172,10 @@ impl App {
 
     fn view_terminal(&self) -> Element<'_, Msg> {
         let herdr = self.term_kind == TermKind::Herdr;
-        let mut header = row![
-            ico(Icon::Terminal, 13).color(p().accent),
-            text(if herdr { "herdr" } else { "shell" }).size(UI),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
+        let mut header =
+            row![ico(Icon::Terminal, 13).color(p().accent), text(if herdr { "herdr" } else { "shell" }).size(UI),]
+                .spacing(8)
+                .align_y(Alignment::Center);
         if herdr {
             header = header.push(text("Ctrl+B prefix · Ctrl+B ? help").size(SMALL).color(p().line_no));
         }
@@ -186,7 +185,10 @@ impl App {
         ));
         if !self.focus_mode {
             header = header.push(tip(
-                icon_button(if self.show_inspector { Icon::PanelRight } else { Icon::PanelRightOff }, Msg::ToggleInspector),
+                icon_button(
+                    if self.show_inspector { Icon::PanelRight } else { Icon::PanelRightOff },
+                    Msg::ToggleInspector,
+                ),
                 if self.show_inspector { "Hide panel (Ctrl+Shift+B)" } else { "Show panel (Ctrl+Shift+B)" },
             ));
         }
@@ -258,7 +260,13 @@ impl App {
             .into()
     }
 
-    fn change_button<'a>(&self, c: &'a Change, active: bool, msg: Msg, action: Option<Element<'a, Msg>>) -> Element<'a, Msg> {
+    fn change_button<'a>(
+        &self,
+        c: &'a Change,
+        active: bool,
+        msg: Msg,
+        action: Option<Element<'a, Msg>>,
+    ) -> Element<'a, Msg> {
         let (name, dir) = split_path(&c.path);
         let color = theme::status_color(c.code);
         let mut content = row![
@@ -303,7 +311,8 @@ impl App {
             };
             top = top.push(self.hint(msg));
         } else if self.agents.is_empty() {
-            top = top.push(self.hint("No agent here yet. Start one in herdr (codex, kiro-cli, claude…) in this folder."));
+            top =
+                top.push(self.hint("No agent here yet. Start one in herdr (codex, kiro-cli, claude…) in this folder."));
         }
         for a in &self.agents {
             let (dot, color, label) = agent_style(a.agent_status);
@@ -463,7 +472,9 @@ impl App {
 
     fn view_git(&self) -> Element<'_, Msg> {
         if self.git.root.is_none() {
-            return container(text("This folder is not a git repository.").size(UI).color(p().muted)).padding(12).into();
+            return container(text("This folder is not a git repository.").size(UI).color(p().muted))
+                .padding(12)
+                .into();
         }
         let staged = &self.git.staged;
         let unstaged = &self.git.unstaged;
@@ -480,7 +491,8 @@ impl App {
         let mut list = Column::new().spacing(1);
         if !staged.is_empty() {
             let all: Vec<String> = staged.iter().map(|c| c.path.clone()).collect();
-            list = list.push(section(format!("STAGED  {}", staged.len()), vec![icon_button(Icon::Remove, Msg::Unstage(all))]));
+            list = list
+                .push(section(format!("STAGED  {}", staged.len()), vec![icon_button(Icon::Remove, Msg::Unstage(all))]));
             for c in staged {
                 list = list.push(self.change_button(
                     c,
@@ -505,8 +517,10 @@ impl App {
         }
         if self.git.truncated {
             list = list.push(
-                container(text(format!("Showing first {} changes", crate::git::MAX_CHANGES)).size(SMALL).color(p().modified))
-                    .padding([4, 10]),
+                container(
+                    text(format!("Showing first {} changes", crate::git::MAX_CHANGES)).size(SMALL).color(p().modified),
+                )
+                .padding([4, 10]),
             );
         }
 
@@ -562,7 +576,11 @@ impl App {
                             text_editor::Style {
                                 background: c.bg.into(),
                                 border: iced::Border {
-                                    color: if matches!(status, text_editor::Status::Focused { .. }) { c.accent } else { c.border },
+                                    color: if matches!(status, text_editor::Status::Focused { .. }) {
+                                        c.accent
+                                    } else {
+                                        c.border
+                                    },
                                     width: 1.0,
                                     radius: 4.0.into(),
                                 },
@@ -585,7 +603,7 @@ impl App {
                                 .spacing(6)
                                 .align_y(Alignment::Center),
                             )
-                                .center_x(Length::Fill)
+                            .center_x(Length::Fill)
                         )
                         .width(Length::Fill)
                         .padding(4)
@@ -593,13 +611,17 @@ impl App {
                         .on_press_maybe(can_generate.then_some(Msg::GenerateCommit)),
                     ],
                     button(
-                        container(row![ico(Icon::Check, 14), text(commit_label).size(UI)].spacing(6).align_y(Alignment::Center))
-                            .center_x(Length::Fill),
+                        container(
+                            row![ico(Icon::Check, 14), text(commit_label).size(UI)]
+                                .spacing(6)
+                                .align_y(Alignment::Center)
+                        )
+                        .center_x(Length::Fill),
                     )
-                        .width(Length::Fill)
-                        .padding(5)
-                        .style(theme::primary)
-                        .on_press_maybe(can_commit.then_some(Msg::Commit)),
+                    .width(Length::Fill)
+                    .padding(5)
+                    .style(theme::primary)
+                    .on_press_maybe(can_commit.then_some(Msg::Commit)),
                 ]
                 .spacing(6)
             )
@@ -612,7 +634,10 @@ impl App {
     fn view_search(&self) -> Element<'_, Msg> {
         let s = &self.search;
         let toggle = |label: &'static str, on: bool, which: u8| {
-            button(text(label).size(12).font(theme::mono_font())).padding([2, 5]).style(theme::flat(on)).on_press(Msg::SearchToggle(which))
+            button(text(label).size(12).font(theme::mono_font()))
+                .padding([2, 5])
+                .style(theme::flat(on))
+                .on_press(Msg::SearchToggle(which))
         };
         let inputs = column![
             row![
@@ -675,7 +700,9 @@ impl App {
             );
             for m in &f.lines {
                 if shown >= MAX_RESULT_LINES {
-                    list = list.push(container(text("Too many results to display").size(SMALL).color(p().muted)).padding([4, 10]));
+                    list = list.push(
+                        container(text("Too many results to display").size(SMALL).color(p().muted)).padding([4, 10]),
+                    );
                     break 'files;
                 }
                 shown += 1;
@@ -700,18 +727,18 @@ impl App {
                             .padding(Padding { top: 1.0, right: 4.0, bottom: 1.0, left: 26.0 })
                             .style(theme::flat(false))
                             .on_press(Msg::OpenFile(f.path.clone(), Some(m.line))),
-                        tip(icon_button(Icon::Send, Msg::SendToAgent(format!("{reference} "))), "Send reference to agent"),
+                        tip(
+                            icon_button(Icon::Send, Msg::SendToAgent(format!("{reference} "))),
+                            "Send reference to agent"
+                        ),
                     ]
                     .align_y(Alignment::Center),
                 );
             }
         }
 
-        column![
-            container(column![inputs, summary].spacing(8)).padding(10),
-            scrollable(list).height(Length::Fill),
-        ]
-        .into()
+        column![container(column![inputs, summary].spacing(8)).padding(10), scrollable(list).height(Length::Fill),]
+            .into()
     }
 
     fn view_explorer(&self) -> Element<'_, Msg> {
@@ -737,7 +764,9 @@ impl App {
                 space().width(14).into()
             };
             let kind: Element<'_, Msg> = match (e.is_dir, icons::font()) {
-                (true, _) => ico(if expanded { Icon::FolderOpen } else { Icon::Folder }, 15).color(p().accent).width(18).into(),
+                (true, _) => {
+                    ico(if expanded { Icon::FolderOpen } else { Icon::Folder }, 15).color(p().accent).width(18).into()
+                }
                 (false, Some(f)) => {
                     let (glyph, c) = icons::file_icon(&e.name);
                     let c = if ignored { c.scale_alpha(0.55) } else { c };
@@ -817,7 +846,8 @@ impl App {
             );
         }
         let tab_bar = container(
-            scrollable(tabs).direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(3).scroller_width(3))),
+            scrollable(tabs)
+                .direction(scrollable::Direction::Horizontal(scrollable::Scrollbar::new().width(3).scroller_width(3))),
         )
         .width(Length::Fill)
         .style(theme::panel(p().sidebar));
@@ -899,8 +929,16 @@ impl App {
                 .push(tip(icon_button(Icon::ChevronRight, Msg::ReviewStep(1)), "Next file"));
         }
         header = header
-            .push(icon_label(if d.full { Icon::Fold } else { Icon::Unfold }, if d.full { "Hunks" } else { "Full file" }, Some(Msg::DiffFull(!d.full))))
-            .push(icon_label(Icon::GoToFile, "Open file", path.is_file().then(|| Msg::OpenFile(path.clone(), d.anchor.map(|l| l.saturating_sub(1))))));
+            .push(icon_label(
+                if d.full { Icon::Fold } else { Icon::Unfold },
+                if d.full { "Hunks" } else { "Full file" },
+                Some(Msg::DiffFull(!d.full)),
+            ))
+            .push(icon_label(
+                Icon::GoToFile,
+                "Open file",
+                path.is_file().then(|| Msg::OpenFile(path.clone(), d.anchor.map(|l| l.saturating_sub(1)))),
+            ));
         if let DiffSource::Index { staged } = d.source {
             header = header.push(
                 button(text(if staged { "Unstage" } else { "Stage" }).size(12))
@@ -919,20 +957,27 @@ impl App {
                 for item in &diff.items {
                     rows = rows.push(match item {
                         Item::Gap(n) => Element::from(
-                            button(container(text(format!("⋯ {n} unchanged lines")).size(12).color(p().muted)).center_x(Length::Fill))
-                                .width(Length::Fill)
-                                .padding(2)
-                                .style(|_, s| button::Style {
-                                    background: Some(if matches!(s, button::Status::Hovered) { p().section } else { p().sidebar }.into()),
-                                    text_color: p().muted,
-                                    ..Default::default()
-                                })
-                                .on_press(Msg::DiffFull(true)),
+                            button(
+                                container(text(format!("⋯ {n} unchanged lines")).size(12).color(p().muted))
+                                    .center_x(Length::Fill),
+                            )
+                            .width(Length::Fill)
+                            .padding(2)
+                            .style(|_, s| button::Style {
+                                background: Some(
+                                    if matches!(s, button::Status::Hovered) { p().section } else { p().sidebar }.into(),
+                                ),
+                                text_color: p().muted,
+                                ..Default::default()
+                            })
+                            .on_press(Msg::DiffFull(true)),
                         ),
                         Item::Row { left, right } => diff_row(left, right, d.anchor),
                     });
                 }
-                scrollable(container(rows).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Length::Fill).into()
+                scrollable(container(rows).padding(Padding { right: 12.0, ..Padding::ZERO }))
+                    .height(Length::Fill)
+                    .into()
             }
         };
 
@@ -969,26 +1014,36 @@ impl App {
         let mut left = row![].spacing(14).align_y(Alignment::Center);
         if !self.git.branch.is_empty() {
             left = left.push(
-                button(row![ico(Icon::Branch, 12), text(self.git.branch.clone()).size(12)].spacing(4).align_y(Alignment::Center))
-                    .padding([1, 4])
-                    .style(theme::flat(false))
-                    .on_press(Msg::Inspector(Inspector::Git)),
+                button(
+                    row![ico(Icon::Branch, 12), text(self.git.branch.clone()).size(12)]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                )
+                .padding([1, 4])
+                .style(theme::flat(false))
+                .on_press(Msg::Inspector(Inspector::Git)),
             );
         }
         let working = self.agents.iter().filter(|a| a.agent_status == AgentStatus::Working).count();
         let blocked = self.agents.iter().filter(|a| a.agent_status == AgentStatus::Blocked).count();
         if working > 0 {
             left = left.push(
-                row![ico(Icon::DotFilled, 10).color(p().accent), text(format!("{working} working")).size(12).color(p().accent)]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
+                row![
+                    ico(Icon::DotFilled, 10).color(p().accent),
+                    text(format!("{working} working")).size(12).color(p().accent)
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
             );
         }
         if blocked > 0 {
             left = left.push(
-                row![ico(Icon::Bell, 12).color(p().modified), text(format!("{blocked} need you")).size(12).color(p().modified)]
-                    .spacing(4)
-                    .align_y(Alignment::Center),
+                row![
+                    ico(Icon::Bell, 12).color(p().modified),
+                    text(format!("{blocked} need you")).size(12).color(p().modified)
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center),
             );
         }
         let unreviewed = self.runs.unreviewed();
@@ -1022,11 +1077,18 @@ impl App {
             theme::Choice::Fixed(_) => p().name.to_string(),
         };
         right = right.push(tooltip(
-            button(row![ico(Icon::ColorMode, 12), text(theme_label).size(12)].spacing(4).align_y(Alignment::Center)).padding([1, 4]).style(theme::flat(false)).on_press(Msg::CycleTheme),
+            button(row![ico(Icon::ColorMode, 12), text(theme_label).size(12)].spacing(4).align_y(Alignment::Center))
+                .padding([1, 4])
+                .style(theme::flat(false))
+                .on_press(Msg::CycleTheme),
             container(text("Switch theme (Ctrl+Shift+T)").size(12)).padding(6).style(theme::bordered(p().bg)),
             tooltip::Position::Top,
         ));
-        right = right.push(text("Ctrl+Shift+ R review · G git · F search · E files · B panel · T theme · M focus").size(SMALL).color(p().line_no));
+        right = right.push(
+            text("Ctrl+Shift+ R review · G git · F search · E files · B panel · T theme · M focus")
+                .size(SMALL)
+                .color(p().line_no),
+        );
         container(row![left, space::horizontal(), right].align_y(Alignment::Center))
             .padding([2, 10])
             .width(Length::Fill)
@@ -1066,7 +1128,9 @@ fn diff_row<'a>(left: &'a diff::Side, right: &'a diff::Side, anchor: Option<usiz
     let content = row![diff_side(left), space().width(1), diff_side(right)];
     let stacked = Stack::new().width(Length::Fill).push(content).push_under(backgrounds);
     match line {
-        Some(l) => mouse_area(stacked).on_press(Msg::DiffAnchor(l)).interaction(iced::mouse::Interaction::Pointer).into(),
+        Some(l) => {
+            mouse_area(stacked).on_press(Msg::DiffAnchor(l)).interaction(iced::mouse::Interaction::Pointer).into()
+        }
         None => stacked.into(),
     }
 }
@@ -1098,7 +1162,12 @@ fn diff_side(side: &diff::Side) -> Element<'_, Msg> {
                 .color(p().line_no)
                 .width(44)
                 .align_x(iced::alignment::Horizontal::Right),
-            text(marker).size(12).font(theme::mono_font()).color(p().line_no).width(14).align_x(iced::alignment::Horizontal::Center),
+            text(marker)
+                .size(12)
+                .font(theme::mono_font())
+                .color(p().line_no)
+                .width(14)
+                .align_x(iced::alignment::Horizontal::Center),
             rich_text(spans).size(13).font(theme::mono_font()).color(p().fg).width(Length::Fill),
         ]
         .spacing(4),
