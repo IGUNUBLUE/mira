@@ -52,6 +52,10 @@ impl Run {
         self.finished.is_none()
     }
 
+    pub fn needs_review(&self) -> bool {
+        !self.running() && !self.reviewed && self.files.as_ref().is_some_and(|f| !f.is_empty())
+    }
+
     /// Ready to review: finished with both snapshots.
     pub fn trees(&self) -> Option<(&str, &str)> {
         Some((self.before.as_deref()?, self.after.as_deref()?))
@@ -113,11 +117,9 @@ impl Tracker {
         self.runs.iter_mut().find(|r| r.id == id)
     }
 
+    /// Finished, unreviewed runs that changed files.
     pub fn unreviewed(&self) -> usize {
-        self.runs
-            .iter()
-            .filter(|r| !r.running() && !r.reviewed && r.files.as_ref().is_none_or(|f| !f.is_empty()))
-            .count()
+        self.runs.iter().filter(|r| r.needs_review()).count()
     }
 
     /// Feed one poll of herdr's agents (only those in this folder). `now` is
@@ -134,8 +136,13 @@ impl Tracker {
             let status = if s.status == AgentStatus::Unknown { track.status } else { s.status };
             let seq_moved = matches!((track.seq, s.seq), (Some(a), Some(b)) if a != b);
             let mut open = track.open;
+            // A different agent now sits in this pane (e.g. herdr restarted and
+            // reused the id): whatever was open belonged to the old one.
+            let replaced = open.and_then(|id| self.get(id)).is_some_and(
+                |r| matches!((r.kind.as_deref(), s.kind.as_deref()), (Some(was), Some(now)) if was != now),
+            );
             if let Some(id) = open
-                && (status.ready() || seq_moved)
+                && (status.ready() || seq_moved || replaced)
             {
                 self.close(id, now);
                 effects.push(Effect::After(id));
@@ -263,6 +270,16 @@ mod tests {
         assert_eq!(back.observe(&[seen("w1:p1", Idle, Some(6))], 9), vec![Effect::After(RunId(0))]);
         // New ids continue after the restored ones.
         assert_eq!(back.observe(&[seen("w1:p1", Working, Some(6))], 10), vec![Effect::Before(RunId(1))]);
+    }
+
+    #[test]
+    fn a_different_agent_in_a_restored_pane_closes_the_old_run() {
+        let mut t = Tracker::default();
+        t.observe(&[seen("w1:p1", Working, None)], 1);
+        let mut back = Tracker::from_runs(t.runs.clone());
+        let mut other = seen("w1:p1", Working, None);
+        other.kind = Some("kiro".into());
+        assert_eq!(back.observe(&[other], 5), vec![Effect::After(RunId(0)), Effect::Before(RunId(1))]);
     }
 
     #[test]

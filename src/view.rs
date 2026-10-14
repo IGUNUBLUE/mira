@@ -347,11 +347,12 @@ impl App {
             let selected = self.selected_run == Some(r.id);
             let (state, state_color) = match (&r.files, r.running()) {
                 (_, true) => ("working…".to_string(), p().accent),
+                (None, false) if r.trees().is_none() => ("no snapshot".to_string(), p().muted),
                 (None, false) => ("…".to_string(), p().muted),
                 (Some(f), false) if f.is_empty() => ("no changes".to_string(), p().muted),
                 (Some(f), false) => (format!("{} files", f.len()), if r.reviewed { p().muted } else { p().modified }),
             };
-            let pending = !r.running() && !r.reviewed && r.files.as_ref().is_some_and(|f| !f.is_empty());
+            let pending = r.needs_review();
             let dot = if r.running() {
                 ico(Icon::DotFilled, 10).color(p().accent)
             } else if pending {
@@ -435,7 +436,10 @@ impl App {
         let mut list = Column::new().spacing(1);
         match files {
             _ if run.running() => list = list.push(self.hint("The agent is still working…")),
-            None if run.trees().is_none() && !self.has_repo() => {}
+            None if run.trees().is_none() => {
+                list =
+                    list.push(self.hint("No snapshot of this run (not a git repository, or mira closed meanwhile)."));
+            }
             None => list = list.push(self.hint("Computing changes…")),
             Some(f) if f.is_empty() => list = list.push(self.hint("No file changes.")),
             Some(f) => {

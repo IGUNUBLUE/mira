@@ -46,6 +46,9 @@ pub enum Input {
 #[derive(Default)]
 struct State {
     focused: bool,
+    /// Right/middle button reported as pressed, so its release is reported
+    /// even outside the terminal.
+    held: Option<Button>,
     seen_epoch: u64,
     scroll_pixels: f32,
     modifiers: Modifiers,
@@ -170,28 +173,36 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for TermInput<'_, Mes
         if let Event::Keyboard(keyboard::Event::ModifiersChanged(m)) = event {
             state.modifiers = *m;
         }
-        if let Event::Mouse(mouse::Event::ButtonPressed(_)) = event {
-            // Same rule as the terminal widget: a click inside focuses it.
+        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
+            // Same rule as the terminal and text widgets: a left click moves focus.
             state.focused = cursor.is_over(bounds);
         }
 
         if self.enabled {
             let mut handled = None;
             match event {
-                Event::Mouse(e) if self.cell.is_some() && cursor.is_over(bounds) => {
+                Event::Mouse(e) if self.cell.is_some() => {
+                    let over = cursor.is_over(bounds);
                     let cell = self.cell.unwrap_or(Size::new(1.0, 1.0));
                     let pos = cursor.position().unwrap_or(bounds.position());
                     let (line, col) = grid(bounds, cell, pos);
                     let mods = state.modifiers;
                     let report = |button, pressed| Input::Mouse { button, pressed, line, col, mods };
+                    let button_of = |b: &mouse::Button| match b {
+                        mouse::Button::Right => Some(Button::Right),
+                        mouse::Button::Middle => Some(Button::Middle),
+                        _ => None,
+                    };
                     handled = match e {
-                        mouse::Event::ButtonPressed(mouse::Button::Right) => Some(vec![report(Button::Right, true)]),
-                        mouse::Event::ButtonReleased(mouse::Button::Right) => Some(vec![report(Button::Right, false)]),
-                        mouse::Event::ButtonPressed(mouse::Button::Middle) => Some(vec![report(Button::Middle, true)]),
-                        mouse::Event::ButtonReleased(mouse::Button::Middle) => {
-                            Some(vec![report(Button::Middle, false)])
+                        mouse::Event::ButtonPressed(b) if over => button_of(b).map(|b| {
+                            state.held = Some(b);
+                            vec![report(b, true)]
+                        }),
+                        mouse::Event::ButtonReleased(b) if button_of(b).is_some() && state.held == button_of(b) => {
+                            state.held = None;
+                            button_of(b).map(|b| vec![report(b, false)])
                         }
-                        mouse::Event::WheelScrolled { delta } => {
+                        mouse::Event::WheelScrolled { delta } if over => {
                             let n = wheel_lines(*delta, cell.height, &mut state.scroll_pixels);
                             let button = if n > 0 { Button::WheelUp } else { Button::WheelDown };
                             Some((0..n.unsigned_abs()).map(|_| report(button, true)).collect())

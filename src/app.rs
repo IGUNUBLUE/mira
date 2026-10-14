@@ -18,7 +18,7 @@ use crate::theme;
 use alacritty_terminal::index::{Column, Line, Point as GridPoint};
 use alacritty_terminal::vte::ansi::Rgb;
 use iced::keyboard;
-use iced::widget::pane_grid::{self, Axis, Configuration};
+use iced::widget::pane_grid::{self, Axis};
 use iced::widget::text_editor::{self, Content};
 use iced::{Subscription, Task};
 use iced_term::{AlacrittyEvent, BackendCommand};
@@ -74,7 +74,7 @@ pub enum DiffSource {
     /// `staged`: HEAD ⇄ index, otherwise index ⇄ working tree.
     Index { staged: bool },
     /// Between two snapshot trees (an agent run).
-    Trees { from: String, to: String, label: String },
+    Trees { from: String, to: String, label: String, run: RunId },
 }
 
 pub struct DiffTab {
@@ -128,6 +128,8 @@ pub struct App {
     polling: bool,
     workspace: Option<String>,
     ensuring_workspace: bool,
+    /// Earliest next `ensure_workspace` attempt after a failure.
+    workspace_retry: Instant,
     /// Agents working in this folder, as of the last poll.
     pub agents: Vec<Agent>,
     pub herdr_error: Option<String>,
@@ -288,19 +290,6 @@ fn load_diff(root: &Path, rel: &str, source: &DiffSource, full: bool) -> FileDif
     diff::compute(&old, &new, if full { None } else { Some(3) })
 }
 
-fn center_layout(with_document: bool, ratio: f32) -> pane_grid::State<CenterPane> {
-    if with_document {
-        pane_grid::State::with_configuration(Configuration::Split {
-            axis: Axis::Horizontal,
-            ratio,
-            a: Box::new(Configuration::Pane(CenterPane::Document)),
-            b: Box::new(Configuration::Pane(CenterPane::Terminal)),
-        })
-    } else {
-        pane_grid::State::with_configuration(Configuration::Pane(CenterPane::Terminal))
-    }
-}
-
 fn swallow(
     c: &str,
     m: keyboard::Modifiers,
@@ -345,7 +334,7 @@ impl App {
             theme: theme_choice,
             explorer: Explorer::new(root.clone()),
             root,
-            center: center_layout(false, 0.55),
+            center: pane_grid::State::new(CenterPane::Terminal).0,
             doc_ratio: 0.55,
             show_inspector: true,
             focus_mode: false,
@@ -361,6 +350,7 @@ impl App {
             polling: false,
             workspace: None,
             ensuring_workspace: false,
+            workspace_retry: Instant::now(),
             agents: Vec::new(),
             herdr_error: None,
             runs: Tracker::from_runs(runs),
@@ -564,7 +554,7 @@ impl App {
             self.state_dirty = true;
         }
         let mut tasks: Vec<Task<Msg>> = effects.into_iter().map(|e| self.run_effect(e)).collect();
-        if self.workspace.is_none() && !self.ensuring_workspace {
+        if self.workspace.is_none() && !self.ensuring_workspace && Instant::now() >= self.workspace_retry {
             tasks.push(self.ensure_workspace());
         }
         Task::batch(tasks)
@@ -639,11 +629,11 @@ impl App {
 
     // ------------------------------------------------------------------ review
 
-    /// Trees `(from, to, label)` of the selected run.
-    pub fn review_trees(&self) -> Option<(String, String, String)> {
+    /// Diff source of the selected run.
+    pub fn review_source(&self) -> Option<DiffSource> {
         let run = self.runs.get(self.selected_run?)?;
         let (from, to) = run.trees()?;
-        Some((from.to_string(), to.to_string(), run.agent.clone()))
+        Some(DiffSource::Trees { from: from.to_string(), to: to.to_string(), label: run.agent.clone(), run: run.id })
     }
 
     pub fn review_files(&self) -> Option<&Vec<Change>> {
@@ -656,11 +646,11 @@ impl App {
         files.iter().position(|c| c.path == rel).map(|i| (i, files.len()))
     }
 
-    /// Type `text` into the agent of the selected run (through herdr), or else
-    /// into the terminal, without pressing Enter.
-    fn send_to_agent(&mut self, text: String) -> Task<Msg> {
-        let pane: Option<PaneId> = self
-            .selected_run
+    /// Type `text` without pressing Enter: into the pane of run `target`
+    /// through herdr when that agent is still there, else into the terminal
+    /// (herdr's focused pane) as a paste.
+    fn send_to_agent(&mut self, text: String, target: Option<RunId>) -> Task<Msg> {
+        let pane: Option<PaneId> = target
             .and_then(|id| self.runs.get(id))
             .map(|r| r.pane.clone())
             .filter(|p| self.agents.iter().any(|a| &a.pane_id == p));
@@ -677,8 +667,15 @@ impl App {
                 Task::batch([task, focus])
             }
             _ => {
-                self.term_write(text.into_bytes());
-                self.set_status("Typed into the terminal — review and press Enter", false);
+                let bytes =
+                    if self.term_kind == TermKind::Herdr { termio::bracketed(&text) } else { text.into_bytes() };
+                self.term_write(bytes);
+                let msg = if target.is_some() {
+                    "That agent is gone — typed into the focused pane instead"
+                } else {
+                    "Typed into the focused pane — review and press Enter"
+                };
+                self.set_status(msg, target.is_some());
                 focus
             }
         }
@@ -686,11 +683,23 @@ impl App {
 
     // --------------------------------------------------------------- documents
 
+    /// Add or remove the document pane. The terminal pane is split or
+    /// restored in place, never rebuilt, so its widget state (focus) survives.
     fn sync_center(&mut self) {
         let want_doc = !self.tabs.is_empty() && !self.focus_mode;
-        let has_doc = self.center.iter().any(|(_, k)| *k == CenterPane::Document);
-        if want_doc != has_doc {
-            self.center = center_layout(want_doc, self.doc_ratio);
+        let find = |kind| self.center.iter().find(|(_, k)| **k == kind).map(|(p, _)| *p);
+        match (want_doc, find(CenterPane::Document), find(CenterPane::Terminal)) {
+            (true, None, Some(term)) => {
+                if let Some((doc, split)) = self.center.split(Axis::Horizontal, term, CenterPane::Document) {
+                    // The new pane lands below; documents go on top.
+                    self.center.swap(doc, term);
+                    self.center.resize(split, self.doc_ratio);
+                }
+            }
+            (false, Some(doc), _) => {
+                let _ = self.center.close(doc);
+            }
+            _ => {}
         }
     }
 
@@ -971,8 +980,12 @@ impl App {
                         self.herdr_error = None;
                         return self.on_agents(agents);
                     }
-                    // The client in the terminal is still starting the server.
-                    Err(herdr::Error::NotRunning) => self.herdr_error = None,
+                    // No server: its agents are gone (or the client in the
+                    // terminal is still starting it). Close what was open.
+                    Err(herdr::Error::NotRunning) => {
+                        self.herdr_error = None;
+                        return self.on_agents(Vec::new());
+                    }
                     Err(e) => self.herdr_error = Some(e.to_string()),
                 }
             }
@@ -980,7 +993,10 @@ impl App {
                 self.ensuring_workspace = false;
                 match result {
                     Ok(ws) => self.workspace = Some(ws),
-                    Err(e) => self.set_status(format!("herdr workspace: {e}"), true),
+                    Err(e) => {
+                        self.workspace_retry = Instant::now() + Duration::from_secs(30);
+                        self.set_status(format!("herdr workspace: {e}"), true);
+                    }
                 }
             }
             Msg::RunSnapshot(id, after, result) => {
@@ -1006,9 +1022,6 @@ impl App {
             Msg::RunFiles(id, files) => {
                 if let Some(run) = self.runs.get_mut(id) {
                     run.files = Some(files);
-                }
-                if self.selected_run == Some(id) {
-                    return self.update(Msg::SelectRun(id));
                 }
             }
             Msg::RunPrompt(id, prompt) => {
@@ -1042,8 +1055,8 @@ impl App {
                 self.state_dirty = true;
             }
             Msg::OpenRunDiff(rel) => {
-                if let Some((from, to, label)) = self.review_trees() {
-                    return self.open_diff(rel, DiffSource::Trees { from, to, label });
+                if let Some(source) = self.review_source() {
+                    return self.open_diff(rel, source);
                 }
             }
             Msg::ReviewStep(step) => {
@@ -1065,7 +1078,9 @@ impl App {
                     return Task::none();
                 }
                 self.confirm_revert = None;
-                let (Some((from, _, _)), Some(files)) = (self.review_trees(), self.review_files().cloned()) else {
+                let (Some(DiffSource::Trees { from, .. }), Some(files)) =
+                    (self.review_source(), self.review_files().cloned())
+                else {
                     return Task::none();
                 };
                 if let Some(run) = self.runs.get_mut(id) {
@@ -1099,10 +1114,15 @@ impl App {
                     Some(line) => format!("{}:{line}", d.rel),
                     None => d.rel.clone(),
                 };
+                // A run's diff goes to the agent that made it; others to the focused pane.
+                let target = match &d.source {
+                    DiffSource::Trees { run, .. } => Some(*run),
+                    DiffSource::Index { .. } => None,
+                };
                 self.comment.clear();
-                return self.send_to_agent(format!("En {place} — {comment}"));
+                return self.send_to_agent(format!("En {place} — {comment}"), target);
             }
-            Msg::SendToAgent(text) => return self.send_to_agent(text),
+            Msg::SendToAgent(text) => return self.send_to_agent(text, None),
             Msg::SentToPane(result) => match result {
                 Ok(()) => self.set_status("Sent to the agent — review and press Enter", false),
                 Err(e) => self.set_status(e.to_string(), true),

@@ -46,8 +46,15 @@ pub fn load(root: &Path) -> Option<State> {
 }
 
 fn load_from(path: &Path, root: &Path) -> Option<State> {
-    let state: State = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    (state.root == root).then_some(state)
+    let text = std::fs::read_to_string(path).ok()?;
+    match serde_json::from_str::<State>(&text) {
+        Ok(state) => (state.root == root).then_some(state),
+        Err(_) => {
+            // Keep an unreadable file for inspection instead of overwriting it.
+            let _ = std::fs::rename(path, path.with_extension("json.corrupt"));
+            None
+        }
+    }
 }
 
 pub fn save(state: &State) -> Result<(), String> {
@@ -62,7 +69,7 @@ fn save_to(path: &Path, state: &State) -> Result<(), String> {
     }
     let json = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
     // Write then rename, so a crash never leaves half a file.
-    let tmp = path.with_extension("json.tmp");
+    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -164,6 +171,10 @@ mod tests {
         // A state file from the sessions era loads with no runs.
         std::fs::write(&path, r#"{"root":"/tmp/p","active":0,"sessions":[{"name":"kiro"}]}"#).expect("write");
         assert!(load_from(&path, Path::new("/tmp/p")).expect("old file").runs.is_empty());
+
+        std::fs::write(&path, "{not json").expect("write");
+        assert!(load_from(&path, Path::new("/tmp/p")).is_none());
+        assert!(path.with_extension("json.corrupt").exists(), "corrupt file kept aside");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

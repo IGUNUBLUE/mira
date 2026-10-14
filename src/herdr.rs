@@ -252,7 +252,13 @@ impl Client {
     /// Focus the workspace for `root`, creating it when none has a pane there.
     /// Returns its id.
     pub fn ensure_workspace(&self, root: &Path, label: &str) -> Result<String, Error> {
-        let existing = self.panes()?.into_iter().find(|p| p.cwd.as_deref() == Some(root)).map(|p| p.workspace_id);
+        // A pane in the folder itself, else one below it (the user `cd`ed).
+        let panes = self.panes()?;
+        let existing = panes
+            .iter()
+            .find(|p| p.cwd.as_deref() == Some(root))
+            .or_else(|| panes.iter().find(|p| p.cwd.as_deref().is_some_and(|c| c.starts_with(root))))
+            .map(|p| p.workspace_id.clone());
         match existing {
             Some(ws) => {
                 self.call("workspace.focus", json!({ "workspace_id": ws }))?;
