@@ -220,6 +220,9 @@ pub enum Msg {
     SendToAgent(String),
     /// Text typed into an agent's pane through herdr.
     SentToPane(Result<(), herdr::Error>),
+    /// Show this agent's pane in herdr (switching workspace if needed).
+    FocusAgent(PaneId),
+    AgentFocused(Result<(), herdr::Error>),
 
     // documents
     OpenFile(PathBuf, Option<usize>),
@@ -1166,6 +1169,17 @@ impl App {
                 return self.send_to_agent(format!("En {place} — {comment}"), target);
             }
             Msg::SendToAgent(text) => return self.send_to_agent(text, None),
+            Msg::FocusAgent(pane) => {
+                let focus = self.focus_terminal();
+                let Some(client) = self.herdr.clone() else { return focus };
+                let task = Task::perform(blocking(move || client.focus_pane(&pane)), Msg::AgentFocused);
+                return Task::batch([task, focus]);
+            }
+            Msg::AgentFocused(result) => {
+                if let Err(e) = result {
+                    self.set_status(e.to_string(), true);
+                }
+            }
             Msg::SentToPane(result) => match result {
                 Ok(()) => self.set_status("Sent to the agent — review and press Enter", false),
                 Err(e) => self.set_status(e.to_string(), true),

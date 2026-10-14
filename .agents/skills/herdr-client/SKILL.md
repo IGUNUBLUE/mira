@@ -7,6 +7,14 @@ description: Facts for building mira's client of the herdr socket API (paths, ND
 
 Docs index: https://herdr.dev/llms.txt. Raw pages: https://raw.githubusercontent.com/herdrdev/herdr/v0.9.5/docs/next/website/src/content/docs/<page>.mdx (socket-api, session-state, concepts, agents, keyboard, configuration). Schema: `herdr api schema --json` (static, safe). Never run bare `herdr` from scripts (it launches the TUI); never stop the user's server.
 
+## Safety (learned the hard way)
+- Inside a herdr pane, `HERDR_SOCKET_PATH` points at the user's real server and **wins over `--session` and
+  `XDG_CONFIG_HOME`**. A `herdr session stop <test>` or `herdr server stop` run from there stops the user's
+  server and kills every pane and agent. For any test session run herdr through
+  `env -u HERDR_ENV -u HERDR_SOCKET_PATH -u HERDR_SESSION -u HERDR_PANE_ID -u HERDR_WORKSPACE_ID -u HERDR_TAB_ID`,
+  and never run stop/delete commands without it.
+- Verified: closing mira (SIGTERM or closing the window) leaves the herdr server and its agents running.
+
 ## Facts
 - herdr is a Rust binary only (no lib crate). Integrate as a program in the terminal + a hand-written socket client.
 - Socket: `~/.config/herdr/herdr.sock` (default session), `~/.config/herdr/sessions/<name>/herdr.sock` (named). Resolution: `--session`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`, default. Owner-only. A stale file can exist: connection refused = not running.

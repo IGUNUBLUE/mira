@@ -114,6 +114,16 @@ fn split_path(p: &str) -> (&str, &str) {
     }
 }
 
+fn agent_style(status: AgentStatus) -> (Color, &'static str) {
+    match status {
+        AgentStatus::Working => (p().accent, "working"),
+        AgentStatus::Blocked => (p().modified, "needs you"),
+        AgentStatus::Done => (p().added, "done"),
+        AgentStatus::Idle => (p().line_no, "idle"),
+        AgentStatus::Unknown => (p().border, "unknown"),
+    }
+}
+
 /// `now - then` (unix seconds) as `12s`, `5m`, `3h`, `2d`.
 fn ago(then: u64) -> String {
     let s = crate::persist::now().saturating_sub(then);
@@ -159,7 +169,25 @@ impl App {
                 .spacing(8)
                 .align_y(Alignment::Center);
         if herdr {
-            header = header.push(text("Ctrl+B prefix · Ctrl+B ? help").size(SMALL).color(p().line_no));
+            if let Some(e) = &self.herdr_error {
+                header = header.push(text(e.clone()).size(SMALL).color(p().deleted).wrapping(text::Wrapping::None));
+            } else if self.agents.is_empty() {
+                header = header.push(text("Ctrl+B ? for herdr keys").size(SMALL).color(p().line_no));
+            }
+            // Agents working in this folder; click to jump to their pane.
+            for a in &self.agents {
+                let (color, label) = agent_style(a.agent_status);
+                let chip = row![ico(Icon::DotFilled, 9).color(color), text(a.label()).size(SMALL)]
+                    .spacing(4)
+                    .align_y(Alignment::Center);
+                header = header.push(tooltip(
+                    button(chip).padding([1, 6]).style(theme::flat(false)).on_press(Msg::FocusAgent(a.pane_id.clone())),
+                    container(text(format!("{label} · {} — click to show its pane", a.pane_id)).size(12))
+                        .padding(6)
+                        .style(theme::bordered(p().bg)),
+                    tooltip::Position::Bottom,
+                ));
+            }
         }
         header = header.push(space::horizontal()).push(tip(
             icon_button(if self.focus_mode { Icon::ScreenNormal } else { Icon::ScreenFull }, Msg::FocusMode),
@@ -516,6 +544,10 @@ impl App {
             ]
             .spacing(4)
             .align_y(Alignment::Center);
+            if selected && self.agents.iter().any(|a| a.pane_id == r.pane) {
+                header =
+                    header.push(tip(icon_button(Icon::Terminal, Msg::FocusAgent(r.pane.clone())), "Show this agent"));
+            }
             if selected && !working {
                 let confirming = self.confirm_revert == Some(r.id);
                 header =
@@ -964,14 +996,19 @@ impl App {
                 .align_y(Alignment::Center),
             );
         }
-        if blocked > 0 {
+        if let Some(first) = self.agents.iter().find(|a| a.agent_status == AgentStatus::Blocked) {
             left = left.push(
-                row![
-                    ico(Icon::Bell, 12).color(p().modified),
-                    text(format!("{blocked} need you")).size(12).color(p().modified)
-                ]
-                .spacing(4)
-                .align_y(Alignment::Center),
+                button(
+                    row![
+                        ico(Icon::Bell, 12).color(p().modified),
+                        text(format!("{blocked} need you")).size(12).color(p().modified)
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+                )
+                .padding([1, 4])
+                .style(theme::flat(false))
+                .on_press(Msg::FocusAgent(first.pane_id.clone())),
             );
         }
         let fresh = self.runs.new_files();

@@ -59,6 +59,10 @@ sits around that loop: review what the agents changed, edit, search, commit.
 
 ## Gotchas
 
+- Never stop, restart or delete the user's herdr server or sessions. Run every herdr command meant for a test
+  session with `HERDR_*` unset (see the `herdr-client` skill): inside a pane `HERDR_SOCKET_PATH` overrides
+  `--session` and `XDG_CONFIG_HOME`.
+
 - iced_term 0.8 sends PTY events with `blocking_send` into a channel of 100 while holding the terminal lock.
   Calling `Terminal::handle` during an event burst deadlocks the UI (herdr asks for 256 colors at startup).
   Never call `handle` directly: use `App::term_send` / `term_write`, which go through `termio::Gate`.

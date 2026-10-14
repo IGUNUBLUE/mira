@@ -2,6 +2,9 @@
 
 A lightweight, terminal-first workspace for agent-driven development, written in Rust.
 
+*Mira* is Spanish for “look!”, which is what it is for: see what your agents did. (In Latin it
+means “wonderful”, as in the star Mira.)
+
 You talk to your coding agents (codex, kiro-cli, claude, …) in a terminal; mira is built
 around that loop: ask → the agent acts → you review, correct, accept.
 
@@ -9,6 +12,8 @@ around that loop: ask → the agent acts → you review, correct, accept.
   workspace for coding agents: workspaces, tabs, panes, agent status, and agents that keep
   running when mira closes. mira opens (or creates) the herdr workspace for its folder.
   Without herdr installed it falls back to your shell.
+  The terminal header lists the agents working in this folder with their status; click one to
+  jump to its pane (across workspaces). The status bar's “need you” jumps to the blocked agent.
 - **Changes, with authors.** The Changes panel is your git working tree (stage, commit,
   push), and each file says which agent changed it and when (`kiro · 2m`, hover for what you
   asked). mira asks herdr which agents work in this folder and snapshots the working tree
