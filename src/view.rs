@@ -114,16 +114,6 @@ fn split_path(p: &str) -> (&str, &str) {
     }
 }
 
-fn agent_style(status: AgentStatus) -> (Icon, Color, &'static str) {
-    match status {
-        AgentStatus::Working => (Icon::DotFilled, p().accent, "working"),
-        AgentStatus::Blocked => (Icon::Attention, p().modified, "needs you"),
-        AgentStatus::Done => (Icon::DotOutline, p().added, "done"),
-        AgentStatus::Idle => (Icon::DotOutline, p().muted, "idle"),
-        AgentStatus::Unknown => (Icon::DotOutline, p().line_no, "…"),
-    }
-}
-
 /// `now - then` (unix seconds) as `12s`, `5m`, `3h`, `2d`.
 fn ago(then: u64) -> String {
     let s = crate::persist::now().saturating_sub(then);
@@ -132,14 +122,6 @@ fn ago(then: u64) -> String {
         60..=3599 => format!("{}m", s / 60),
         3600..=86_399 => format!("{}h", s / 3600),
         _ => format!("{}d", s / 86_400),
-    }
-}
-
-fn duration(secs: u64) -> String {
-    match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m {}s", secs / 60, secs % 60),
-        _ => format!("{}h {}m", secs / 3600, (secs % 3600) / 60),
     }
 }
 
@@ -230,26 +212,27 @@ impl App {
     // ------------------------------------------------------------ inspector
 
     fn view_inspector(&self) -> Element<'_, Msg> {
-        let review_badge = Some(self.runs.unreviewed()).filter(|n| *n > 0);
-        let git_badge = Some(self.git.staged.len() + self.git.unstaged.len()).filter(|n| *n > 0);
-        let tab = |i: Icon, label: &'static str, which: Inspector, count: Option<usize>| {
+        let changes = Some(self.git.staged.len() + self.git.unstaged.len()).filter(|n| *n > 0);
+        let fresh = self.runs.new_files() > 0;
+        let tab = |i: Icon, label: &'static str, which: Inspector, count: Option<usize>, alert: bool| {
             let active = self.inspector == which;
             let color = if active { p().accent } else { p().muted };
             let mut r = row![ico(i, 14).color(color), text(label).size(UI)].spacing(6).align_y(Alignment::Center);
             if let Some(n) = count {
-                r = r.push(text(n.to_string()).size(10).color(p().accent));
+                r = r.push(text(n.to_string()).size(10).color(if alert { p().modified } else { p().accent }));
+            }
+            if alert {
+                r = r.push(ico(Icon::DotFilled, 8).color(p().modified));
             }
             button(r).padding([6, 9]).style(theme::tab(active)).on_press(Msg::InspectorTab(which))
         };
         let tabs = row![
-            tab(Icon::Diff, "Review", Inspector::Review, review_badge),
-            tab(Icon::SourceControl, "Git", Inspector::Git, git_badge),
-            tab(Icon::Search, "Search", Inspector::Search, None),
-            tab(Icon::Files, "Files", Inspector::Files, None),
+            tab(Icon::SourceControl, "Changes", Inspector::Changes, changes, fresh),
+            tab(Icon::Search, "Search", Inspector::Search, None, false),
+            tab(Icon::Files, "Files", Inspector::Files, None, false),
         ];
         let body = match self.inspector {
-            Inspector::Review => self.view_review(),
-            Inspector::Git => self.view_git(),
+            Inspector::Changes => self.view_git(),
             Inspector::Search => self.view_search(),
             Inspector::Files => self.view_explorer(),
         };
@@ -260,16 +243,20 @@ impl App {
             .into()
     }
 
+    /// One changed file. `origin`: show which agent run last changed it.
     fn change_button<'a>(
         &self,
         c: &'a Change,
         active: bool,
         msg: Msg,
         action: Option<Element<'a, Msg>>,
+        origin: bool,
     ) -> Element<'a, Msg> {
         let (name, dir) = split_path(&c.path);
         let color = theme::status_color(c.code);
+        let new = self.runs.is_new(&c.path);
         let mut content = row![
+            if new { ico(Icon::DotFilled, 8).color(p().modified) } else { text("") }.width(10),
             container(
                 row![
                     text(name).size(UI).color(color).wrapping(text::Wrapping::None),
@@ -283,195 +270,27 @@ impl App {
         ]
         .align_y(Alignment::Center)
         .spacing(4);
+        if origin && let Some(run) = self.runs.origin(&c.path) {
+            let label = format!("{} · {}", run.agent, ago(run.finished.unwrap_or(run.started)));
+            let tip_text = run.prompt.clone().unwrap_or_else(|| format!("Changed by {}", run.agent));
+            content = content.push(tooltip(
+                text(label)
+                    .size(SMALL)
+                    .color(if new { p().modified } else { p().line_no })
+                    .wrapping(text::Wrapping::None),
+                container(text(tip_text).size(12)).padding(6).max_width(320).style(theme::bordered(p().bg)),
+                tooltip::Position::Left,
+            ));
+        }
         if let Some(a) = action {
             content = content.push(a);
         }
         content = content.push(text(c.code.to_string()).size(SMALL).color(color).width(12));
-        button(content).width(Length::Fill).padding([2, 10]).style(theme::flat(active)).on_press(msg).into()
+        button(content).width(Length::Fill).padding([2, 6]).style(theme::flat(active)).on_press(msg).into()
     }
 
     fn hint<'a>(&self, msg: &'a str) -> Element<'a, Msg> {
         container(text(msg).size(SMALL).color(p().muted)).padding([8, 10]).into()
-    }
-
-    fn view_review(&self) -> Element<'_, Msg> {
-        let mut top = Column::new().spacing(1);
-
-        // Agents working in this folder right now.
-        let unreviewed = self.runs.unreviewed();
-        let mut actions: Vec<Element<'_, Msg>> = Vec::new();
-        if unreviewed > 0 {
-            actions.push(tip(icon_button(Icon::Check, Msg::MarkAllReviewed), "Mark all reviewed"));
-        }
-        top = top.push(section(format!("AGENTS IN {}", file_name(&self.root).to_uppercase()), vec![]));
-        if self.herdr_error.is_some() || self.term_kind == TermKind::Shell {
-            let msg = match &self.herdr_error {
-                Some(e) => e.as_str(),
-                None => "Agent tracking needs herdr. mira is running a plain shell.",
-            };
-            top = top.push(self.hint(msg));
-        } else if self.agents.is_empty() {
-            top =
-                top.push(self.hint("No agent here yet. Start one in herdr (codex, kiro-cli, claude…) in this folder."));
-        }
-        for a in &self.agents {
-            let (dot, color, label) = agent_style(a.agent_status);
-            top = top.push(
-                container(
-                    row![
-                        ico(dot, 13).color(color).width(16),
-                        text(a.label()).size(UI),
-                        text(label).size(SMALL).color(color),
-                        space::horizontal(),
-                        text(a.pane_id.to_string()).size(SMALL).color(p().line_no),
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center),
-                )
-                .padding([3, 10]),
-            );
-        }
-
-        // Runs, newest first.
-        top = top.push(space::vertical().height(4)).push(section(
-            if unreviewed > 0 { format!("RUNS · {unreviewed} TO REVIEW") } else { "RUNS".into() },
-            actions,
-        ));
-        if !self.has_repo() {
-            top = top.push(self.hint("Runs need a git repository to show what changed."));
-        } else if self.runs.runs.is_empty() {
-            top = top.push(self.hint("Each time an agent here finishes working, its changes show up here."));
-        }
-        let mut list = Column::new().spacing(1);
-        for r in self.runs.runs.iter().rev() {
-            let selected = self.selected_run == Some(r.id);
-            let (state, state_color) = match (&r.files, r.running()) {
-                (_, true) => ("working…".to_string(), p().accent),
-                (None, false) if r.trees().is_none() => ("no snapshot".to_string(), p().muted),
-                (None, false) => ("…".to_string(), p().muted),
-                (Some(f), false) if f.is_empty() => ("no changes".to_string(), p().muted),
-                (Some(f), false) => (format!("{} files", f.len()), if r.reviewed { p().muted } else { p().modified }),
-            };
-            let pending = r.needs_review();
-            let dot = if r.running() {
-                ico(Icon::DotFilled, 10).color(p().accent)
-            } else if pending {
-                ico(Icon::DotFilled, 10).color(p().modified)
-            } else {
-                ico(Icon::DotOutline, 10).color(p().line_no)
-            };
-            let title = r.prompt.clone().unwrap_or_else(|| format!("{} run", r.agent));
-            let title_color = if r.reviewed { p().muted } else { p().fg };
-            list = list.push(
-                button(
-                    row![
-                        dot.width(14),
-                        column![
-                            text(title).size(UI).color(title_color).wrapping(text::Wrapping::WordOrGlyph),
-                            row![
-                                text(r.agent.clone()).size(SMALL).color(p().accent),
-                                text(state).size(SMALL).color(state_color),
-                                space::horizontal(),
-                                text(ago(r.finished.unwrap_or(r.started))).size(SMALL).color(p().line_no),
-                            ]
-                            .spacing(8),
-                        ]
-                        .spacing(2),
-                    ]
-                    .spacing(4),
-                )
-                .width(Length::Fill)
-                .padding([5, 10])
-                .style(theme::flat(selected))
-                .on_press(Msg::SelectRun(r.id)),
-            );
-        }
-
-        column![
-            scrollable(top).height(Length::Shrink),
-            scrollable(list).height(Length::FillPortion(2)),
-            hrule(),
-            container(self.view_run_detail()).height(Length::FillPortion(3)),
-        ]
-        .into()
-    }
-
-    fn view_run_detail(&self) -> Element<'_, Msg> {
-        let Some(run) = self.selected_run.and_then(|id| self.runs.get(id)) else {
-            return self.hint("Select a run to see what it changed. Click a line in the diff to comment; the note goes to that agent.");
-        };
-        let took = run.finished.map(|f| duration(f.saturating_sub(run.started)));
-        let subtitle = match took {
-            Some(t) => format!("{} · {} ago · took {t}", run.agent, ago(run.started)),
-            None => format!("{} · started {} ago · working", run.agent, ago(run.started)),
-        };
-        let files = self.review_files();
-        let has_files = files.is_some_and(|f| !f.is_empty()) && !run.running();
-        let confirming = self.confirm_revert == Some(run.id);
-        let actions = row![
-            button(
-                row![ico(Icon::Discard, 13), text(if confirming { "Confirm revert" } else { "Revert" }).size(12)]
-                    .spacing(5)
-                    .align_y(Alignment::Center)
-            )
-            .padding([3, 10])
-            .style(if confirming { theme::danger } else { theme::flat_fn })
-            .on_press_maybe(has_files.then_some(Msg::RevertRun)),
-            button(row![ico(Icon::Add, 13), text("Stage").size(12)].spacing(5).align_y(Alignment::Center))
-                .padding([3, 10])
-                .style(theme::flat(false))
-                .on_press_maybe(has_files.then_some(Msg::StageRun)),
-            space::horizontal(),
-            button(
-                row![ico(Icon::Check, 13), text(if run.reviewed { "Reviewed" } else { "Mark reviewed" }).size(12)]
-                    .spacing(5)
-                    .align_y(Alignment::Center)
-            )
-            .padding([3, 10])
-            .style(if run.reviewed { theme::flat_fn } else { theme::primary })
-            .on_press_maybe((!run.running()).then_some(Msg::MarkReviewed(run.id))),
-        ]
-        .spacing(6);
-
-        let mut list = Column::new().spacing(1);
-        match files {
-            _ if run.running() => list = list.push(self.hint("The agent is still working…")),
-            None if run.trees().is_none() => {
-                list =
-                    list.push(self.hint("No snapshot of this run (not a git repository, or mira closed meanwhile)."));
-            }
-            None => list = list.push(self.hint("Computing changes…")),
-            Some(f) if f.is_empty() => list = list.push(self.hint("No file changes.")),
-            Some(f) => {
-                let open_rel = match self.active_tab.and_then(|i| self.tabs.get(i)) {
-                    Some(Tab::Diff(d)) if matches!(d.source, DiffSource::Trees { .. }) => Some(d.rel.as_str()),
-                    _ => None,
-                };
-                for c in f {
-                    list = list.push(self.change_button(
-                        c,
-                        open_rel == Some(c.path.as_str()),
-                        Msg::OpenRunDiff(c.path.clone()),
-                        None,
-                    ));
-                }
-            }
-        }
-        column![
-            container(
-                column![
-                    text(run.prompt.clone().unwrap_or_else(|| format!("{} run", run.agent)))
-                        .size(14)
-                        .wrapping(text::Wrapping::WordOrGlyph),
-                    text(subtitle).size(SMALL).color(p().muted),
-                    actions,
-                ]
-                .spacing(6)
-            )
-            .padding(10),
-            scrollable(list).height(Length::Fill),
-        ]
-        .into()
     }
 
     fn view_git(&self) -> Element<'_, Msg> {
@@ -503,6 +322,7 @@ impl App {
                     open == Some((c.path.as_str(), true)),
                     Msg::OpenDiff(c.path.clone(), true),
                     Some(icon_button(Icon::Remove, Msg::Unstage(vec![c.path.clone()]))),
+                    true,
                 ));
             }
         }
@@ -517,6 +337,7 @@ impl App {
                 open == Some((c.path.as_str(), false)),
                 Msg::OpenDiff(c.path.clone(), false),
                 Some(icon_button(Icon::Add, Msg::Stage(vec![c.path.clone()]))),
+                true,
             ));
         }
         if self.git.truncated {
@@ -630,9 +451,110 @@ impl App {
                 .spacing(6)
             )
             .padding(10),
-            scrollable(list).height(Length::Fill),
+            self.view_changes_toolbar(),
+            hrule(),
+            scrollable(if self.group_by_run { self.view_runs() } else { list }).height(Length::Fill),
         ]
         .into()
+    }
+
+    /// `Files | By agent run` switch and "mark all seen".
+    fn view_changes_toolbar(&self) -> Element<'_, Msg> {
+        let seg = |label: &'static str, on: bool, msg: Msg| {
+            button(text(label).size(12)).padding([2, 10]).style(theme::flat(on)).on_press(msg)
+        };
+        let mut bar = row![
+            seg("Files", !self.group_by_run, Msg::GroupByRun(false)),
+            seg("By agent run", self.group_by_run, Msg::GroupByRun(true)),
+            space::horizontal(),
+        ]
+        .spacing(2)
+        .align_y(Alignment::Center);
+        let fresh = self.runs.new_files();
+        if fresh > 0 {
+            bar = bar
+                .push(text(format!("{fresh} new")).size(SMALL).color(p().modified))
+                .push(tip(icon_button(Icon::Check, Msg::MarkAllSeen), "Mark all as seen"));
+        }
+        container(bar.spacing(6)).padding([4, 10]).width(Length::Fill).into()
+    }
+
+    /// Agent runs that changed files, newest first, each with its files.
+    fn view_runs(&self) -> Column<'_, Msg> {
+        let mut list = Column::new().spacing(1);
+        let open = match self.active_tab.and_then(|i| self.tabs.get(i)) {
+            Some(Tab::Diff(DiffTab { rel, source: DiffSource::Trees { run, .. }, .. })) => Some((*run, rel.as_str())),
+            _ => None,
+        };
+        let mut any = false;
+        for r in self.runs.runs.iter().rev() {
+            let working = r.running();
+            if !working && !r.has_changes() {
+                continue;
+            }
+            any = true;
+            let selected = self.selected_run == Some(r.id);
+            let n = r.files.as_ref().map_or(0, Vec::len);
+            let meta = if working {
+                format!("{} · working…", r.agent)
+            } else {
+                format!(
+                    "{} · {} · {n} {}",
+                    r.agent,
+                    ago(r.finished.unwrap_or(r.started)),
+                    if n == 1 { "file" } else { "files" }
+                )
+            };
+            let title = r.prompt.clone().unwrap_or_else(|| format!("{} run", r.agent));
+            let mut header = row![
+                column![
+                    text(title).size(UI).wrapping(text::Wrapping::WordOrGlyph),
+                    text(meta).size(SMALL).color(if working { p().accent } else { p().muted }),
+                ]
+                .spacing(1)
+                .width(Length::Fill),
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center);
+            if selected && !working {
+                let confirming = self.confirm_revert == Some(r.id);
+                header =
+                    header.push(tip(icon_button(Icon::Add, Msg::StageRun(r.id)), "Stage this run's files")).push(tip(
+                        button(if confirming { text("revert?").size(12) } else { ico(Icon::Discard, 14) })
+                            .padding([3, 5])
+                            .style(if confirming { theme::danger } else { theme::flat_fn })
+                            .on_press(Msg::RevertRun(r.id)),
+                        "Revert this run",
+                    ));
+            }
+            list = list.push(
+                button(header)
+                    .width(Length::Fill)
+                    .padding([5, 10])
+                    .style(theme::flat(selected))
+                    .on_press(Msg::SelectRun(r.id)),
+            );
+            for c in r.files.iter().flatten() {
+                list = list.push(
+                    container(self.change_button(
+                        c,
+                        open == Some((r.id, c.path.as_str())),
+                        Msg::OpenRunDiff(r.id, c.path.clone()),
+                        None,
+                        false,
+                    ))
+                    .padding(Padding { left: 12.0, ..Padding::ZERO }),
+                );
+            }
+        }
+        if !any {
+            list = list.push(self.hint(match (self.term_kind, self.has_repo()) {
+                (TermKind::Shell, _) => "Grouping by agent run needs herdr in the terminal.",
+                (_, false) => "Agent runs need a git repository.",
+                _ => "When an agent working in this folder changes files, its run shows up here.",
+            }));
+        }
+        list
     }
 
     fn view_search(&self) -> Element<'_, Msg> {
@@ -924,9 +846,11 @@ impl App {
         }
         let path = root.join(&d.rel);
         header = header.push(space::horizontal());
-        if matches!(d.source, DiffSource::Trees { .. })
-            && let Some((i, n)) = self.review_position(&d.rel)
+        if let DiffSource::Trees { run, .. } = d.source
+            && let Some(files) = self.runs.get(run).and_then(|r| r.files.as_ref())
+            && let Some(i) = files.iter().position(|c| c.path == d.rel)
         {
+            let n = files.len();
             header = header
                 .push(tip(icon_button(Icon::ChevronLeft, Msg::ReviewStep(-1)), "Previous file"))
                 .push(text(format!("{}/{n}", i + 1)).size(SMALL).color(p().muted))
@@ -1025,7 +949,7 @@ impl App {
                 )
                 .padding([1, 4])
                 .style(theme::flat(false))
-                .on_press(Msg::Inspector(Inspector::Git)),
+                .on_press(Msg::InspectorTab(Inspector::Changes)),
             );
         }
         let working = self.agents.iter().filter(|a| a.agent_status == AgentStatus::Working).count();
@@ -1050,17 +974,20 @@ impl App {
                 .align_y(Alignment::Center),
             );
         }
-        let unreviewed = self.runs.unreviewed();
-        if unreviewed > 0 {
+        let fresh = self.runs.new_files();
+        if fresh > 0 {
             left = left.push(
                 button(
-                    row![ico(Icon::Diff, 12).color(p().modified), text(format!("{unreviewed} to review")).size(12)]
-                        .spacing(4)
-                        .align_y(Alignment::Center),
+                    row![
+                        ico(Icon::DotFilled, 10).color(p().modified),
+                        text(format!("{fresh} new {}", if fresh == 1 { "change" } else { "changes" })).size(12)
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
                 )
                 .padding([1, 4])
                 .style(theme::flat(false))
-                .on_press(Msg::Inspector(Inspector::Review)),
+                .on_press(Msg::InspectorTab(Inspector::Changes)),
             );
         }
         if let Some((msg, err)) = &self.status {
@@ -1089,7 +1016,7 @@ impl App {
             tooltip::Position::Top,
         ));
         right = right.push(
-            text("Ctrl+Shift+ R review · G git · F search · E files · B panel · T theme · M focus")
+            text("Ctrl+Shift+ G changes · F search · E files · B panel · T theme · M focus")
                 .size(SMALL)
                 .color(p().line_no),
         );

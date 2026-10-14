@@ -66,7 +66,6 @@ pub enum Icon {
     Files,
     SourceControl,
     Search,
-    Diff,
     Terminal,
     Sparkle,
     Discard,
@@ -84,8 +83,6 @@ pub enum Icon {
     Folder,
     FolderOpen,
     DotFilled,
-    DotOutline,
-    Attention,
 }
 
 impl Icon {
@@ -105,7 +102,6 @@ impl Icon {
             Files => ('\u{EAF0}', ""),
             SourceControl => ('\u{EA68}', ""),
             Search => ('\u{EA6D}', ""),
-            Diff => ('\u{EAE1}', ""),
             Terminal => ('\u{EA85}', ""),
             Sparkle => ('\u{EC10}', "✦"),
             Discard => ('\u{EAE2}', "↶"),
@@ -123,8 +119,6 @@ impl Icon {
             Folder => ('\u{EA83}', ""),
             FolderOpen => ('\u{EAF7}', ""),
             DotFilled => ('\u{EA71}', "●"),
-            DotOutline => ('\u{EABC}', "○"),
-            Attention => ('\u{EB9A}', "◉"),
         }
     }
 

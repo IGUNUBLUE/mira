@@ -158,7 +158,7 @@ mod tests {
             after: None,
             started: 10,
             finished: None,
-            reviewed: false,
+            seen: Vec::new(),
             files: None,
         };
         let state = State { root: PathBuf::from("/tmp/p"), runs: vec![run] };

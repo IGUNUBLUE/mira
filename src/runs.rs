@@ -3,6 +3,10 @@
 //! again (or its completion counter moves, or it goes away). mira snapshots the
 //! working tree at both ends, so each run has a reviewable before/after diff.
 //!
+//! A turn interrupted by a quick follow-up (the user steering the agent, an
+//! approval) stays one run: a run that finished less than [`MERGE_SECS`] ago
+//! reopens instead of starting a new one.
+//!
 //! [`Tracker::observe`] is pure: it turns what herdr reported into
 //! [`Effect`]s that the app executes (snapshots), which keeps it testable.
 
@@ -12,8 +16,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Runs kept per folder; the oldest reviewed ones go first.
+/// Runs kept per folder; runs without changes and seen ones go first.
 pub const MAX_RUNS: usize = 100;
+
+/// A run that finished this recently reopens when its agent works again.
+pub const MERGE_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -40,8 +47,9 @@ pub struct Run {
     pub started: u64,
     #[serde(default)]
     pub finished: Option<u64>,
+    /// Files of this run the user has opened since it changed them.
     #[serde(default)]
-    pub reviewed: bool,
+    pub seen: Vec<String>,
     /// Changed files, computed from the trees (not persisted).
     #[serde(skip)]
     pub files: Option<Vec<Change>>,
@@ -52,8 +60,22 @@ impl Run {
         self.finished.is_none()
     }
 
-    pub fn needs_review(&self) -> bool {
-        !self.running() && !self.reviewed && self.files.as_ref().is_some_and(|f| !f.is_empty())
+    /// Finished and changed at least one file.
+    pub fn has_changes(&self) -> bool {
+        !self.running() && self.files.as_ref().is_some_and(|f| !f.is_empty())
+    }
+
+    pub fn touches(&self, path: &str) -> bool {
+        self.files.as_ref().is_some_and(|f| f.iter().any(|c| c.path == path))
+    }
+
+    /// Changed by this run and not opened since.
+    pub fn is_new(&self, path: &str) -> bool {
+        !self.running() && self.touches(path) && !self.seen.iter().any(|p| p == path)
+    }
+
+    pub fn all_seen(&self) -> bool {
+        self.files.as_ref().is_none_or(|f| f.iter().all(|c| self.seen.contains(&c.path)))
     }
 
     /// Ready to review: finished with both snapshots.
@@ -117,9 +139,44 @@ impl Tracker {
         self.runs.iter_mut().find(|r| r.id == id)
     }
 
-    /// Finished, unreviewed runs that changed files.
-    pub fn unreviewed(&self) -> usize {
-        self.runs.iter().filter(|r| r.needs_review()).count()
+    /// The latest finished run that changed `path`.
+    pub fn origin(&self, path: &str) -> Option<&Run> {
+        self.runs.iter().rev().find(|r| !r.running() && r.touches(path))
+    }
+
+    /// Whether `path` changed since the user last opened it (per its latest run).
+    pub fn is_new(&self, path: &str) -> bool {
+        self.origin(path).is_some_and(|r| r.is_new(path))
+    }
+
+    /// Distinct files changed by agents and not opened since.
+    pub fn new_files(&self) -> usize {
+        let mut paths: Vec<&str> = self
+            .runs
+            .iter()
+            .filter(|r| !r.running())
+            .flat_map(|r| r.files.iter().flatten().map(|c| c.path.as_str()))
+            .filter(|p| self.is_new(p))
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        paths.len()
+    }
+
+    /// The user opened `path`: it is no longer new in any run.
+    pub fn mark_seen(&mut self, path: &str) -> bool {
+        let mut changed = false;
+        for r in self.runs.iter_mut().filter(|r| r.touches(path) && !r.seen.iter().any(|p| p == path)) {
+            r.seen.push(path.to_string());
+            changed = true;
+        }
+        changed
+    }
+
+    pub fn mark_all_seen(&mut self) {
+        for r in self.runs.iter_mut().filter(|r| !r.running()) {
+            r.seen = r.files.iter().flatten().map(|c| c.path.clone()).collect();
+        }
     }
 
     /// Feed one poll of herdr's agents (only those in this folder). `now` is
@@ -141,16 +198,29 @@ impl Tracker {
             let replaced = open.and_then(|id| self.get(id)).is_some_and(
                 |r| matches!((r.kind.as_deref(), s.kind.as_deref()), (Some(was), Some(now)) if was != now),
             );
+            // Finished and immediately busy again within one poll: same turn.
+            let continued = seq_moved && status.busy() && !replaced;
             if let Some(id) = open
                 && (status.ready() || seq_moved || replaced)
+                && !continued
             {
                 self.close(id, now);
                 effects.push(Effect::After(id));
                 open = None;
             }
             if open.is_none() && status.busy() {
-                let id = self.open(s, now);
-                effects.push(Effect::Before(id));
+                let id = match self.recent(&s.pane, s.kind.as_deref(), now) {
+                    // Reopen: its "before" still holds, a new "after" comes at the end.
+                    Some(id) => {
+                        self.reopen(id);
+                        id
+                    }
+                    None => {
+                        let id = self.open(s, now);
+                        effects.push(Effect::Before(id));
+                        id
+                    }
+                };
                 open = Some(id);
             }
             self.panes.insert(s.pane.clone(), PaneTrack { status, seq: s.seq.or(track.seq), open });
@@ -181,10 +251,25 @@ impl Tracker {
             after: None,
             started: now,
             finished: None,
-            reviewed: false,
+            seen: Vec::new(),
             files: None,
         });
         id
+    }
+
+    /// A run of this pane and agent that finished within [`MERGE_SECS`].
+    fn recent(&self, pane: &PaneId, kind: Option<&str>, now: u64) -> Option<RunId> {
+        let r = self.runs.iter().rev().find(|r| &r.pane == pane)?;
+        let finished = r.finished?;
+        (r.kind.as_deref() == kind && now.saturating_sub(finished) <= MERGE_SECS).then_some(r.id)
+    }
+
+    fn reopen(&mut self, id: RunId) {
+        if let Some(r) = self.get_mut(id) {
+            r.finished = None;
+            r.after = None;
+            r.files = None;
+        }
     }
 
     fn close(&mut self, id: RunId, now: u64) {
@@ -195,8 +280,13 @@ impl Tracker {
 
     fn trim(&mut self) {
         while self.runs.len() > MAX_RUNS {
-            let victim =
-                self.runs.iter().position(|r| r.reviewed).or_else(|| self.runs.iter().position(|r| !r.running()));
+            let finished = |r: &Run| !r.running();
+            let victim = self
+                .runs
+                .iter()
+                .position(|r| finished(r) && r.files.as_ref().is_some_and(Vec::is_empty))
+                .or_else(|| self.runs.iter().position(|r| finished(r) && r.all_seen()))
+                .or_else(|| self.runs.iter().position(finished));
             match victim {
                 Some(i) => {
                     self.runs.remove(i);
@@ -239,14 +329,45 @@ mod tests {
     }
 
     #[test]
-    fn a_completion_between_polls_splits_runs() {
+    fn a_completion_between_polls_continues_the_run() {
         let mut t = Tracker::default();
         t.observe(&[seen("w1:p1", Working, Some(1))], 1);
-        // Finished and started again within one poll: the counter moved.
-        assert_eq!(
-            t.observe(&[seen("w1:p1", Working, Some(2))], 2),
-            vec![Effect::After(RunId(0)), Effect::Before(RunId(1))]
-        );
+        // Finished and started again within one poll (steering): same turn.
+        assert_eq!(t.observe(&[seen("w1:p1", Working, Some(2))], 2), vec![]);
+        assert_eq!(t.observe(&[seen("w1:p1", Idle, Some(3))], 5), vec![Effect::After(RunId(0))]);
+        assert_eq!(t.runs.len(), 1);
+    }
+
+    #[test]
+    fn quick_follow_ups_reopen_and_later_prompts_start_new_runs() {
+        let mut t = Tracker::default();
+        t.observe(&[seen("w1:p1", Working, None)], 100);
+        t.observe(&[seen("w1:p1", Idle, None)], 110);
+        // Busy again 5 s later: the same turn goes on, no new "before".
+        assert_eq!(t.observe(&[seen("w1:p1", Working, None)], 115), vec![]);
+        assert!(t.get(RunId(0)).is_some_and(Run::running));
+        assert_eq!(t.observe(&[seen("w1:p1", Idle, None)], 120), vec![Effect::After(RunId(0))]);
+        // A minute later it is a new prompt.
+        assert_eq!(t.observe(&[seen("w1:p1", Working, None)], 180), vec![Effect::Before(RunId(1))]);
+    }
+
+    #[test]
+    fn files_are_new_until_opened() {
+        let mut t = Tracker::default();
+        t.observe(&[seen("w1:p1", Working, None)], 1);
+        t.observe(&[seen("w1:p1", Idle, None)], 2);
+        let change = |p: &str| Change { path: p.into(), code: 'M' };
+        if let Some(r) = t.get_mut(RunId(0)) {
+            r.files = Some(vec![change("a.rs"), change("b.rs")]);
+        }
+        assert_eq!(t.new_files(), 2);
+        assert!(t.is_new("a.rs") && !t.is_new("c.rs"));
+        assert!(t.mark_seen("a.rs"));
+        assert!(!t.mark_seen("a.rs"));
+        assert_eq!(t.new_files(), 1);
+        assert_eq!(t.origin("b.rs").map(|r| r.id), Some(RunId(0)));
+        t.mark_all_seen();
+        assert_eq!(t.new_files(), 0);
     }
 
     #[test]
@@ -269,7 +390,7 @@ mod tests {
         let mut back = Tracker::from_runs(t.runs.clone());
         assert_eq!(back.observe(&[seen("w1:p1", Idle, Some(6))], 9), vec![Effect::After(RunId(0))]);
         // New ids continue after the restored ones.
-        assert_eq!(back.observe(&[seen("w1:p1", Working, Some(6))], 10), vec![Effect::Before(RunId(1))]);
+        assert_eq!(back.observe(&[seen("w1:p1", Working, Some(6))], 30), vec![Effect::Before(RunId(1))]);
     }
 
     #[test]
@@ -283,19 +404,19 @@ mod tests {
     }
 
     #[test]
-    fn keeps_at_most_max_runs_dropping_reviewed_first() {
+    fn keeps_at_most_max_runs_dropping_empty_ones_first() {
         let mut t = Tracker::default();
+        let change = |p: &str| Change { path: p.into(), code: 'M' };
         for i in 0..(MAX_RUNS as u64 + 5) {
-            t.observe(&[seen("w1:p1", Working, Some(i))], i * 2);
-            t.observe(&[seen("w1:p1", Idle, Some(i + 1))], i * 2 + 1);
-            if i == 50
-                && let Some(r) = t.get_mut(RunId(10))
-            {
-                r.reviewed = true;
+            t.observe(&[seen("w1:p1", Working, None)], i * 100);
+            t.observe(&[seen("w1:p1", Idle, None)], i * 100 + 1);
+            if let Some(r) = t.get_mut(RunId(i)) {
+                // Only run 3 never changed anything.
+                r.files = Some(if i == 3 { vec![] } else { vec![change("a.rs")] });
             }
         }
         assert_eq!(t.runs.len(), MAX_RUNS);
-        assert!(t.get(RunId(10)).is_none(), "reviewed run dropped first");
+        assert!(t.get(RunId(3)).is_none(), "run without changes dropped first");
         assert!(t.get(RunId(0)).is_none());
     }
 }

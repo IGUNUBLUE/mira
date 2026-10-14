@@ -41,8 +41,8 @@ const MAX_OPEN_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inspector {
-    Review,
-    Git,
+    /// Git changes, annotated with the agent runs that made them.
+    Changes,
     Search,
     Files,
 }
@@ -139,6 +139,7 @@ pub struct App {
     // review
     pub runs: Tracker,
     pub selected_run: Option<RunId>,
+    pub group_by_run: bool,
     pub confirm_revert: Option<RunId>,
     pub comment: String,
     state_dirty: bool,
@@ -204,14 +205,16 @@ pub enum Msg {
     RunSnapshot(RunId, bool, Result<String, String>),
     RunFiles(RunId, Vec<Change>),
     RunPrompt(RunId, Option<String>),
+    /// Select a run in the "by run" view (for its actions); again to clear.
     SelectRun(RunId),
-    MarkReviewed(RunId),
-    MarkAllReviewed,
-    OpenRunDiff(String),
+    MarkAllSeen,
+    /// Show Changes grouped by agent run instead of by file.
+    GroupByRun(bool),
+    OpenRunDiff(RunId, String),
     /// Previous/next file of the selected run.
     ReviewStep(isize),
-    RevertRun,
-    StageRun,
+    RevertRun(RunId),
+    StageRun(RunId),
     Comment(String),
     SendComment,
     SendToAgent(String),
@@ -311,7 +314,7 @@ fn swallow(
 
 /// mira's `Ctrl+Shift+<letter>` shortcuts; swallowed by the terminal so they
 /// work while it has focus. Never `c`/`v` (copy/paste).
-const SHORTCUT_LETTERS: [&str; 7] = ["r", "g", "f", "e", "m", "b", "t"];
+const SHORTCUT_LETTERS: [&str; 6] = ["g", "f", "e", "m", "b", "t"];
 
 impl App {
     pub fn new(root: PathBuf, fresh: bool) -> (Self, Task<Msg>) {
@@ -342,7 +345,7 @@ impl App {
             doc_ratio: 0.55,
             show_inspector: true,
             focus_mode: false,
-            inspector: Inspector::Review,
+            inspector: Inspector::Changes,
             window_focused: true,
             term: None,
             term_kind: if use_herdr { TermKind::Herdr } else { TermKind::Shell },
@@ -361,6 +364,7 @@ impl App {
             herdr_error: None,
             runs: Tracker::from_runs(runs),
             selected_run: None,
+            group_by_run: persist::config_get("changes_view").as_deref() == Some("runs"),
             confirm_revert: None,
             comment: String::new(),
             state_dirty: false,
@@ -671,21 +675,17 @@ impl App {
 
     // ------------------------------------------------------------------ review
 
-    /// Diff source of the selected run.
-    pub fn review_source(&self) -> Option<DiffSource> {
-        let run = self.runs.get(self.selected_run?)?;
+    /// Diff source of run `id`.
+    pub fn run_source(&self, id: RunId) -> Option<DiffSource> {
+        let run = self.runs.get(id)?;
         let (from, to) = run.trees()?;
-        Some(DiffSource::Trees { from: from.to_string(), to: to.to_string(), label: run.agent.clone(), run: run.id })
+        Some(DiffSource::Trees { from: from.to_string(), to: to.to_string(), label: run.agent.clone(), run: id })
     }
 
-    pub fn review_files(&self) -> Option<&Vec<Change>> {
-        self.runs.get(self.selected_run?)?.files.as_ref()
-    }
-
-    /// `(index, total)` of `rel` in the selected run.
-    pub fn review_position(&self, rel: &str) -> Option<(usize, usize)> {
-        let files = self.review_files()?;
-        files.iter().position(|c| c.path == rel).map(|i| (i, files.len()))
+    fn mark_seen(&mut self, path: &str) {
+        if self.runs.mark_seen(path) {
+            self.state_dirty = true;
+        }
     }
 
     /// Type `text` without pressing Enter: into the pane of run `target`
@@ -1048,6 +1048,10 @@ impl App {
                     }
                 };
                 let Some(run) = self.runs.get_mut(id) else { return Task::none() };
+                // A late "after" of a run that reopened (quick follow-up) is stale.
+                if after && run.running() {
+                    return Task::none();
+                }
                 if after {
                     run.after = Some(tree)
                 } else {
@@ -1055,47 +1059,45 @@ impl App {
                 }
                 self.state_dirty = true;
                 // The two snapshots race; whichever lands second computes the files.
-                if run.files.is_none() && run.trees().is_some() {
+                if (after || run.files.is_none()) && run.trees().is_some() {
                     return self.load_run_files(id);
                 }
             }
             Msg::RunFiles(id, files) => {
-                if let Some(run) = self.runs.get_mut(id) {
+                if let Some(run) = self.runs.get_mut(id)
+                    && !run.running()
+                {
                     run.files = Some(files);
                 }
             }
             Msg::RunPrompt(id, prompt) => {
+                // The first title wins: a reopened run keeps the prompt that started it.
                 if let Some(run) = self.runs.get_mut(id)
                     && prompt.is_some()
+                    && run.prompt.is_none()
                 {
                     run.prompt = prompt;
                     self.state_dirty = true;
                 }
             }
             Msg::SelectRun(id) => {
-                self.selected_run = Some(id);
+                self.selected_run = if self.selected_run == Some(id) { None } else { Some(id) };
                 self.confirm_revert = None;
-                self.inspector = Inspector::Review;
-                self.show_inspector = true;
-                // Jump straight to the first changed file.
-                if let Some(first) = self.review_files().and_then(|f| f.first()).map(|c| c.path.clone()) {
-                    return self.update(Msg::OpenRunDiff(first));
-                }
             }
-            Msg::MarkReviewed(id) => {
-                if let Some(run) = self.runs.get_mut(id) {
-                    run.reviewed = !run.reviewed;
-                    self.state_dirty = true;
-                }
-            }
-            Msg::MarkAllReviewed => {
-                for run in self.runs.runs.iter_mut().filter(|r| !r.running()) {
-                    run.reviewed = true;
-                }
+            Msg::MarkAllSeen => {
+                self.runs.mark_all_seen();
                 self.state_dirty = true;
             }
-            Msg::OpenRunDiff(rel) => {
-                if let Some(source) = self.review_source() {
+            Msg::GroupByRun(on) => {
+                self.group_by_run = on;
+                if let Err(e) = persist::config_set("changes_view", if on { "runs" } else { "files" }) {
+                    self.set_status(format!("Could not save view: {e}"), true);
+                }
+            }
+            Msg::OpenRunDiff(id, rel) => {
+                self.selected_run = Some(id);
+                self.mark_seen(&rel);
+                if let Some(source) = self.run_source(id) {
                     return self.open_diff(rel, source);
                 }
             }
@@ -1103,41 +1105,42 @@ impl App {
                 let Some(Tab::Diff(d)) = self.active_tab.and_then(|i| self.tabs.get(i)) else {
                     return Task::none();
                 };
-                if let Some((i, n)) = self.review_position(&d.rel) {
-                    let next = (i as isize + step).rem_euclid(n as isize) as usize;
-                    if let Some(c) = self.review_files().and_then(|f| f.get(next)) {
-                        return self.update(Msg::OpenRunDiff(c.path.clone()));
+                let DiffSource::Trees { run: id, .. } = d.source else { return Task::none() };
+                let files = self.runs.get(id).and_then(|r| r.files.as_ref());
+                if let Some((i, files)) = files.and_then(|f| f.iter().position(|c| c.path == d.rel).map(|i| (i, f))) {
+                    let next = (i as isize + step).rem_euclid(files.len() as isize) as usize;
+                    if let Some(c) = files.get(next) {
+                        return self.update(Msg::OpenRunDiff(id, c.path.clone()));
                     }
                 }
             }
-            Msg::RevertRun => {
-                let Some(id) = self.selected_run else { return Task::none() };
+            Msg::RevertRun(id) => {
                 if self.confirm_revert != Some(id) {
                     self.confirm_revert = Some(id);
                     self.set_status("Click Revert again to restore these files (later edits to them are lost)", true);
                     return Task::none();
                 }
                 self.confirm_revert = None;
-                let (Some(DiffSource::Trees { from, .. }), Some(files)) =
-                    (self.review_source(), self.review_files().cloned())
-                else {
-                    return Task::none();
-                };
-                if let Some(run) = self.runs.get_mut(id) {
-                    run.reviewed = true;
-                    self.state_dirty = true;
+                let Some(run) = self.runs.get(id) else { return Task::none() };
+                let (Some((from, _)), Some(files)) = (run.trees(), run.files.as_ref()) else { return Task::none() };
+                let from = from.to_string();
+                let paths: Vec<String> = files.iter().map(|c| c.path.clone()).collect();
+                for p in &paths {
+                    self.mark_seen(p);
                 }
-                let paths: Vec<String> = files.into_iter().map(|c| c.path).collect();
                 return self.git_op(move |r| git::restore_from_tree(r, &from, &paths));
             }
-            Msg::StageRun => {
-                let Some(paths) = self.review_files().map(|f| f.iter().map(|c| c.path.clone()).collect::<Vec<_>>())
+            Msg::StageRun(id) => {
+                let Some(paths) = self
+                    .runs
+                    .get(id)
+                    .and_then(|r| r.files.as_ref())
+                    .map(|f| f.iter().map(|c| c.path.clone()).collect::<Vec<_>>())
                 else {
                     return Task::none();
                 };
-                if let Some(run) = self.selected_run.and_then(|id| self.runs.get_mut(id)) {
-                    run.reviewed = true;
-                    self.state_dirty = true;
+                for p in &paths {
+                    self.mark_seen(p);
                 }
                 return self.git_op(move |r| git::stage(r, &paths));
             }
@@ -1157,7 +1160,7 @@ impl App {
                 // A run's diff goes to the agent that made it; others to the focused pane.
                 let target = match &d.source {
                     DiffSource::Trees { run, .. } => Some(*run),
-                    DiffSource::Index { .. } => None,
+                    DiffSource::Index { .. } => self.runs.origin(&d.rel).map(|r| r.id),
                 };
                 self.comment.clear();
                 return self.send_to_agent(format!("En {place} — {comment}"), target);
@@ -1222,7 +1225,10 @@ impl App {
                     Err(e) => self.set_status(e, true),
                 }
             }
-            Msg::OpenDiff(rel, staged) => return self.open_diff(rel, DiffSource::Index { staged }),
+            Msg::OpenDiff(rel, staged) => {
+                self.mark_seen(&rel);
+                return self.open_diff(rel, DiffSource::Index { staged });
+            }
             Msg::Stage(paths) => return self.git_op(move |r| git::stage(r, &paths)),
             Msg::Unstage(paths) => return self.git_op(move |r| git::unstage(r, &paths)),
             Msg::CommitEdit(action) => self.commit_msg.perform(action),
@@ -1390,8 +1396,7 @@ impl App {
             }
             // Plain Ctrl+B is herdr's prefix.
             (Some('b'), true) => return self.update(Msg::ToggleInspector),
-            (Some('r'), true) => return self.update(Msg::Inspector(Inspector::Review)),
-            (Some('g'), true) => return self.update(Msg::Inspector(Inspector::Git)),
+            (Some('g'), true) => return self.update(Msg::Inspector(Inspector::Changes)),
             (Some('f'), true) => return self.update(Msg::Inspector(Inspector::Search)),
             (Some('e'), true) => return self.update(Msg::Inspector(Inspector::Files)),
             (Some('t'), true) => return self.update(Msg::CycleTheme),

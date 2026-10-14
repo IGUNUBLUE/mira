@@ -9,14 +9,18 @@ around that loop: ask → the agent acts → you review, correct, accept.
   workspace for coding agents: workspaces, tabs, panes, agent status, and agents that keep
   running when mira closes. mira opens (or creates) the herdr workspace for its folder.
   Without herdr installed it falls back to your shell.
-- **Review inbox.** mira asks herdr which agents work in this folder. Every time one goes
-  from working to done, that *run* gets before/after snapshots of the working tree
-  (temporary git index, no commits) and lands in Review, titled with what you asked
-  (read from kiro's and codex's own logs), with its files, time and status. Mark runs
-  reviewed, stage them or revert them. Review state survives restarts.
+- **Changes, with authors.** The Changes panel is your git working tree (stage, commit,
+  push), and each file says which agent changed it and when (`kiro · 2m`, hover for what you
+  asked). mira asks herdr which agents work in this folder and snapshots the working tree
+  around each of their turns (temporary git index, no commits). Files changed since you last
+  opened them get a dot; the tab and status bar count them. Switch to **By agent run** to see
+  each turn with its files, titled with your prompt (read from kiro's and codex's logs), and
+  stage or revert a whole turn. Turns without changes never show up; a turn interrupted by a
+  quick follow-up stays one turn.
 - **Diffs that talk back.** Side-by-side diff with intra-line highlights; `‹ ›` steps
-  through a run's files. Click a line, write a comment, and it is typed into *that run's
-  agent pane* through herdr (not whatever pane has focus), ready for you to press Enter.
+  through a turn's files. Click a line, write a comment, and it is typed into the pane of the
+  agent that changed that file, through herdr (not whatever pane has focus), ready for you to
+  press Enter.
 - **Source control**: stage / unstage, commit, push, pull, recent history.
 - **Commit message generation** (`✦ Generate message` in Git): Conventional Commits from the
   staged diff (or all changes when nothing is staged), with lockfiles excluded and the diff
@@ -38,7 +42,7 @@ cargo build --release
 ./target/release/mira [--fresh] [DIRECTORY]
 ```
 
-`--fresh` starts with an empty Review inbox. Config (`~/.config/mira/config`):
+`--fresh` forgets the recorded agent turns. Config (`~/.config/mira/config`):
 `herdr_session = "name"` attaches to a named herdr session instead of the default one;
 `terminal = "shell"` skips herdr.
 
@@ -69,7 +73,7 @@ renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.
 | ``Ctrl+` `` | Focus the terminal |
 | `Ctrl+B` … | herdr's prefix (`Ctrl+B ?` lists its keys) |
 | `Ctrl+Shift+M` | Focus mode (hide the inspector) |
-| `Ctrl+Shift+R` / `G` / `F` / `E` | Inspector: Review / Git / Search / Files (again to hide) |
+| `Ctrl+Shift+G` / `F` / `E` | Inspector: Changes / Search / Files (again to hide) |
 | `Ctrl+Shift+B` | Toggle inspector |
 | `Ctrl+Shift+T` | Cycle theme |
 | `Ctrl+Shift+V` | Paste in the terminal (bracketed) |
