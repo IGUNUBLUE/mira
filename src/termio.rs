@@ -286,6 +286,106 @@ impl<'a, Message: 'a> From<TermInput<'a, Message>> for Element<'a, Message> {
     }
 }
 
+// ------------------------------------------------------------------ gate
+
+/// Keeps mira's UI thread from deadlocking with the terminal's PTY thread.
+///
+/// iced_term 0.8 sends alacritty events with `blocking_send` into a channel of
+/// 100, *while the PTY thread holds the terminal lock*, and that channel only
+/// drains while the UI thread processes messages. Every `Terminal::handle` call
+/// takes the same lock, and `Write` additionally emits an event from the UI
+/// thread. So if the UI thread handles a command while the PTY thread is in the
+/// middle of a large batch of events (herdr asks for all 256 palette colors at
+/// startup), both wait on each other forever.
+///
+/// The gate fixes that from the outside: while events of a batch are arriving
+/// nothing is handed to the terminal; they are queued (and color queries are
+/// answered from mira's palette) and forwarded in one go once the batch ends
+/// (alacritty's `Wakeup`), or after a quiet moment for batches that end without
+/// one (synchronized output). Writes are coalesced so a flush emits as few
+/// events as possible.
+#[derive(Default)]
+pub struct Gate {
+    queue: Vec<iced_term::Command>,
+    last_event: Option<std::time::Instant>,
+}
+
+/// Quiet time after the last event before a batch without `Wakeup` is flushed.
+pub const GATE_QUIET: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// What to do with one terminal command.
+pub enum Gated {
+    /// Hand these to the terminal now, in order.
+    Forward(Vec<iced_term::Command>),
+    /// Queued; the app must make sure a flush happens (see [`Gate::flush_due`]).
+    Queued,
+}
+
+impl Gate {
+    pub fn busy(&self) -> bool {
+        !self.queue.is_empty()
+    }
+
+    /// Whether a batch has been quiet long enough to flush.
+    pub fn flush_due(&self, now: std::time::Instant) -> bool {
+        self.busy() && self.last_event.is_none_or(|t| now.duration_since(t) >= GATE_QUIET)
+    }
+
+    /// Everything queued, with adjacent writes merged.
+    pub fn flush(&mut self) -> Vec<iced_term::Command> {
+        use iced_term::BackendCommand::Write;
+        use iced_term::Command::ProxyToBackend;
+        let mut out: Vec<iced_term::Command> = Vec::with_capacity(self.queue.len());
+        for cmd in self.queue.drain(..) {
+            match (out.last_mut(), cmd) {
+                (Some(ProxyToBackend(Write(prev))), ProxyToBackend(Write(more))) => prev.extend(more),
+                (_, cmd) => out.push(cmd),
+            }
+        }
+        out
+    }
+
+    /// A command from mira or the terminal widget (keys, mouse, resize, theme).
+    pub fn command(&mut self, cmd: iced_term::Command) -> Gated {
+        if self.busy() {
+            self.queue.push(cmd);
+            Gated::Queued
+        } else {
+            Gated::Forward(vec![cmd])
+        }
+    }
+
+    /// An event from the PTY thread. `color` answers palette queries.
+    pub fn event(
+        &mut self,
+        event: alacritty_terminal::event::Event,
+        now: std::time::Instant,
+        color: impl Fn(usize) -> alacritty_terminal::vte::ansi::Rgb,
+    ) -> Gated {
+        use alacritty_terminal::event::Event;
+        use iced_term::BackendCommand::{ProcessAlacrittyEvent, Write};
+        use iced_term::Command::ProxyToBackend;
+        let queued = match event {
+            // End of a batch: forward everything, then the redraw.
+            Event::Wakeup => {
+                let mut out = self.flush();
+                out.push(ProxyToBackend(ProcessAlacrittyEvent(Event::Wakeup)));
+                self.last_event = None;
+                return Gated::Forward(out);
+            }
+            Event::ColorRequest(index, reply) => ProxyToBackend(Write(reply(color(index)).into_bytes())),
+            // The only other events iced_term acts on.
+            e @ (Event::PtyWrite(_) | Event::Exit) => ProxyToBackend(ProcessAlacrittyEvent(e)),
+            // iced_term ignores the rest (cursor dirty/blink, bell, title, size
+            // requests); clipboard stores are taken by the app before this.
+            _ => return Gated::Forward(Vec::new()),
+        };
+        self.last_event = Some(now);
+        self.queue.push(queued);
+        Gated::Queued
+    }
+}
+
 /// Bracketed paste. An embedded end marker would let pasted text escape the
 /// paste and run as typed input, so it is removed.
 pub fn bracketed(text: &str) -> Vec<u8> {
@@ -359,6 +459,72 @@ mod tests {
     #[test]
     fn paste_cannot_escape_the_brackets() {
         assert_eq!(bracketed("a\x1b[201~rm -rf /\n"), b"\x1b[200~arm -rf /\n\x1b[201~".to_vec());
+    }
+
+    mod gate {
+        use super::super::*;
+        use alacritty_terminal::event::Event;
+        use alacritty_terminal::vte::ansi::Rgb;
+        use iced_term::BackendCommand::{ProcessAlacrittyEvent, Write};
+        use iced_term::Command::ProxyToBackend;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        fn rgb(i: usize) -> Rgb {
+            Rgb { r: i as u8, g: 0, b: 0 }
+        }
+
+        fn query(i: usize) -> Event {
+            Event::ColorRequest(i, Arc::new(move |c: Rgb| format!("[{i}:{}]", c.r)))
+        }
+
+        fn written(cmds: &[iced_term::Command]) -> Vec<String> {
+            cmds.iter()
+                .map(|c| match c {
+                    ProxyToBackend(Write(b)) => String::from_utf8_lossy(b).into_owned(),
+                    ProxyToBackend(ProcessAlacrittyEvent(Event::Wakeup)) => "wakeup".into(),
+                    ProxyToBackend(ProcessAlacrittyEvent(Event::PtyWrite(t))) => format!("pty:{t}"),
+                    _ => "other".into(),
+                })
+                .collect()
+        }
+
+        #[test]
+        fn a_burst_of_color_queries_never_reaches_the_terminal_until_it_ends() {
+            let mut g = Gate::default();
+            let now = Instant::now();
+            for i in 0..258 {
+                assert!(matches!(g.event(query(i), now, rgb), Gated::Queued), "query {i} must be queued");
+            }
+            // Keys typed meanwhile wait too, in order.
+            assert!(matches!(g.command(ProxyToBackend(Write(b"k".to_vec()))), Gated::Queued));
+            let Gated::Forward(out) = g.event(Event::Wakeup, now, rgb) else { panic!("wakeup forwards") };
+            // All answers plus the key in ONE write (one lock, one event), then the redraw.
+            let text = written(&out);
+            assert_eq!(text.len(), 2);
+            assert!(text[0].starts_with("[0:0][1:1]") && text[0].ends_with("[257:1]k"));
+            assert_eq!(text[1], "wakeup");
+            assert!(!g.busy());
+        }
+
+        #[test]
+        fn idle_commands_pass_through_and_noise_events_are_dropped() {
+            let mut g = Gate::default();
+            assert!(matches!(g.command(ProxyToBackend(Write(b"x".to_vec()))), Gated::Forward(v) if v.len() == 1));
+            assert!(matches!(g.event(Event::MouseCursorDirty, Instant::now(), rgb), Gated::Forward(v) if v.is_empty()));
+            assert!(!g.busy());
+        }
+
+        #[test]
+        fn batches_without_wakeup_flush_after_a_quiet_moment() {
+            let mut g = Gate::default();
+            let t0 = Instant::now();
+            assert!(matches!(g.event(Event::PtyWrite("\x1b[?1;2c".into()), t0, rgb), Gated::Queued));
+            assert!(!g.flush_due(t0));
+            assert!(g.flush_due(t0 + GATE_QUIET + Duration::from_millis(1)));
+            assert_eq!(written(&g.flush()), ["pty:\x1b[?1;2c"]);
+            assert!(!g.flush_due(t0 + Duration::from_secs(1)));
+        }
     }
 
     #[test]

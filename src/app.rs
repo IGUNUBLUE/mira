@@ -121,6 +121,8 @@ pub struct App {
     /// Bumped whenever mira focuses the terminal.
     pub focus_epoch: u64,
     next_term_id: u64,
+    gate: termio::Gate,
+    flush_scheduled: bool,
 
     // herdr
     herdr: Option<herdr::Client>,
@@ -193,6 +195,8 @@ pub enum Msg {
     Term(iced_term::Event),
     TermInput(termio::Input),
     RestartTerminal,
+    /// Flush terminal commands queued by the gate after a quiet moment.
+    TermFlush,
 
     // herdr and runs
     HerdrPolled(Result<Vec<Agent>, herdr::Error>),
@@ -345,6 +349,8 @@ impl App {
             term_cell: None,
             focus_epoch: 0,
             next_term_id: 0,
+            gate: termio::Gate::default(),
+            flush_scheduled: false,
             herdr: if use_herdr { herdr::Client::for_session(herdr_session.as_deref()) } else { None },
             herdr_session,
             polling: false,
@@ -467,6 +473,7 @@ impl App {
         bindings.push(swallow("`", keyboard::Modifiers::CTRL));
         term.handle(iced_term::Command::AddBindings(bindings));
         self.term = Some(term);
+        self.gate = termio::Gate::default();
         self.term_cell = None;
         self.workspace = None;
         self.focus_terminal()
@@ -478,35 +485,69 @@ impl App {
     }
 
     fn term_write(&mut self, bytes: Vec<u8>) {
-        if let Some(t) = &mut self.term {
-            t.handle(iced_term::Command::ProxyToBackend(BackendCommand::Write(bytes)));
+        self.term_send(iced_term::Command::ProxyToBackend(BackendCommand::Write(bytes)));
+    }
+
+    /// Every command for the terminal goes through the gate (see `termio::Gate`).
+    fn term_send(&mut self, cmd: iced_term::Command) {
+        if let termio::Gated::Forward(cmds) = self.gate.command(cmd) {
+            self.term_apply(cmds);
         }
     }
 
-    /// Host-terminal duties iced_term leaves to the embedder.
-    fn on_term_event(&mut self, cmd: &BackendCommand) -> Task<Msg> {
+    fn term_apply(&mut self, cmds: Vec<iced_term::Command>) {
+        let Some(t) = &mut self.term else { return };
+        let mut shutdown = false;
+        for cmd in cmds {
+            shutdown |= t.handle(cmd) == iced_term::actions::Action::Shutdown;
+        }
+        if shutdown {
+            self.term = None;
+            self.gate = termio::Gate::default();
+            let what = if self.term_kind == TermKind::Herdr { "herdr detached" } else { "The shell exited" };
+            self.set_status(format!("{what} — agents keep running in herdr"), false);
+        }
+    }
+
+    /// Make sure a queued batch gets flushed even if it never sees `Wakeup`.
+    fn schedule_term_flush(&mut self) -> Task<Msg> {
+        if !self.gate.busy() || self.flush_scheduled {
+            return Task::none();
+        }
+        self.flush_scheduled = true;
+        Task::perform(blocking(|| std::thread::sleep(termio::GATE_QUIET)), |()| Msg::TermFlush)
+    }
+
+    fn on_term_call(&mut self, cmd: BackendCommand) -> Task<Msg> {
         match cmd {
-            // The backend truncates the cell size to whole pixels; match it.
-            BackendCommand::Resize(_, Some(cell)) => {
-                self.term_cell = Some(iced::Size::new(cell.width.floor().max(1.0), cell.height.floor().max(1.0)));
+            BackendCommand::ProcessAlacrittyEvent(event) => {
+                // OSC 52 store from apps in the terminal. Loads are not answered:
+                // letting programs read the clipboard is a data leak.
+                if let AlacrittyEvent::ClipboardStore(_, text) = &event {
+                    return iced::clipboard::write(text.clone());
+                }
+                let color = |i| {
+                    let (r, g, b) = termio::color_reply_rgb(i);
+                    Rgb { r, g, b }
+                };
+                match self.gate.event(event, Instant::now(), color) {
+                    termio::Gated::Forward(cmds) => self.term_apply(cmds),
+                    termio::Gated::Queued => return self.schedule_term_flush(),
+                }
             }
-            BackendCommand::ProcessAlacrittyEvent(AlacrittyEvent::ColorRequest(index, reply)) => {
-                let (r, g, b) = termio::color_reply_rgb(*index);
-                let answer = reply(Rgb { r, g, b });
-                self.term_write(answer.into_bytes());
+            cmd => {
+                // The backend truncates the cell size to whole pixels; match it.
+                if let BackendCommand::Resize(_, Some(cell)) = &cmd {
+                    self.term_cell = Some(iced::Size::new(cell.width.floor().max(1.0), cell.height.floor().max(1.0)));
+                }
+                self.term_send(iced_term::Command::ProxyToBackend(cmd));
+                return self.schedule_term_flush();
             }
-            // OSC 52 store from apps in the terminal. Loads are not answered:
-            // letting programs read the clipboard is a data leak.
-            BackendCommand::ProcessAlacrittyEvent(AlacrittyEvent::ClipboardStore(_, text)) => {
-                return iced::clipboard::write(text.clone());
-            }
-            _ => {}
         }
         Task::none()
     }
 
-    fn on_term_input(&mut self, input: termio::Input) {
-        let Some(t) = &mut self.term else { return };
+    fn on_term_input(&mut self, input: termio::Input) -> Task<Msg> {
         match input {
             termio::Input::Mouse { button, pressed, line, col, mods } => {
                 let button = match button {
@@ -516,11 +557,14 @@ impl App {
                     termio::Button::WheelDown => iced_term::MouseButton::ScrollDown,
                 };
                 let point = GridPoint::new(Line(i32::try_from(line).unwrap_or(i32::MAX)), Column(col));
-                t.handle(iced_term::Command::ProxyToBackend(BackendCommand::MouseReport(button, mods, point, pressed)));
+                self.term_send(iced_term::Command::ProxyToBackend(BackendCommand::MouseReport(
+                    button, mods, point, pressed,
+                )));
             }
             termio::Input::Bytes(b) => self.term_write(b),
             termio::Input::Paste(text) => self.term_write(termio::bracketed(&text)),
         }
+        self.schedule_term_flush()
     }
 
     // ------------------------------------------------------------------- herdr
@@ -620,10 +664,8 @@ impl App {
 
     /// Activate the palette of the current choice; recolor the terminal if it changed.
     fn apply_theme(&mut self) {
-        if theme::set_current(self.theme.resolve())
-            && let Some(t) = &mut self.term
-        {
-            t.handle(iced_term::Command::ChangeTheme(Box::new(theme::terminal_palette())));
+        if theme::set_current(self.theme.resolve()) {
+            self.term_send(iced_term::Command::ChangeTheme(Box::new(theme::terminal_palette())));
         }
     }
 
@@ -959,18 +1001,16 @@ impl App {
                 }
             }
 
-            Msg::Term(iced_term::Event::BackendCall(_, cmd)) => {
-                let task = self.on_term_event(&cmd);
-                if let Some(t) = &mut self.term
-                    && t.handle(iced_term::Command::ProxyToBackend(cmd)) == iced_term::actions::Action::Shutdown
-                {
-                    self.term = None;
-                    let what = if self.term_kind == TermKind::Herdr { "herdr detached" } else { "The shell exited" };
-                    self.set_status(format!("{what} — agents keep running in herdr"), false);
+            Msg::Term(iced_term::Event::BackendCall(_, cmd)) => return self.on_term_call(cmd),
+            Msg::TermInput(input) => return self.on_term_input(input),
+            Msg::TermFlush => {
+                self.flush_scheduled = false;
+                if self.gate.flush_due(Instant::now()) {
+                    let cmds = self.gate.flush();
+                    self.term_apply(cmds);
                 }
-                return task;
+                return self.schedule_term_flush();
             }
-            Msg::TermInput(input) => self.on_term_input(input),
             Msg::RestartTerminal => return self.spawn_terminal(),
 
             Msg::HerdrPolled(result) => {
