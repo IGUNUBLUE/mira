@@ -5,13 +5,14 @@ Lightweight terminal-first workspace in Rust (iced 0.14 + iced_term 0.8).
 ## Structure
 
 - `src/main.rs` — CLI args, iced application setup.
-- `src/app.rs` — state, `Msg`, `update`, keyboard. Sessions → turns; when a session goes quiet the
-  running turn gets an "after" snapshot. Polls every 2s (`Msg::Tick`): explorer, git, reload clean tabs, active diff.
-- `src/view.rs` — all views. Layout: sessions + turns | pane_grid(document / agent terminal) | inspector
-  (Review · Git · Search · Files) + status bar.
-- `src/session.rs` — agent presets (only those on `$PATH`), `Session`, `Turn`, input tracking, `Status`.
-- `src/persist.rs` — per-folder session state (`$XDG_STATE_HOME/mira/<fnv>.json`) and discovery of
-  kiro/codex conversation ids from their on-disk session files, for resuming.
+- `src/app.rs` — state, `Msg`, `update`, keyboard. One terminal running herdr (`TermKind`), herdr polled on
+  `Msg::StatusTick` (700 ms), runs fed to `runs::Tracker`, review actions. `Msg::Tick` (2 s): explorer, git, reload clean tabs, active diff.
+- `src/view.rs` — all views. Layout: pane_grid(document / terminal) | inspector (Review · Git · Search · Files) + status bar.
+- `src/herdr.rs` — blocking client of herdr's socket (NDJSON); `launch_command` strips `HERDR_*`. Facts: `herdr-client` skill.
+- `src/runs.rs` — pure run state machine (`Tracker::observe` → `Effect::Before/After`), tested without IO.
+- `src/agentlog.rs` — run titles from kiro/codex conversation logs.
+- `src/termio.rs` — `TermInput` wrapper (wheel, right/middle, Alt, bracketed paste) and color-query answers; iced_term is used unpatched.
+- `src/persist.rs` — per-folder runs (`$XDG_STATE_HOME/mira/<fnv>.json`, 0600) and `~/.config/mira/config`.
 - `src/git.rs` — `git` CLI wrapper (status scoped to opened folder, capped at `MAX_CHANGES`); tree snapshots via a temporary `GIT_INDEX_FILE`, tree diffs, restore.
 - `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context).
 - `src/explorer.rs` — lazy tree, only expanded dirs are read.
@@ -33,15 +34,17 @@ On conflicts, mira's own skills and this file win.
 
 ## Shortcuts
 
-App shortcuts are `Ctrl+Shift+<letter>` and are swallowed in the terminal (`new_session`).
-Never take `C`/`V` (terminal copy/paste).
+App shortcuts are `Ctrl+Shift+<letter>` and are swallowed in the terminal (`SHORTCUT_LETTERS` in app.rs).
+Never take `C`/`V` (terminal copy/paste) or plain `Ctrl+B` (herdr's prefix).
 
 ## Commands
 
 ```bash
 cargo build --release
 cargo test
-cargo clippy
+cargo clippy --all-targets -- -D warnings
+# live check against a real herdr session (see runs.rs `e2e`):
+MIRA_E2E_SOCKET=… MIRA_E2E_ROOT=… cargo test e2e -- --ignored --nocapture
 ```
 
 ## Conventions

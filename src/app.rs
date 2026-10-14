@@ -1,17 +1,22 @@
 //! Application state and update logic. Views live in `view.rs`.
 //!
-//! Model: the user talks to agents in terminal *sessions*. Every prompt sent
-//! to a session opens a *turn*; when the agent goes quiet mira snapshots the
-//! working tree, so each turn has a reviewable before/after diff.
+//! Model: the center terminal runs herdr, where the user talks to agents.
+//! mira polls herdr's socket for the agents working in this folder; every
+//! working period is a *run* (`runs.rs`) with before/after snapshots of the
+//! working tree, listed in the Review inspector as an inbox.
 
 use crate::diff::{self, FileDiff};
 use crate::explorer::Explorer;
 use crate::git::{self, Change, Snapshot};
-use crate::search::{self, FileMatches, Options};
+use crate::herdr::{self, Agent, PaneId};
 use crate::persist;
-use crate::session::{self, Resume, Session, Status, Turn};
+use crate::runs::{Effect, RunId, Seen, Tracker};
+use crate::search::{self, FileMatches, Options};
+use crate::termio;
 use crate::theme;
 
+use alacritty_terminal::index::{Column, Line, Point as GridPoint};
+use alacritty_terminal::vte::ansi::Rgb;
 use iced::keyboard;
 use iced::widget::pane_grid::{self, Axis, Configuration};
 use iced::widget::text_editor::{self, Content};
@@ -23,15 +28,14 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub const CODE_SIZE: u32 = 14;
 
-/// Draggable vertical dividers around the center area.
+/// Draggable divider between the center and the inspector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Divider {
-    Sessions,
     Inspector,
 }
 
-const MIN_SIDE: f32 = 160.0;
-const MIN_CENTER: f32 = 320.0;
+const MIN_SIDE: f32 = 220.0;
+const MIN_CENTER: f32 = 360.0;
 const DIVIDER: f32 = 5.0;
 const MAX_OPEN_BYTES: usize = 8 * 1024 * 1024;
 
@@ -49,12 +53,12 @@ pub enum CenterPane {
     Terminal,
 }
 
-/// What the Review inspector shows for the active session.
+/// What runs in the center terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReviewTarget {
-    /// Everything since the session started.
-    All,
-    Turn(usize),
+pub enum TermKind {
+    Herdr,
+    /// herdr is not installed (or `terminal = "shell"` in the config).
+    Shell,
 }
 
 pub struct FileTab {
@@ -69,7 +73,7 @@ pub struct FileTab {
 pub enum DiffSource {
     /// `staged`: HEAD ⇄ index, otherwise index ⇄ working tree.
     Index { staged: bool },
-    /// Between two snapshot trees (a turn or a whole session).
+    /// Between two snapshot trees (an agent run).
     Trees { from: String, to: String, label: String },
 }
 
@@ -109,16 +113,31 @@ pub struct App {
     pub inspector: Inspector,
     pub window_focused: bool,
 
-    // sessions
-    pub sessions: Vec<Session>,
-    pub active: usize,
-    pub next_id: u64,
-    pub presets: Vec<(&'static str, &'static str)>,
-    pub show_presets: bool,
-    pub review: ReviewTarget,
-    pub session_files: Option<Vec<Change>>,
-    pub confirm_revert: Option<(u64, usize)>,
+    // terminal
+    pub term: Option<iced_term::Terminal>,
+    pub term_kind: TermKind,
+    /// Cell size the terminal measured (for mouse reports).
+    pub term_cell: Option<iced::Size>,
+    /// Bumped whenever mira focuses the terminal.
+    pub focus_epoch: u64,
+    next_term_id: u64,
+
+    // herdr
+    herdr: Option<herdr::Client>,
+    herdr_session: Option<String>,
+    polling: bool,
+    workspace: Option<String>,
+    ensuring_workspace: bool,
+    /// Agents working in this folder, as of the last poll.
+    pub agents: Vec<Agent>,
+    pub herdr_error: Option<String>,
+
+    // review
+    pub runs: Tracker,
+    pub selected_run: Option<RunId>,
+    pub confirm_revert: Option<RunId>,
     pub comment: String,
+    state_dirty: bool,
 
     // documents
     pub tabs: Vec<Tab>,
@@ -138,29 +157,13 @@ pub struct App {
 
     pub status: Option<(String, bool)>,
     status_at: Instant,
-    /// Session id whose close is awaiting a second click.
-    pub confirm_close: Option<u64>,
-
     pub theme: theme::Choice,
 
     // layout
-    pub left_width: f32,
     pub inspector_width: f32,
     pub window_width: f32,
     pub dragging: Option<Divider>,
     pub hovered_divider: Option<Divider>,
-
-    // persistence
-    state_dirty: bool,
-    discovering: bool,
-    last_discovery: Instant,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum SnapshotFor {
-    Base,
-    Before(usize),
-    After(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -184,25 +187,30 @@ pub enum Msg {
     Tick,
     StatusTick,
 
-    // sessions
-    TogglePresets,
-    NewSession(Option<&'static str>),
-    SelectSession(usize),
-    CloseSession(usize),
+    // terminal
     Term(iced_term::Event),
-    Snapshot(u64, Vec<SnapshotFor>, Result<String, String>),
-    TurnFiles(u64, usize, Vec<Change>),
-    Review(ReviewTarget),
-    SessionFiles(u64, Vec<Change>),
-    OpenTurnDiff(String),
-    /// Previous/next file of the review list.
+    TermInput(termio::Input),
+    RestartTerminal,
+
+    // herdr and runs
+    HerdrPolled(Result<Vec<Agent>, herdr::Error>),
+    WorkspaceReady(Result<String, herdr::Error>),
+    RunSnapshot(RunId, bool, Result<String, String>),
+    RunFiles(RunId, Vec<Change>),
+    RunPrompt(RunId, Option<String>),
+    SelectRun(RunId),
+    MarkReviewed(RunId),
+    MarkAllReviewed,
+    OpenRunDiff(String),
+    /// Previous/next file of the selected run.
     ReviewStep(isize),
-    RevertReview,
+    RevertRun,
+    StageRun,
     Comment(String),
     SendComment,
     SendToAgent(String),
-    /// `(session id, agent conversation id, its folder)` found on disk.
-    Discovered(Vec<(u64, String, PathBuf)>),
+    /// Text typed into an agent's pane through herdr.
+    SentToPane(Result<(), herdr::Error>),
 
     // documents
     OpenFile(PathBuf, Option<usize>),
@@ -237,17 +245,15 @@ pub enum Msg {
     SearchDone(u64, Result<(Vec<FileMatches>, usize), String>),
     ReplaceAll,
     ReplaceDone(Result<usize, String>),
-
 }
 
+/// Run blocking work (git, search, sockets) off the UI thread.
 pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    tokio::task::spawn_blocking(f).await.expect("background task panicked")
-}
-
-/// The `Instant` corresponding to wall-clock time `t` (clamped to now).
-fn instant_at(t: SystemTime) -> Instant {
-    let ago = SystemTime::now().duration_since(t).unwrap_or_default();
-    Instant::now().checked_sub(ago).unwrap_or_else(Instant::now)
+    match tokio::task::spawn_blocking(f).await {
+        Ok(v) => v,
+        // A panic in a worker is a bug; surface it instead of hiding it.
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
+    }
 }
 
 pub fn file_name(p: &Path) -> String {
@@ -296,13 +302,22 @@ fn center_layout(with_document: bool, ratio: f32) -> pane_grid::State<CenterPane
     }
 }
 
-fn notify(summary: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
-        .args(["--app-name=mira", summary, body])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+
+fn swallow(c: &str, m: keyboard::Modifiers) -> (iced_term::bindings::Binding<iced_term::bindings::InputKind>, iced_term::bindings::BindingAction) {
+    (
+        iced_term::bindings::Binding {
+            target: iced_term::bindings::InputKind::Char(c.to_string()),
+            modifiers: m,
+            terminal_mode_include: iced_term::TermMode::empty(),
+            terminal_mode_exclude: iced_term::TermMode::empty(),
+        },
+        iced_term::bindings::BindingAction::Esc(String::new()),
+    )
 }
+
+/// mira's `Ctrl+Shift+<letter>` shortcuts; swallowed by the terminal so they
+/// work while it has focus. Never `c`/`v` (copy/paste).
+const SHORTCUT_LETTERS: [&str; 7] = ["r", "g", "f", "e", "m", "b", "t"];
 
 impl App {
     pub fn new(root: PathBuf, fresh: bool) -> (Self, Task<Msg>) {
@@ -317,9 +332,12 @@ impl App {
         let width = |key: &str, default: f32| {
             persist::config_get(key).and_then(|v| v.parse::<f32>().ok()).filter(|w| w.is_finite()).unwrap_or(default)
         };
+        let herdr_session = persist::config_get("herdr_session").filter(|s| herdr::valid_session(s));
+        let use_herdr = herdr::installed() && persist::config_get("terminal").as_deref() != Some("shell");
+        let runs = if fresh { Vec::new() } else { persist::load(&root).map(|s| s.runs).unwrap_or_default() };
+
         let mut app = Self {
-            left_width: width("sessions_width", 230.0),
-            inspector_width: width("inspector_width", 380.0),
+            inspector_width: width("inspector_width", 400.0),
             window_width: 1400.0,
             dragging: None,
             hovered_divider: None,
@@ -332,15 +350,23 @@ impl App {
             focus_mode: false,
             inspector: Inspector::Review,
             window_focused: true,
-            sessions: Vec::new(),
-            active: 0,
-            next_id: 0,
-            presets: session::available_presets(),
-            show_presets: false,
-            review: ReviewTarget::All,
-            session_files: None,
+            term: None,
+            term_kind: if use_herdr { TermKind::Herdr } else { TermKind::Shell },
+            term_cell: None,
+            focus_epoch: 0,
+            next_term_id: 0,
+            herdr: if use_herdr { herdr::Client::for_session(herdr_session.as_deref()) } else { None },
+            herdr_session,
+            polling: false,
+            workspace: None,
+            ensuring_workspace: false,
+            agents: Vec::new(),
+            herdr_error: None,
+            runs: Tracker::from_runs(runs),
+            selected_run: None,
             confirm_revert: None,
             comment: String::new(),
+            state_dirty: false,
             tabs: Vec::new(),
             active_tab: None,
             pending_close: None,
@@ -353,18 +379,14 @@ impl App {
             search: SearchState::default(),
             status: None,
             status_at: Instant::now(),
-            confirm_close: None,
-            state_dirty: false,
-            discovering: false,
-            last_discovery: Instant::now(),
         };
-        let saved = if fresh { None } else { persist::load(&app.root).filter(|s| !s.sessions.is_empty()) };
-        let shell = match saved {
-            Some(state) => app.restore(state),
-            None => app.new_session(None, Resume::New, None),
-        };
+        if !use_herdr {
+            app.set_status("herdr not found: running a plain shell (install herdr for agent tracking)", false);
+        }
+        let term = app.spawn_terminal();
         let refresh = app.refresh_git();
-        (app, Task::batch([shell, refresh]))
+        let files = app.load_all_run_files();
+        (app, Task::batch([term, refresh, files]))
     }
 
     pub fn title(&self) -> String {
@@ -372,8 +394,10 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
-        let mut subs: Vec<Subscription<Msg>> =
-            self.sessions.iter().map(|s| s.term.subscription().map(Msg::Term)).collect();
+        let mut subs: Vec<Subscription<Msg>> = Vec::new();
+        if let Some(t) = &self.term {
+            subs.push(t.subscription().map(Msg::Term));
+        }
         subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Msg::Tick));
         subs.push(iced::time::every(Duration::from_millis(700)).map(|_| Msg::StatusTick));
         subs.push(iced::event::listen_with(|event, status, _| match event {
@@ -391,8 +415,9 @@ impl App {
         if self.dragging.is_some() {
             subs.push(iced::event::listen_with(|event, _, _| match event {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Msg::DividerDrag(position.x)),
-                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left))
-                | iced::Event::Mouse(iced::mouse::Event::CursorLeft) => Some(Msg::DividerRelease),
+                iced::Event::Mouse(
+                    iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left) | iced::mouse::Event::CursorLeft,
+                ) => Some(Msg::DividerRelease),
                 _ => None,
             }));
         }
@@ -412,26 +437,21 @@ impl App {
         self.status_at = Instant::now();
     }
 
-    pub fn session(&self) -> Option<&Session> {
-        self.sessions.get(self.active)
-    }
+    // ---------------------------------------------------------------- terminal
 
-    fn session_index(&self, id: u64) -> Option<usize> {
-        self.sessions.iter().position(|s| s.id == id)
-    }
-
-    // ---------------------------------------------------------------- sessions
-
-    fn new_session(&mut self, agent: Option<&'static str>, resume: Resume, cwd: Option<PathBuf>) -> Task<Msg> {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    fn spawn_terminal(&mut self) -> Task<Msg> {
+        let (program, args) = match self.term_kind {
+            TermKind::Herdr => herdr::launch_command(self.herdr_session.as_deref()),
+            TermKind::Shell => (std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()), Vec::new()),
+        };
         let mut env = HashMap::new();
         env.insert("TERM".to_string(), "xterm-256color".to_string());
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
         env.insert("TERM_PROGRAM".to_string(), "mira".to_string());
         let settings = iced_term::settings::Settings {
             backend: iced_term::settings::BackendSettings {
-                program: shell,
-                args: vec![],
+                program,
+                args,
                 env,
                 working_directory: Some(self.root.clone()),
             },
@@ -442,122 +462,156 @@ impl App {
                 ..Default::default()
             },
         };
-        let mut term = match iced_term::Terminal::new(self.next_id, settings) {
+        let id = self.next_term_id;
+        self.next_term_id += 1;
+        let mut term = match iced_term::Terminal::new(id, settings) {
             Ok(t) => t,
             Err(e) => {
                 self.set_status(format!("terminal: {e}"), true);
                 return Task::none();
             }
         };
-
-        // App shortcuts must not leak into the shell.
-        let swallow = |c: &str, m: keyboard::Modifiers| {
-            (
-                iced_term::bindings::Binding {
-                    target: iced_term::bindings::InputKind::Char(c.to_string()),
-                    modifiers: m,
-                    terminal_mode_include: iced_term::TermMode::empty(),
-                    terminal_mode_exclude: iced_term::TermMode::empty(),
-                },
-                iced_term::bindings::BindingAction::Esc(String::new()),
-            )
-        };
         let cs = keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT;
-        let mut bindings: Vec<_> =
-            // Not "v"/"c": Ctrl+Shift+V/C are the terminal's paste/copy.
-            ["r", "g", "f", "e", "m", "n", "b", "j", "k", "t"].iter().map(|c| swallow(c, cs)).collect();
+        let mut bindings: Vec<_> = SHORTCUT_LETTERS.iter().map(|c| swallow(c, cs)).collect();
         bindings.push(swallow("`", keyboard::Modifiers::CTRL));
         term.handle(iced_term::Command::AddBindings(bindings));
-
-        // Launch the agent as if typed, so the shell stays when it exits.
-        let preset = agent.and_then(|a| self.presets.iter().find(|(n, _)| *n == a));
-        let (name, agent_name) = match preset.and_then(|(n, _)| Some((*n, session::launch_command(n, &resume)?))) {
-            Some((name, cmd)) => {
-                let cmd = match cwd.as_deref().filter(|d| *d != self.root && d.is_dir()) {
-                    Some(d) => format!("cd {} && {cmd}", session::shell_quote(&d.to_string_lossy())),
-                    None => cmd,
-                };
-                term.handle(iced_term::Command::ProxyToBackend(BackendCommand::Write(format!("{cmd}\r").into_bytes())));
-                (name.to_string(), Some(name))
-            }
-            None => ("shell".to_string(), None),
-        };
-
-        let id = self.next_id;
-        self.next_id += 1;
-        let focus = iced_term::TerminalView::focus(term.widget_id().clone());
-        let mut s = Session::new(id, name, agent_name, term);
-        if agent_name.is_some() {
-            s.status = Status::Working;
-        }
-        if let Resume::Id(rid) = resume {
-            s.resume_id = Some(rid);
-        }
-        s.cwd = cwd;
-        self.state_dirty = true;
-        self.sessions.push(s);
-        self.active = self.sessions.len() - 1;
-        self.review = ReviewTarget::All;
-        self.session_files = None;
-        self.show_presets = false;
-        Task::batch([focus, self.snapshot(id, vec![SnapshotFor::Base])])
+        self.term = Some(term);
+        self.term_cell = None;
+        self.workspace = None;
+        self.focus_terminal()
     }
 
-    /// Reopen the sessions saved for this folder, resuming each agent.
-    fn restore(&mut self, state: persist::State) -> Task<Msg> {
-        let mut tasks = Vec::new();
-        let root = self.repo_root();
-        let n = state.sessions.len();
-        for saved in state.sessions {
-            let agent = saved.agent.as_deref().and_then(|a| self.presets.iter().find(|(n, _)| *n == a)).map(|(n, _)| *n);
-            let resume = match &saved.resume_id {
-                Some(id) if session::valid_id(id) => Resume::Id(id.clone()),
-                _ => Resume::Last,
-            };
-            let before = self.sessions.len();
-            tasks.push(self.new_session(agent, resume, saved.cwd.clone()));
-            if self.sessions.len() == before {
-                continue;
-            }
-            let s = self.sessions.last_mut().expect("just pushed");
-            if agent.is_some() || saved.agent.is_none() {
-                s.name = saved.name;
-            }
-            s.base = saved.base;
-            s.latest = saved.latest;
-            s.started_at = persist::from_unix(saved.started_at);
-            s.turns = saved
-                .turns
-                .into_iter()
-                .map(|t| Turn {
-                    label: t.label,
-                    before: t.before,
-                    after: t.after,
-                    files: None,
-                    started: instant_at(persist::from_unix(t.started_at)),
-                    snapshotting: false,
-                })
-                .collect();
-            let id = s.id;
-            for (i, t) in s.turns.iter().enumerate() {
-                if let (Some(b), Some(a)) = (t.before.clone(), t.after.clone()) {
-                    let root = root.clone();
-                    tasks.push(Task::perform(
-                        blocking(move || git::diff_trees(&root, &b, &a).unwrap_or_default()),
-                        move |files| Msg::TurnFiles(id, i, files),
-                    ));
-                }
-            }
+    fn focus_terminal(&mut self) -> Task<Msg> {
+        self.focus_epoch += 1;
+        self.term.as_ref().map_or_else(Task::none, |t| iced_term::TerminalView::focus(t.widget_id().clone()))
+    }
+
+    fn term_write(&mut self, bytes: Vec<u8>) {
+        if let Some(t) = &mut self.term {
+            t.handle(iced_term::Command::ProxyToBackend(BackendCommand::Write(bytes)));
         }
-        if !self.sessions.is_empty() {
-            self.active = state.active.min(self.sessions.len() - 1);
-            tasks.push(self.focus_terminal());
-            tasks.push(self.load_session_files());
-            self.set_status(format!("Restored {n} session(s) — start fresh with `mira --fresh`"), false);
-        } else {
-            tasks.push(self.new_session(None, Resume::New, None));
+    }
+
+    /// Host-terminal duties iced_term leaves to the embedder.
+    fn on_term_event(&mut self, cmd: &BackendCommand) -> Task<Msg> {
+        match cmd {
+            // The backend truncates the cell size to whole pixels; match it.
+            BackendCommand::Resize(_, Some(cell)) => {
+                self.term_cell = Some(iced::Size::new(cell.width.floor().max(1.0), cell.height.floor().max(1.0)));
+            }
+            BackendCommand::ProcessAlacrittyEvent(AlacrittyEvent::ColorRequest(index, reply)) => {
+                let (r, g, b) = termio::color_reply_rgb(*index);
+                let answer = reply(Rgb { r, g, b });
+                self.term_write(answer.into_bytes());
+            }
+            // OSC 52 store from apps in the terminal. Loads are not answered:
+            // letting programs read the clipboard is a data leak.
+            BackendCommand::ProcessAlacrittyEvent(AlacrittyEvent::ClipboardStore(_, text)) => {
+                return iced::clipboard::write(text.clone());
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+
+    fn on_term_input(&mut self, input: termio::Input) {
+        let Some(t) = &mut self.term else { return };
+        match input {
+            termio::Input::Mouse { button, pressed, line, col, mods } => {
+                let button = match button {
+                    termio::Button::Middle => iced_term::MouseButton::MiddleButton,
+                    termio::Button::Right => iced_term::MouseButton::RightButton,
+                    termio::Button::WheelUp => iced_term::MouseButton::ScrollUp,
+                    termio::Button::WheelDown => iced_term::MouseButton::ScrollDown,
+                };
+                let point = GridPoint::new(Line(i32::try_from(line).unwrap_or(i32::MAX)), Column(col));
+                t.handle(iced_term::Command::ProxyToBackend(BackendCommand::MouseReport(button, mods, point, pressed)));
+            }
+            termio::Input::Bytes(b) => self.term_write(b),
+            termio::Input::Paste(text) => self.term_write(termio::bracketed(&text)),
+        }
+    }
+
+    // ------------------------------------------------------------------- herdr
+
+    fn poll_herdr(&mut self) -> Task<Msg> {
+        let Some(client) = self.herdr.clone() else { return Task::none() };
+        if self.polling {
+            return Task::none();
+        }
+        self.polling = true;
+        Task::perform(blocking(move || client.agents()), Msg::HerdrPolled)
+    }
+
+    fn on_agents(&mut self, agents: Vec<Agent>) -> Task<Msg> {
+        let root = self.root.clone();
+        let here: Vec<Agent> = agents.into_iter().filter(|a| a.dir().is_some_and(|d| d.starts_with(&root))).collect();
+        let seen: Vec<Seen> = here
+            .iter()
+            .map(|a| Seen {
+                pane: a.pane_id.clone(),
+                status: a.agent_status,
+                seq: a.completion_seq,
+                agent: a.label(),
+                kind: a.agent.clone(),
+                dir: a.dir().map_or_else(|| root.clone(), Path::to_path_buf),
+            })
+            .collect();
+        self.agents = here;
+        let effects = self.runs.observe(&seen, persist::now());
+        if !effects.is_empty() {
+            self.state_dirty = true;
+        }
+        let mut tasks: Vec<Task<Msg>> = effects.into_iter().map(|e| self.run_effect(e)).collect();
+        if self.workspace.is_none() && !self.ensuring_workspace {
+            tasks.push(self.ensure_workspace());
         }
         Task::batch(tasks)
+    }
+
+    fn ensure_workspace(&mut self) -> Task<Msg> {
+        let Some(client) = self.herdr.clone() else { return Task::none() };
+        self.ensuring_workspace = true;
+        let (root, label) = (self.root.clone(), file_name(&self.root));
+        Task::perform(blocking(move || client.ensure_workspace(&root, &label)), Msg::WorkspaceReady)
+    }
+
+    fn run_effect(&mut self, effect: Effect) -> Task<Msg> {
+        let (id, after) = match effect {
+            Effect::Before(id) => (id, false),
+            Effect::After(id) => (id, true),
+        };
+        let mut tasks = Vec::new();
+        if self.has_repo() {
+            let root = self.repo_root();
+            tasks.push(Task::perform(blocking(move || git::snapshot_tree(&root)), move |r| Msg::RunSnapshot(id, after, r)));
+        }
+        if after
+            && let Some(run) = self.runs.get(id)
+            && let (Some(kind), Some(home)) = (run.kind.clone(), std::env::var_os("HOME"))
+        {
+            let (dir, start, end) = (run.dir.clone(), run.started, run.finished.unwrap_or(run.started));
+            let home = PathBuf::from(home);
+            tasks.push(Task::perform(
+                blocking(move || crate::agentlog::last_prompt(&home, &kind, &dir, start, end)),
+                move |p| Msg::RunPrompt(id, p),
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    /// Changed files of every run whose trees are known (after a restore).
+    fn load_all_run_files(&self) -> Task<Msg> {
+        let ids: Vec<RunId> = self.runs.runs.iter().filter(|r| r.trees().is_some()).map(|r| r.id).collect();
+        Task::batch(ids.into_iter().map(|id| self.load_run_files(id)))
+    }
+
+    fn load_run_files(&self, id: RunId) -> Task<Msg> {
+        let Some((from, to)) = self.runs.get(id).and_then(|r| r.trees()) else { return Task::none() };
+        let (root, from, to) = (self.repo_root(), from.to_string(), to.to_string());
+        Task::perform(blocking(move || git::diff_trees(&root, &from, &to).unwrap_or_default()), move |f| {
+            Msg::RunFiles(id, f)
+        })
     }
 
     fn save_state(&mut self) {
@@ -565,299 +619,66 @@ impl App {
             return;
         }
         self.state_dirty = false;
-        let state = persist::State {
-            root: self.root.clone(),
-            active: self.active,
-            sessions: self
-                .sessions
-                .iter()
-                .filter(|s| s.status != Status::Exited)
-                .map(|s| persist::SavedSession {
-                    name: s.name.clone(),
-                    agent: s.agent.map(str::to_string),
-                    resume_id: s.resume_id.clone(),
-                    cwd: s.cwd.clone(),
-                    base: s.base.clone(),
-                    latest: s.latest.clone(),
-                    started_at: persist::unix(s.started_at),
-                    turns: s
-                        .turns
-                        .iter()
-                        .map(|t| persist::SavedTurn {
-                            label: t.label.clone(),
-                            before: t.before.clone(),
-                            after: t.after.clone(),
-                            started_at: persist::unix(SystemTime::now() - t.started.elapsed()),
-                        })
-                        .collect(),
-                })
-                .collect(),
-        };
+        let state = persist::State { root: self.root.clone(), runs: self.runs.runs.clone() };
         if let Err(e) = persist::save(&state) {
-            self.set_status(format!("Could not save sessions: {e}"), true);
+            self.set_status(format!("Could not save review state: {e}"), true);
         }
     }
 
-    /// Look up the conversation ids of agents that do not have one yet.
-    fn discover_conversations(&mut self) -> Task<Msg> {
-        if self.discovering || self.last_discovery.elapsed() < Duration::from_secs(6) {
-            return Task::none();
-        }
-        let wanted: Vec<(u64, &'static str, u64)> = self
-            .sessions
-            .iter()
-            .filter(|s| s.resume_id.is_none() && s.status != Status::Exited)
-            .filter_map(|s| Some((s.id, s.agent.filter(|a| persist::discoverable(a))?, persist::unix(s.started_at))))
-            .collect();
-        if wanted.is_empty() {
-            return Task::none();
-        }
-        self.discovering = true;
-        self.last_discovery = Instant::now();
-        let mut claimed: Vec<String> = self.sessions.iter().filter_map(|s| s.resume_id.clone()).collect();
-        let root = self.root.clone();
-        Task::perform(
-            blocking(move || {
-                let mut found = Vec::new();
-                for (id, agent, since) in wanted {
-                    if let Some((conv, cwd)) = persist::find_conversation(agent, &root, since, &claimed) {
-                        claimed.push(conv.clone());
-                        found.push((id, conv, cwd));
-                    }
-                }
-                found
-            }),
-            Msg::Discovered,
-        )
-    }
-
-    /// Activate the palette of the current choice; recolor terminals if it changed.
+    /// Activate the palette of the current choice; recolor the terminal if it changed.
     fn apply_theme(&mut self) {
-        if theme::set_current(self.theme.resolve()) {
-            for s in &mut self.sessions {
-                s.term.handle(iced_term::Command::ChangeTheme(Box::new(theme::terminal_palette())));
-            }
-        }
-    }
-
-    fn cycle_session(&mut self, step: isize) -> Task<Msg> {
-        let n = self.sessions.len() as isize;
-        if n < 2 {
-            return Task::none();
-        }
-        let next = (self.active as isize + step).rem_euclid(n) as usize;
-        self.update(Msg::SelectSession(next))
-    }
-
-    fn snapshot(&self, id: u64, purposes: Vec<SnapshotFor>) -> Task<Msg> {
-        if !self.has_repo() {
-            return Task::none();
-        }
-        let root = self.repo_root();
-        Task::perform(blocking(move || git::snapshot_tree(&root)), move |r| {
-            Msg::Snapshot(id, purposes.clone(), r)
-        })
-    }
-
-    fn focus_terminal(&self) -> Task<Msg> {
-        self.session()
-            .map(|s| iced_term::TerminalView::focus(s.term.widget_id().clone()))
-            .unwrap_or_else(Task::none)
-    }
-
-    fn write_to_session(&mut self, text: &str) -> Task<Msg> {
-        let Some(s) = self.sessions.get_mut(self.active) else {
-            self.set_status("No active session", true);
-            return Task::none();
-        };
-        s.term.handle(iced_term::Command::ProxyToBackend(BackendCommand::Write(text.as_bytes().to_vec())));
-        // Count it as typed so the next Enter opens a turn labelled with it.
-        let _ = s.track_input(text.as_bytes());
-        let name = s.name.clone();
-        self.set_status(format!("Sent to {name} — review and press Enter"), false);
-        self.focus_terminal()
-    }
-
-    /// The user submitted a line in session `idx`.
-    fn on_prompt(&mut self, idx: usize, line: String) -> Task<Msg> {
-        let id = self.sessions[idx].id;
-        self.state_dirty = true;
-        let s = &mut self.sessions[idx];
-        s.status = Status::Working;
-        s.last_output = Instant::now();
-
-        // An agent started by hand in a plain shell: adopt it, so it gets
-        // status, notifications and is resumed next time.
-        if s.agent.is_none()
-            && let Some((name, rid)) = session::detect_launch(&line)
+        if theme::set_current(self.theme.resolve())
+            && let Some(t) = &mut self.term
         {
-            s.agent = Some(name);
-            s.name = name.to_string();
-            s.started_at = SystemTime::now();
-            s.resume_id = rid;
-            return Task::none();
+            t.handle(iced_term::Command::ChangeTheme(Box::new(theme::terminal_palette())));
         }
-
-        // Short replies ("y", "1") continue the previous turn (approvals, menus).
-        if line.chars().count() <= 2
-            && let Some(last) = s.turns.last_mut()
-                && last.started.elapsed() < Duration::from_secs(1800) && last.before.is_some() {
-                    last.after = None;
-                    last.files = None;
-                    last.snapshotting = false;
-                    return Task::none();
-                }
-
-        let new_idx = s.turns.len();
-        let mut purposes = vec![SnapshotFor::Before(new_idx)];
-        if let Some(prev) = s.running_turn() {
-            s.turns[prev].snapshotting = true;
-            purposes.push(SnapshotFor::After(prev));
-        }
-        s.turns.push(Turn {
-            label: line,
-            before: None,
-            after: None,
-            files: None,
-            started: Instant::now(),
-            snapshotting: false,
-        });
-        self.snapshot(id, purposes)
     }
 
-    fn on_term_event(&mut self, id: u64, cmd: &BackendCommand) -> Task<Msg> {
-        let Some(idx) = self.session_index(id) else { return Task::none() };
-        match cmd {
-            BackendCommand::Write(bytes) => {
-                if let Some(line) = self.sessions[idx].track_input(bytes) {
-                    return self.on_prompt(idx, line);
-                }
-            }
-            BackendCommand::ProcessAlacrittyEvent(AlacrittyEvent::Wakeup) => {
-                let s = &mut self.sessions[idx];
-                s.last_output = Instant::now();
-                // Echo of the user's own typing is not agent activity.
-                if s.last_input.elapsed() > Duration::from_millis(400) && s.status != Status::Exited {
-                    s.status = Status::Working;
-                }
-            }
-            BackendCommand::ProcessAlacrittyEvent(AlacrittyEvent::Bell) => {
-                let s = &mut self.sessions[idx];
-                if s.agent.is_some() && (idx != self.active || !self.window_focused) && !s.attention {
-                    s.attention = true;
-                    notify(&format!("{} needs you", s.name), "The agent rang the bell");
-                }
-            }
-            _ => {}
-        }
-        Task::none()
-    }
+    // ------------------------------------------------------------------ review
 
-    fn status_tick(&mut self) -> Task<Msg> {
-        let mut tasks = Vec::new();
-        let focused = self.window_focused;
-        for i in 0..self.sessions.len() {
-            let is_active = i == self.active;
-            let s = &mut self.sessions[i];
-            if s.status != Status::Working || s.last_output.elapsed() < session::QUIET_AFTER {
-                continue;
-            }
-            let id = s.id;
-            let running = s.running_turn();
-            // Plain shells just finish commands; only agents "wait for you".
-            s.status = if s.agent.is_some() { Status::Waiting } else { Status::Idle };
-            if s.status == Status::Waiting && (!focused || !is_active) && !s.attention {
-                s.attention = true;
-                notify(&format!("{} is waiting", s.name), "The agent went quiet — review its changes");
-            }
-            if let Some(t) = running
-                && s.turns[t].before.is_some() && !s.turns[t].snapshotting {
-                    s.turns[t].snapshotting = true;
-                    tasks.push((id, t));
-                }
-        }
-        Task::batch(tasks.into_iter().map(|(id, t)| self.snapshot(id, vec![SnapshotFor::After(t)])))
-    }
-
-    fn on_snapshot(&mut self, id: u64, purposes: Vec<SnapshotFor>, tree: String) -> Task<Msg> {
-        let Some(idx) = self.session_index(id) else { return Task::none() };
-        let root = self.repo_root();
-        self.state_dirty = true;
-        let s = &mut self.sessions[idx];
-        s.latest = Some(tree.clone());
-        let mut tasks = Vec::new();
-        for p in purposes {
-            let t = match p {
-                SnapshotFor::Base => {
-                    s.base.get_or_insert(tree.clone());
-                    continue;
-                }
-                SnapshotFor::Before(t) => {
-                    if let Some(turn) = s.turns.get_mut(t) {
-                        turn.before = Some(tree.clone());
-                    }
-                    t
-                }
-                SnapshotFor::After(t) => {
-                    if let Some(turn) = s.turns.get_mut(t) {
-                        turn.snapshotting = false;
-                        // A newer prompt may have reopened this turn meanwhile.
-                        if turn.before.is_some() {
-                            turn.after = Some(tree.clone());
-                        }
-                    }
-                    t
-                }
-            };
-            if let Some(Turn { before: Some(b), after: Some(a), .. }) = s.turns.get(t) {
-                let (root, b, a) = (root.clone(), b.clone(), a.clone());
-                tasks.push(Task::perform(
-                    blocking(move || git::diff_trees(&root, &b, &a).unwrap_or_default()),
-                    move |files| Msg::TurnFiles(id, t, files),
-                ));
-            }
-        }
-        if idx == self.active && self.review == ReviewTarget::All {
-            tasks.push(self.load_session_files());
-        }
-        Task::batch(tasks)
-    }
-
-    fn load_session_files(&self) -> Task<Msg> {
-        let Some(s) = self.session() else { return Task::none() };
-        let (Some(base), Some(latest)) = (s.base.clone(), s.latest.clone()) else {
-            return Task::none();
-        };
-        let (root, id) = (self.repo_root(), s.id);
-        Task::perform(
-            blocking(move || git::diff_trees(&root, &base, &latest).unwrap_or_default()),
-            move |files| Msg::SessionFiles(id, files),
-        )
-    }
-
-    /// Trees `(from, to, label)` of the current review target.
+    /// Trees `(from, to, label)` of the selected run.
     pub fn review_trees(&self) -> Option<(String, String, String)> {
-        let s = self.session()?;
-        match self.review {
-            ReviewTarget::All => Some((s.base.clone()?, s.latest.clone()?, "Session".into())),
-            ReviewTarget::Turn(t) => {
-                let turn = s.turns.get(t)?;
-                Some((turn.before.clone()?, turn.after.clone()?, format!("Turn {}", t + 1)))
-            }
-        }
+        let run = self.runs.get(self.selected_run?)?;
+        let (from, to) = run.trees()?;
+        Some((from.to_string(), to.to_string(), run.agent.clone()))
     }
 
     pub fn review_files(&self) -> Option<&Vec<Change>> {
-        match self.review {
-            ReviewTarget::All => self.session_files.as_ref(),
-            ReviewTarget::Turn(t) => self.session()?.turns.get(t)?.files.as_ref(),
-        }
+        self.runs.get(self.selected_run?)?.files.as_ref()
     }
 
-    /// `(index, total)` of `rel` in the current review list.
+    /// `(index, total)` of `rel` in the selected run.
     pub fn review_position(&self, rel: &str) -> Option<(usize, usize)> {
         let files = self.review_files()?;
         files.iter().position(|c| c.path == rel).map(|i| (i, files.len()))
+    }
+
+    /// Type `text` into the agent of the selected run (through herdr), or else
+    /// into the terminal, without pressing Enter.
+    fn send_to_agent(&mut self, text: String) -> Task<Msg> {
+        let pane: Option<PaneId> = self
+            .selected_run
+            .and_then(|id| self.runs.get(id))
+            .map(|r| r.pane.clone())
+            .filter(|p| self.agents.iter().any(|a| &a.pane_id == p));
+        let focus = self.focus_terminal();
+        match (pane, self.herdr.clone()) {
+            (Some(pane), Some(client)) => {
+                let task = Task::perform(
+                    blocking(move || {
+                        client.send_text(&pane, &text)?;
+                        client.focus_pane(&pane)
+                    }),
+                    Msg::SentToPane,
+                );
+                Task::batch([task, focus])
+            }
+            _ => {
+                self.term_write(text.into_bytes());
+                self.set_status("Typed into the terminal — review and press Enter", false);
+                focus
+            }
+        }
     }
 
     // --------------------------------------------------------------- documents
@@ -1057,6 +878,12 @@ impl App {
                     self.sync_center();
                 }
             }
+            Msg::InspectorTab(i) => self.inspector = i,
+            Msg::ToggleInspector => {
+                self.show_inspector = !self.show_inspector;
+                self.focus_mode = false;
+                self.sync_center();
+            }
             Msg::FocusMode => {
                 self.focus_mode = !self.focus_mode;
                 self.sync_center();
@@ -1069,8 +896,9 @@ impl App {
             Msg::Key(event, captured) => return self.on_key(event, captured),
             Msg::WindowFocus(f) => {
                 self.window_focused = f;
-                if f && let Some(s) = self.sessions.get_mut(self.active) {
-                    s.attention = false;
+                // herdr enables focus reporting (mode 1004) and redraws on focus.
+                if self.term_kind == TermKind::Herdr {
+                    self.term_write(if f { b"\x1b[I".to_vec() } else { b"\x1b[O".to_vec() });
                 }
             }
             Msg::Tick => {
@@ -1079,43 +907,30 @@ impl App {
                 }
                 self.explorer.refresh();
                 self.reload_changed_files();
-                let tasks = vec![self.refresh_git(), self.reload_active_diff(), self.discover_conversations()];
-                return Task::batch(tasks);
+                return Task::batch([self.refresh_git(), self.reload_active_diff()]);
             }
             Msg::StatusTick => {
                 let ttl = if self.status.as_ref().is_some_and(|(_, e)| *e) { 12 } else { 6 };
                 if self.status.is_some() && self.status_at.elapsed() > Duration::from_secs(ttl) {
                     self.status = None;
                     self.confirm_revert = None;
-                    self.confirm_close = None;
                 }
                 self.save_state();
-                return self.status_tick();
+                return self.poll_herdr();
             }
             Msg::DividerHover(d) => self.hovered_divider = d,
             Msg::DividerPress(d) => self.dragging = Some(d),
-            Msg::DividerDrag(x) => match self.dragging {
-                Some(Divider::Sessions) => {
-                    let right = if self.show_inspector && !self.focus_mode { self.inspector_width } else { 0.0 };
-                    let max = (self.window_width - right - MIN_CENTER).max(MIN_SIDE);
-                    self.left_width = (x - DIVIDER / 2.0).clamp(MIN_SIDE, max);
-                }
-                Some(Divider::Inspector) => {
-                    let left = if self.focus_mode { 0.0 } else { self.left_width };
-                    let max = (self.window_width - left - MIN_CENTER).max(MIN_SIDE);
+            Msg::DividerDrag(x) => {
+                if self.dragging == Some(Divider::Inspector) {
+                    let max = (self.window_width - MIN_CENTER).max(MIN_SIDE);
                     self.inspector_width = (self.window_width - x - DIVIDER / 2.0).clamp(MIN_SIDE, max);
                 }
-                None => {}
-            },
+            }
             Msg::DividerRelease => {
-                if let Some(d) = self.dragging.take() {
-                    let (key, w) = match d {
-                        Divider::Sessions => ("sessions_width", self.left_width),
-                        Divider::Inspector => ("inspector_width", self.inspector_width),
-                    };
-                    if let Err(e) = persist::config_set(key, &format!("{w:.0}")) {
-                        self.set_status(format!("Could not save layout: {e}"), true);
-                    }
+                if self.dragging.take().is_some()
+                    && let Err(e) = persist::config_set("inspector_width", &format!("{:.0}", self.inspector_width))
+                {
+                    self.set_status(format!("Could not save layout: {e}"), true);
                 }
             }
             Msg::WindowWidth(w) => self.window_width = w,
@@ -1132,86 +947,95 @@ impl App {
                     self.set_status(format!("Could not save theme: {e}"), true);
                 }
             }
-            Msg::ToggleInspector => {
-                self.show_inspector = !self.show_inspector;
-                self.focus_mode = false;
-                self.sync_center();
-            }
-            Msg::InspectorTab(i) => {
-                self.inspector = i;
-            }
 
-            Msg::TogglePresets => self.show_presets = !self.show_presets,
-            Msg::NewSession(agent) => return self.new_session(agent, Resume::New, None),
-            Msg::SelectSession(i) => {
-                if i < self.sessions.len() {
-                    self.active = i;
-                    self.state_dirty = true;
-                    self.sessions[i].attention = false;
-                    self.review = ReviewTarget::All;
-                    self.session_files = None;
-                    return Task::batch([self.focus_terminal(), self.load_session_files()]);
-                }
-            }
-            Msg::CloseSession(i) => {
-                if let Some(s) = self.sessions.get(i)
-                    && s.agent.is_some()
-                    && s.status != Status::Exited
-                    && self.confirm_close != Some(s.id)
+            Msg::Term(iced_term::Event::BackendCall(_, cmd)) => {
+                let task = self.on_term_event(&cmd);
+                if let Some(t) = &mut self.term
+                    && t.handle(iced_term::Command::ProxyToBackend(cmd)) == iced_term::actions::Action::Shutdown
                 {
-                    self.confirm_close = Some(s.id);
-                    let name = s.name.clone();
-                    self.set_status(format!("{name} is still running — click × again to kill it"), true);
-                    return Task::none();
-                }
-                self.confirm_close = None;
-                if i < self.sessions.len() {
-                    self.sessions.remove(i);
-                    self.state_dirty = true;
-                    self.active = self.active.min(self.sessions.len().saturating_sub(1));
-                    self.session_files = None;
-                    return self.load_session_files();
-                }
-            }
-            Msg::Term(iced_term::Event::BackendCall(id, cmd)) => {
-                let task = self.on_term_event(id, &cmd);
-                if let Some(i) = self.session_index(id) {
-                    let action = self.sessions[i].term.handle(iced_term::Command::ProxyToBackend(cmd));
-                    if action == iced_term::actions::Action::Shutdown {
-                        self.sessions[i].status = Status::Exited;
-                        return self.update(Msg::CloseSession(i));
-                    }
+                    self.term = None;
+                    let what = if self.term_kind == TermKind::Herdr { "herdr detached" } else { "The shell exited" };
+                    self.set_status(format!("{what} — agents keep running in herdr"), false);
                 }
                 return task;
             }
-            Msg::Snapshot(id, purposes, result) => match result {
-                Ok(tree) => return self.on_snapshot(id, purposes, tree),
-                Err(e) => self.set_status(format!("snapshot: {e}"), true),
-            },
-            Msg::TurnFiles(id, t, files) => {
-                if let Some(turn) = self.session_index(id).and_then(|i| self.sessions[i].turns.get_mut(t)) {
-                    turn.files = Some(files);
+            Msg::TermInput(input) => self.on_term_input(input),
+            Msg::RestartTerminal => return self.spawn_terminal(),
+
+            Msg::HerdrPolled(result) => {
+                self.polling = false;
+                match result {
+                    Ok(agents) => {
+                        self.herdr_error = None;
+                        return self.on_agents(agents);
+                    }
+                    // The client in the terminal is still starting the server.
+                    Err(herdr::Error::NotRunning) => self.herdr_error = None,
+                    Err(e) => self.herdr_error = Some(e.to_string()),
                 }
             }
-            Msg::Review(target) => {
-                self.review = target;
+            Msg::WorkspaceReady(result) => {
+                self.ensuring_workspace = false;
+                match result {
+                    Ok(ws) => self.workspace = Some(ws),
+                    Err(e) => self.set_status(format!("herdr workspace: {e}"), true),
+                }
+            }
+            Msg::RunSnapshot(id, after, result) => {
+                let tree = match result {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.set_status(format!("snapshot: {e}"), true);
+                        return Task::none();
+                    }
+                };
+                let Some(run) = self.runs.get_mut(id) else { return Task::none() };
+                if after { run.after = Some(tree) } else { run.before = Some(tree) }
+                self.state_dirty = true;
+                // The two snapshots race; whichever lands second computes the files.
+                if run.files.is_none() && run.trees().is_some() {
+                    return self.load_run_files(id);
+                }
+            }
+            Msg::RunFiles(id, files) => {
+                if let Some(run) = self.runs.get_mut(id) {
+                    run.files = Some(files);
+                }
+                if self.selected_run == Some(id) {
+                    return self.update(Msg::SelectRun(id));
+                }
+            }
+            Msg::RunPrompt(id, prompt) => {
+                if let Some(run) = self.runs.get_mut(id)
+                    && prompt.is_some()
+                {
+                    run.prompt = prompt;
+                    self.state_dirty = true;
+                }
+            }
+            Msg::SelectRun(id) => {
+                self.selected_run = Some(id);
                 self.confirm_revert = None;
                 self.inspector = Inspector::Review;
                 self.show_inspector = true;
-                if target == ReviewTarget::All {
-                    return self.load_session_files();
-                }
-                // Jump straight to the first changed file of the turn.
+                // Jump straight to the first changed file.
                 if let Some(first) = self.review_files().and_then(|f| f.first()).map(|c| c.path.clone()) {
-                    return self.update(Msg::OpenTurnDiff(first));
+                    return self.update(Msg::OpenRunDiff(first));
                 }
             }
-            Msg::SessionFiles(id, files) => {
-                if self.session().is_some_and(|s| s.id == id) {
-                    self.session_files = Some(files);
+            Msg::MarkReviewed(id) => {
+                if let Some(run) = self.runs.get_mut(id) {
+                    run.reviewed = !run.reviewed;
+                    self.state_dirty = true;
                 }
             }
-            Msg::OpenTurnDiff(rel) => {
+            Msg::MarkAllReviewed => {
+                for run in self.runs.runs.iter_mut().filter(|r| !r.running()) {
+                    run.reviewed = true;
+                }
+                self.state_dirty = true;
+            }
+            Msg::OpenRunDiff(rel) => {
                 if let Some((from, to, label)) = self.review_trees() {
                     return self.open_diff(rel, DiffSource::Trees { from, to, label });
                 }
@@ -1223,15 +1047,14 @@ impl App {
                 if let Some((i, n)) = self.review_position(&d.rel) {
                     let next = (i as isize + step).rem_euclid(n as isize) as usize;
                     if let Some(c) = self.review_files().and_then(|f| f.get(next)) {
-                        return self.update(Msg::OpenTurnDiff(c.path.clone()));
+                        return self.update(Msg::OpenRunDiff(c.path.clone()));
                     }
                 }
             }
-            Msg::RevertReview => {
-                let Some(s) = self.session() else { return Task::none() };
-                let key = (s.id, match self.review { ReviewTarget::All => usize::MAX, ReviewTarget::Turn(t) => t });
-                if self.confirm_revert != Some(key) {
-                    self.confirm_revert = Some(key);
+            Msg::RevertRun => {
+                let Some(id) = self.selected_run else { return Task::none() };
+                if self.confirm_revert != Some(id) {
+                    self.confirm_revert = Some(id);
                     self.set_status("Click Revert again to restore these files (later edits to them are lost)", true);
                     return Task::none();
                 }
@@ -1239,8 +1062,23 @@ impl App {
                 let (Some((from, _, _)), Some(files)) = (self.review_trees(), self.review_files().cloned()) else {
                     return Task::none();
                 };
+                if let Some(run) = self.runs.get_mut(id) {
+                    run.reviewed = true;
+                    self.state_dirty = true;
+                }
                 let paths: Vec<String> = files.into_iter().map(|c| c.path).collect();
                 return self.git_op(move |r| git::restore_from_tree(r, &from, &paths));
+            }
+            Msg::StageRun => {
+                let Some(paths) = self.review_files().map(|f| f.iter().map(|c| c.path.clone()).collect::<Vec<_>>())
+                else {
+                    return Task::none();
+                };
+                if let Some(run) = self.selected_run.and_then(|id| self.runs.get_mut(id)) {
+                    run.reviewed = true;
+                    self.state_dirty = true;
+                }
+                return self.git_op(move |r| git::stage(r, &paths));
             }
             Msg::Comment(c) => self.comment = c,
             Msg::SendComment => {
@@ -1256,19 +1094,13 @@ impl App {
                     None => d.rel.clone(),
                 };
                 self.comment.clear();
-                return self.write_to_session(&format!("En {place} — {comment}"));
+                return self.send_to_agent(format!("En {place} — {comment}"));
             }
-            Msg::SendToAgent(text) => return self.write_to_session(&text),
-            Msg::Discovered(found) => {
-                self.discovering = false;
-                for (id, conv, cwd) in found {
-                    if let Some(i) = self.session_index(id) {
-                        self.sessions[i].resume_id = Some(conv);
-                        self.sessions[i].cwd = Some(cwd);
-                        self.state_dirty = true;
-                    }
-                }
-            }
+            Msg::SendToAgent(text) => return self.send_to_agent(text),
+            Msg::SentToPane(result) => match result {
+                Ok(()) => self.set_status("Sent to the agent — review and press Enter", false),
+                Err(e) => self.set_status(e.to_string(), true),
+            },
 
             Msg::OpenFile(path, line) => self.open_file(path, line),
             Msg::SelectTab(i) => {
@@ -1476,8 +1308,7 @@ impl App {
         }
         let shift = modifiers.shift();
         let latin = key.to_latin(physical_key).map(|c| c.to_ascii_lowercase());
-        let backquote =
-            matches!(physical_key, keyboard::key::Physical::Code(keyboard::key::Code::Backquote));
+        let backquote = matches!(physical_key, keyboard::key::Physical::Code(keyboard::key::Code::Backquote));
         // While a widget (terminal, editor, input) owns the key, only
         // Ctrl+Shift+… and Ctrl+` act globally.
         if captured && !shift && !backquote {
@@ -1490,15 +1321,13 @@ impl App {
                     self.close_tab(i);
                 }
             }
-            (Some('b'), _) => return self.update(Msg::ToggleInspector),
+            // Plain Ctrl+B is herdr's prefix.
+            (Some('b'), true) => return self.update(Msg::ToggleInspector),
             (Some('r'), true) => return self.update(Msg::Inspector(Inspector::Review)),
             (Some('g'), true) => return self.update(Msg::Inspector(Inspector::Git)),
-            (Some('t'), true) => return self.update(Msg::CycleTheme),
-            (Some('j'), true) => return self.cycle_session(1),
-            (Some('k'), true) => return self.cycle_session(-1),
             (Some('f'), true) => return self.update(Msg::Inspector(Inspector::Search)),
             (Some('e'), true) => return self.update(Msg::Inspector(Inspector::Files)),
-            (Some('n'), true) => self.show_presets = !self.show_presets,
+            (Some('t'), true) => return self.update(Msg::CycleTheme),
             (Some('m'), true) => return self.update(Msg::FocusMode),
             _ if backquote => return self.focus_terminal(),
             _ => {}

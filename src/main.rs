@@ -7,9 +7,12 @@ mod diff;
 mod explorer;
 mod icons;
 mod git;
+mod herdr;
+mod agentlog;
 mod persist;
+mod runs;
 mod search;
-mod session;
+mod termio;
 mod theme;
 mod view;
 

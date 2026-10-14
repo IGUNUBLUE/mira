@@ -70,7 +70,6 @@ pub enum Icon {
     Search,
     Diff,
     Terminal,
-    Agent,
     Sparkle,
     Discard,
     Send,
@@ -89,7 +88,6 @@ pub enum Icon {
     DotFilled,
     DotOutline,
     Attention,
-    Exited,
 }
 
 impl Icon {
@@ -111,7 +109,6 @@ impl Icon {
             Search => ('\u{EA6D}', ""),
             Diff => ('\u{EAE1}', ""),
             Terminal => ('\u{EA85}', ""),
-            Agent => ('\u{EB08}', ""),
             Sparkle => ('\u{EC10}', "✦"),
             Discard => ('\u{EAE2}', "↶"),
             Send => ('\u{EC0F}', "›"),
@@ -130,7 +127,6 @@ impl Icon {
             DotFilled => ('\u{EA71}', "●"),
             DotOutline => ('\u{EABC}', "○"),
             Attention => ('\u{EB9A}', "◉"),
-            Exited => ('\u{EABD}', "×"),
         }
     }
 

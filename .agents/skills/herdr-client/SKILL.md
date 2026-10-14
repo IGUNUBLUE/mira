@@ -15,7 +15,8 @@ Docs index: https://herdr.dev/llms.txt. Raw pages: https://raw.githubusercontent
 - Useful methods: `ping`, `session.snapshot`, `pane.list`, `pane.get {pane_id}`, `agent.list`, `events.subscribe`, `events.wait`.
 - `AgentStatus`: `idle | working | blocked | done | unknown`. `idle` and `done` both mean ready for input (done = not yet seen). Panes report `cwd` and `foreground_cwd`; agents have `completion_seq` (changes when a working period completes).
 - `pane.agent_status_changed` subscriptions need a `pane_id` (no global subscription); the pushed event has no cwd. Falling behind → `events_lost` error and close; recover by resubscribing and reconciling with `session.snapshot`.
-- Simplest robust approach: poll `agent.list` on the 2 s tick, one short connection per request, detect `working|blocked → idle|done` or a `completion_seq` change.
+- mira polls `agent.list` every 700 ms (one short connection per request) and detects `working|blocked → idle|done` or a `completion_seq` change (`runs.rs`). Verified live with kiro: `completion_seq` is null while working and set once done.
+- `pane.send_text` types without Enter; `workspace.create {cwd,label,focus:true}` focuses the new workspace; killing a client (SIGHUP) leaves the server and its panes running.
 - Persistence: detaching the client keeps processes running. A server restart restores layout and shells; agents resume only through native integrations (`herdr integration install codex|claude|...`). Kiro has state detection but no native resume.
 - Multiple clients can attach; when two view the same tab, the last one to interact sets pane sizes.
 - Keys: prefix `ctrl+b` by default (`[keys] prefix` in `~/.config/herdr/config.toml`). Ctrl+Space prefix doesn't reach herdr through iced_term 0.8.

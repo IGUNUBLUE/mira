@@ -19,12 +19,12 @@ For the iced 0.14 API itself (widgets, Task, Subscription, pane_grid, theming, c
 - Colors only through `theme::p().<field>`; never literal colors (themes switch at runtime).
 - Icons through `icons::Icon` / `icons::file_icon` (Nerd Font with Unicode fallback); helpers `ico`, `icon_button`, `icon_label` in view.rs.
 - Diff rows: the content row is the stack base layer; backgrounds go `push_under` so wrapped lines stay aligned.
-- Side panel widths are state (`left_width`, `inspector_width`), dragged via `Divider` and saved to config.
+- The inspector width is state (`inspector_width`), dragged via `Divider` and saved to config.
 
 ## Terminal (iced_term 0.8 over alacritty_terminal 0.25)
 - mira sees every `iced_term::Event::BackendCall` before forwarding it (`Msg::Term`), so it can intercept writes and alacritty events.
-- Known gaps in iced_term 0.8: no bracketed paste wrapper, wheel sent as arrow keys in alt screen, only the left mouse button forwarded, no focus in/out reports, `ColorRequest`/`ClipboardStore` events dropped, no kitty keyboard protocol, Alt+char not ESC-prefixed. Check before relying on any of these.
-- App shortcuts that must work while the terminal has focus are swallowed with `AddBindings` in `new_session`.
+- Known gaps in iced_term 0.8, covered from mira without patching: wheel/right/middle/Alt/bracketed paste in `termio::TermInput` (only while herdr runs), focus in/out written on `Msg::WindowFocus`, `ColorRequest`/`ClipboardStore` answered in `App::on_term_event`. Still missing: kitty keyboard protocol. Never fork or patch dependencies; contribute upstream instead.
+- App shortcuts that must work while the terminal has focus are swallowed with `AddBindings` (`SHORTCUT_LETTERS` in app.rs).
 
 ## Shortcuts
 - App shortcuts are `Ctrl+Shift+<letter>`; check app.rs `on_key` and the swallow list first.

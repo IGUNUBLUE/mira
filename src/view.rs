@@ -1,9 +1,9 @@
 //! Views. Layout:
 //!
 //! ```text
-//! ┌ sessions + turns ┬ document (optional) ───────┬ inspector ─────────┐
-//! │                  ├ agent terminal ────────────┤ Review·Git·Search·Files│
-//! └──────────────────┴────────────────────────────┴────────────────────┘
+//! ┌ document (optional) ──────────┬ inspector ─────────────┐
+//! ├ herdr (agents) ───────────────┤ Review·Git·Search·Files │
+//! └───────────────────────────────┴─────────────────────────┘
 //! ```
 
 use crate::app::*;
@@ -12,7 +12,8 @@ use crate::explorer;
 use crate::git::Change;
 use crate::icons::{self, Icon};
 use crate::search;
-use crate::session::Status;
+use crate::herdr::AgentStatus;
+use crate::termio;
 use crate::theme::{self, *};
 
 use iced::keyboard::{Key, key::Named};
@@ -112,22 +113,32 @@ fn split_path(p: &str) -> (&str, &str) {
     }
 }
 
-fn status_style(s: Status, attention: bool) -> (Icon, Color, &'static str) {
-    match (s, attention) {
-        (_, true) => (Icon::Attention, p().modified, "needs you"),
-        (Status::Working, _) => (Icon::DotFilled, p().accent, "working"),
-        (Status::Waiting, _) => (Icon::DotFilled, p().modified, "waiting"),
-        (Status::Idle, _) => (Icon::DotOutline, p().muted, "idle"),
-        (Status::Exited, _) => (Icon::Exited, p().deleted, "exited"),
+fn agent_style(status: AgentStatus) -> (Icon, Color, &'static str) {
+    match status {
+        AgentStatus::Working => (Icon::DotFilled, p().accent, "working"),
+        AgentStatus::Blocked => (Icon::Attention, p().modified, "needs you"),
+        AgentStatus::Done => (Icon::DotOutline, p().added, "done"),
+        AgentStatus::Idle => (Icon::DotOutline, p().muted, "idle"),
+        AgentStatus::Unknown => (Icon::DotOutline, p().line_no, "…"),
     }
 }
 
-fn ago(t: std::time::Instant) -> String {
-    let s = t.elapsed().as_secs();
+/// `now - then` (unix seconds) as `12s`, `5m`, `3h`, `2d`.
+fn ago(then: u64) -> String {
+    let s = crate::persist::now().saturating_sub(then);
     match s {
         0..=59 => format!("{s}s"),
         60..=3599 => format!("{}m", s / 60),
-        _ => format!("{}h", s / 3600),
+        3600..=86_399 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86_400),
+    }
+}
+
+fn duration(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m", secs / 3600, (secs % 3600) / 60),
     }
 }
 
@@ -150,12 +161,7 @@ impl App {
             hovered_split: pane_grid::Line { color: p().accent, width: 2.0 },
         });
 
-        let mut body = row![];
-        if !self.focus_mode {
-            let active = self.dragging == Some(Divider::Sessions) || self.hovered_divider == Some(Divider::Sessions);
-            body = body.push(self.view_sessions()).push(divider(Divider::Sessions, active));
-        }
-        body = body.push(container(center).style(theme::bg(p().border)).width(Length::Fill).height(Length::Fill));
+        let mut body = row![container(center).style(theme::bg(p().border)).width(Length::Fill).height(Length::Fill)];
         if self.show_inspector && !self.focus_mode {
             let active = self.dragging == Some(Divider::Inspector) || self.hovered_divider == Some(Divider::Inspector);
             body = body.push(divider(Divider::Inspector, active)).push(self.view_inspector());
@@ -163,171 +169,66 @@ impl App {
         column![body.height(Length::Fill), self.view_status_bar()].into()
     }
 
-    // ------------------------------------------------------------- sessions
-
-    fn view_sessions(&self) -> Element<'_, Msg> {
-        let mut list = Column::new().spacing(1);
-        list = list.push(section(
-            "SESSIONS".into(),
-            vec![tip(icon_button(Icon::Add, Msg::TogglePresets), "New session (Ctrl+Shift+N)")],
-        ));
-
-        if self.show_presets || self.sessions.is_empty() {
-            let mut menu = Column::new().spacing(2).padding([6, 10]);
-            for (name, bin) in &self.presets {
-                menu = menu.push(
-                    button(
-                        row![ico(Icon::Agent, 14).color(p().accent), text(*name).size(UI), space::horizontal(), text(*bin).size(SMALL).color(p().muted)]
-                            .spacing(8)
-                            .align_y(Alignment::Center),
-                    )
-                        .width(Length::Fill)
-                        .padding([3, 8])
-                        .style(theme::flat(false))
-                        .on_press(Msg::NewSession(Some(name))),
-                );
-            }
-            menu = menu.push(
-                button(row![ico(Icon::Terminal, 14).color(p().muted), text("shell").size(UI)].spacing(8).align_y(Alignment::Center))
-                    .width(Length::Fill)
-                    .padding([3, 8])
-                    .style(theme::flat(false))
-                    .on_press(Msg::NewSession(None)),
-            );
-            if self.presets.is_empty() {
-                menu = menu.push(text("No agent CLIs found on PATH").size(SMALL).color(p().muted));
-            }
-            list = list.push(container(menu).style(theme::panel(p().bg)));
-        }
-
-        for (i, s) in self.sessions.iter().enumerate() {
-            let (dot, color, label) = status_style(s.status, s.attention);
-            let changed = s.changed_files();
-            let mut meta = row![text(label).size(SMALL).color(color)].spacing(8);
-            if changed > 0 {
-                meta = meta.push(text(format!("{changed} files")).size(SMALL).color(p().muted));
-            }
-            if !s.turns.is_empty() {
-                meta = meta.push(text(format!("{} turns", s.turns.len())).size(SMALL).color(p().muted));
-            }
-            let item = row![
-                ico(dot, 14).color(color).width(16),
-                column![text(s.name.clone()).size(UI), meta].spacing(1),
-                space::horizontal(),
-                tip(
-                    button(if self.confirm_close == Some(s.id) { text("kill?").size(12) } else { ico(Icon::Close, 13) })
-                        .padding([0, 4])
-                        .style(if self.confirm_close == Some(s.id) { theme::danger } else { theme::flat_fn })
-                        .on_press(Msg::CloseSession(i)),
-                    "Close session",
-                ),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center);
-            list = list.push(
-                button(item)
-                    .width(Length::Fill)
-                    .padding([5, 10])
-                    .style(theme::flat(i == self.active))
-                    .on_press(Msg::SelectSession(i)),
-            );
-        }
-
-        if let Some(s) = self.session() {
-            list = list.push(space::vertical().height(6)).push(section(format!("TURNS · {}", s.name), vec![]));
-            if !self.has_repo() {
-                list = list.push(
-                    container(text("Turns need a git repository.").size(SMALL).color(p().muted)).padding([4, 10]),
-                );
-            }
-            let all_active = self.review == ReviewTarget::All;
-            list = list.push(
-                button(row![text("All changes this session").size(UI), space::horizontal()])
-                    .width(Length::Fill)
-                    .padding([4, 10])
-                    .style(theme::flat(all_active))
-                    .on_press(Msg::Review(ReviewTarget::All)),
-            );
-            for (i, t) in s.turns.iter().enumerate().rev() {
-                let state: Element<'_, Msg> = if t.running() {
-                    text("running…").size(SMALL).color(p().accent).into()
-                } else {
-                    match &t.files {
-                        Some(f) if f.is_empty() => text("no changes").size(SMALL).color(p().muted).into(),
-                        Some(f) => text(format!("{} files", f.len())).size(SMALL).color(p().modified).into(),
-                        None => text("…").size(SMALL).color(p().muted).into(),
-                    }
-                };
-                let label: String = t.label.chars().take(80).collect();
-                list = list.push(
-                    button(
-                        column![
-                            text(label).size(UI).wrapping(text::Wrapping::WordOrGlyph),
-                            row![text(format!("#{}", i + 1)).size(SMALL).color(p().muted), state, space::horizontal(), text(ago(t.started)).size(SMALL).color(p().muted)].spacing(8),
-                        ]
-                        .spacing(2),
-                    )
-                    .width(Length::Fill)
-                    .padding([4, 10])
-                    .style(theme::flat(self.review == ReviewTarget::Turn(i)))
-                    .on_press(Msg::Review(ReviewTarget::Turn(i))),
-                );
-            }
-        }
-
-        container(scrollable(list).height(Length::Fill))
-            .width(self.left_width)
-            .height(Length::Fill)
-            .style(theme::panel(p().sidebar))
-            .into()
-    }
-
     fn view_terminal(&self) -> Element<'_, Msg> {
-        let Some(s) = self.session() else {
-            return container(
-                button(row![ico(Icon::Add, 14), text("New session").size(UI)].spacing(6).align_y(Alignment::Center))
-                    .style(theme::primary)
-                    .padding([5, 12])
-                    .on_press(Msg::TogglePresets),
-            )
-            .center(Length::Fill)
-            .style(theme::panel(p().bg))
-            .into();
-        };
-        let (dot, color, label) = status_style(s.status, s.attention);
-        let header = row![
-            ico(dot, 13).color(color),
-            text(s.name.clone()).size(UI),
-            text(label).size(SMALL).color(color),
-            space::horizontal(),
-            tip(
-                icon_button(if self.focus_mode { Icon::ScreenNormal } else { Icon::ScreenFull }, Msg::FocusMode),
-                if self.focus_mode { "Exit focus (Ctrl+Shift+M)" } else { "Focus (Ctrl+Shift+M)" },
-            ),
+        let herdr = self.term_kind == TermKind::Herdr;
+        let mut header = row![
+            ico(Icon::Terminal, 13).color(p().accent),
+            text(if herdr { "herdr" } else { "shell" }).size(UI),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
-        let header = if self.focus_mode {
-            header
-        } else {
-            header.push(tip(
+        if herdr {
+            header = header.push(text("Ctrl+B prefix · Ctrl+B ? help").size(SMALL).color(p().line_no));
+        }
+        header = header.push(space::horizontal()).push(tip(
+            icon_button(if self.focus_mode { Icon::ScreenNormal } else { Icon::ScreenFull }, Msg::FocusMode),
+            if self.focus_mode { "Exit focus (Ctrl+Shift+M)" } else { "Focus (Ctrl+Shift+M)" },
+        ));
+        if !self.focus_mode {
+            header = header.push(tip(
                 icon_button(if self.show_inspector { Icon::PanelRight } else { Icon::PanelRightOff }, Msg::ToggleInspector),
-                if self.show_inspector { "Hide panel (Ctrl+B)" } else { "Show panel (Ctrl+B)" },
+                if self.show_inspector { "Hide panel (Ctrl+Shift+B)" } else { "Show panel (Ctrl+Shift+B)" },
+            ));
+        }
+        let body: Element<'_, Msg> = match &self.term {
+            Some(t) => container(termio::TermInput::new(
+                iced_term::TerminalView::show(t).map(Msg::Term),
+                herdr,
+                self.term_cell,
+                self.focus_epoch,
+                Msg::TermInput,
             ))
+            .padding(Padding { left: 8.0, ..Padding::ZERO })
+            .style(theme::panel(p().bg))
+            .into(),
+            None => container(
+                column![
+                    text(if herdr { "herdr is detached. Your agents keep running." } else { "The shell exited." })
+                        .size(UI)
+                        .color(p().muted),
+                    button(
+                        row![ico(Icon::Refresh, 14), text(if herdr { "Reattach herdr" } else { "New shell" }).size(UI)]
+                            .spacing(6)
+                            .align_y(Alignment::Center),
+                    )
+                    .style(theme::primary)
+                    .padding([5, 12])
+                    .on_press(Msg::RestartTerminal),
+                ]
+                .spacing(10)
+                .align_x(Alignment::Center),
+            )
+            .center(Length::Fill)
+            .style(theme::panel(p().bg))
+            .into(),
         };
-        column![
-            container(header).padding([4, 12]).width(Length::Fill).style(theme::panel(p().sidebar)),
-            container(iced_term::TerminalView::show(&s.term).map(Msg::Term))
-                .padding(Padding { left: 8.0, ..Padding::ZERO })
-                .style(theme::panel(p().bg)),
-        ]
-        .into()
+        column![container(header).padding([4, 12]).width(Length::Fill).style(theme::panel(p().sidebar)), body].into()
     }
 
     // ------------------------------------------------------------ inspector
 
     fn view_inspector(&self) -> Element<'_, Msg> {
-        let review_badge = self.session().map(|s| s.changed_files()).filter(|n| *n > 0);
+        let review_badge = Some(self.runs.unreviewed()).filter(|n| *n > 0);
         let git_badge = Some(self.git.staged.len() + self.git.unstaged.len()).filter(|n| *n > 0);
         let tab = |i: Icon, label: &'static str, which: Inspector, count: Option<usize>| {
             let active = self.inspector == which;
@@ -381,74 +282,181 @@ impl App {
         button(content).width(Length::Fill).padding([2, 10]).style(theme::flat(active)).on_press(msg).into()
     }
 
+    fn hint<'a>(&self, msg: &'a str) -> Element<'a, Msg> {
+        container(text(msg).size(SMALL).color(p().muted)).padding([8, 10]).into()
+    }
+
     fn view_review(&self) -> Element<'_, Msg> {
-        let Some(s) = self.session() else {
-            return container(text("Start a session to review agent changes.").size(UI).color(p().muted)).padding(12).into();
+        let mut top = Column::new().spacing(1);
+
+        // Agents working in this folder right now.
+        let unreviewed = self.runs.unreviewed();
+        let mut actions: Vec<Element<'_, Msg>> = Vec::new();
+        if unreviewed > 0 {
+            actions.push(tip(icon_button(Icon::Check, Msg::MarkAllReviewed), "Mark all reviewed"));
+        }
+        top = top.push(section(format!("AGENTS IN {}", file_name(&self.root).to_uppercase()), vec![]));
+        if self.herdr_error.is_some() || self.term_kind == TermKind::Shell {
+            let msg = match &self.herdr_error {
+                Some(e) => e.as_str(),
+                None => "Agent tracking needs herdr. mira is running a plain shell.",
+            };
+            top = top.push(self.hint(msg));
+        } else if self.agents.is_empty() {
+            top = top.push(self.hint("No agent here yet. Start one in herdr (codex, kiro-cli, claude…) in this folder."));
+        }
+        for a in &self.agents {
+            let (dot, color, label) = agent_style(a.agent_status);
+            top = top.push(
+                container(
+                    row![
+                        ico(dot, 13).color(color).width(16),
+                        text(a.label()).size(UI),
+                        text(label).size(SMALL).color(color),
+                        space::horizontal(),
+                        text(a.pane_id.to_string()).size(SMALL).color(p().line_no),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([3, 10]),
+            );
+        }
+
+        // Runs, newest first.
+        top = top.push(space::vertical().height(4)).push(section(
+            if unreviewed > 0 { format!("RUNS · {unreviewed} TO REVIEW") } else { "RUNS".into() },
+            actions,
+        ));
+        if !self.has_repo() {
+            top = top.push(self.hint("Runs need a git repository to show what changed."));
+        } else if self.runs.runs.is_empty() {
+            top = top.push(self.hint("Each time an agent here finishes working, its changes show up here."));
+        }
+        let mut list = Column::new().spacing(1);
+        for r in self.runs.runs.iter().rev() {
+            let selected = self.selected_run == Some(r.id);
+            let (state, state_color) = match (&r.files, r.running()) {
+                (_, true) => ("working…".to_string(), p().accent),
+                (None, false) => ("…".to_string(), p().muted),
+                (Some(f), false) if f.is_empty() => ("no changes".to_string(), p().muted),
+                (Some(f), false) => (format!("{} files", f.len()), if r.reviewed { p().muted } else { p().modified }),
+            };
+            let pending = !r.running() && !r.reviewed && r.files.as_ref().is_some_and(|f| !f.is_empty());
+            let dot = if r.running() {
+                ico(Icon::DotFilled, 10).color(p().accent)
+            } else if pending {
+                ico(Icon::DotFilled, 10).color(p().modified)
+            } else {
+                ico(Icon::DotOutline, 10).color(p().line_no)
+            };
+            let title = r.prompt.clone().unwrap_or_else(|| format!("{} run", r.agent));
+            let title_color = if r.reviewed { p().muted } else { p().fg };
+            list = list.push(
+                button(
+                    row![
+                        dot.width(14),
+                        column![
+                            text(title).size(UI).color(title_color).wrapping(text::Wrapping::WordOrGlyph),
+                            row![
+                                text(r.agent.clone()).size(SMALL).color(p().accent),
+                                text(state).size(SMALL).color(state_color),
+                                space::horizontal(),
+                                text(ago(r.finished.unwrap_or(r.started))).size(SMALL).color(p().line_no),
+                            ]
+                            .spacing(8),
+                        ]
+                        .spacing(2),
+                    ]
+                    .spacing(4),
+                )
+                .width(Length::Fill)
+                .padding([5, 10])
+                .style(theme::flat(selected))
+                .on_press(Msg::SelectRun(r.id)),
+            );
+        }
+
+        column![
+            scrollable(top).height(Length::Shrink),
+            scrollable(list).height(Length::FillPortion(2)),
+            hrule(),
+            container(self.view_run_detail()).height(Length::FillPortion(3)),
+        ]
+        .into()
+    }
+
+    fn view_run_detail(&self) -> Element<'_, Msg> {
+        let Some(run) = self.selected_run.and_then(|id| self.runs.get(id)) else {
+            return self.hint("Select a run to see what it changed. Click a line in the diff to comment; the note goes to that agent.");
         };
-        let (title, subtitle) = match self.review {
-            ReviewTarget::All => ("All changes this session".to_string(), format!("since {} started", s.name)),
-            ReviewTarget::Turn(t) => match s.turns.get(t) {
-                Some(turn) => (turn.label.clone(), format!("Turn #{} · {} ago", t + 1, ago(turn.started))),
-                None => (String::new(), String::new()),
-            },
+        let took = run.finished.map(|f| duration(f.saturating_sub(run.started)));
+        let subtitle = match took {
+            Some(t) => format!("{} · {} ago · took {t}", run.agent, ago(run.started)),
+            None => format!("{} · started {} ago · working", run.agent, ago(run.started)),
         };
-        let running = matches!(self.review, ReviewTarget::Turn(t) if s.turns.get(t).is_some_and(|t| t.running()));
+        let files = self.review_files();
+        let has_files = files.is_some_and(|f| !f.is_empty()) && !run.running();
+        let confirming = self.confirm_revert == Some(run.id);
+        let actions = row![
+            button(
+                row![ico(Icon::Discard, 13), text(if confirming { "Confirm revert" } else { "Revert" }).size(12)]
+                    .spacing(5)
+                    .align_y(Alignment::Center)
+            )
+            .padding([3, 10])
+            .style(if confirming { theme::danger } else { theme::flat_fn })
+            .on_press_maybe(has_files.then_some(Msg::RevertRun)),
+            button(row![ico(Icon::Add, 13), text("Stage").size(12)].spacing(5).align_y(Alignment::Center))
+                .padding([3, 10])
+                .style(theme::flat(false))
+                .on_press_maybe(has_files.then_some(Msg::StageRun)),
+            space::horizontal(),
+            button(
+                row![ico(Icon::Check, 13), text(if run.reviewed { "Reviewed" } else { "Mark reviewed" }).size(12)]
+                    .spacing(5)
+                    .align_y(Alignment::Center)
+            )
+            .padding([3, 10])
+            .style(if run.reviewed { theme::flat_fn } else { theme::primary })
+            .on_press_maybe((!run.running()).then_some(Msg::MarkReviewed(run.id))),
+        ]
+        .spacing(6);
 
         let mut list = Column::new().spacing(1);
-        let files = self.review_files();
         match files {
-            _ if running => {
-                list = list.push(container(text("The agent is still working on this turn…").size(UI).color(p().accent)).padding(10))
-            }
-            None => list = list.push(container(text("Computing changes…").size(UI).color(p().muted)).padding(10)),
-            Some(f) if f.is_empty() => {
-                list = list.push(container(text("No file changes.").size(UI).color(p().muted)).padding(10))
-            }
+            _ if run.running() => list = list.push(self.hint("The agent is still working…")),
+            None if run.trees().is_none() && !self.has_repo() => {}
+            None => list = list.push(self.hint("Computing changes…")),
+            Some(f) if f.is_empty() => list = list.push(self.hint("No file changes.")),
             Some(f) => {
                 let open_rel = match self.active_tab.and_then(|i| self.tabs.get(i)) {
                     Some(Tab::Diff(d)) if matches!(d.source, DiffSource::Trees { .. }) => Some(d.rel.as_str()),
                     _ => None,
                 };
                 for c in f {
-                    list = list.push(self.change_button(c, open_rel == Some(c.path.as_str()), Msg::OpenTurnDiff(c.path.clone()), None));
+                    list = list.push(self.change_button(
+                        c,
+                        open_rel == Some(c.path.as_str()),
+                        Msg::OpenRunDiff(c.path.clone()),
+                        None,
+                    ));
                 }
             }
         }
-
-        let has_files = files.is_some_and(|f| !f.is_empty()) && !running;
-        let confirming = self.confirm_revert.is_some();
-        let actions = row![
-            button(row![ico(Icon::Discard, 13), text(if confirming { "Confirm revert" } else { "Revert" }).size(12)].spacing(5).align_y(Alignment::Center))
-                .padding([3, 10])
-                .style(if confirming { theme::danger } else { theme::flat_fn })
-                .on_press_maybe(has_files.then_some(Msg::RevertReview)),
-            button(row![ico(Icon::Add, 13), text("Stage these").size(12)].spacing(5).align_y(Alignment::Center))
-                .padding([3, 10])
-                .style(theme::flat(false))
-                .on_press_maybe(has_files.then(|| Msg::Stage(files.map(|f| f.iter().map(|c| c.path.clone()).collect()).unwrap_or_default()))),
-            space::horizontal(),
-            button(row![ico(Icon::SourceControl, 13), text("Git").size(12)].spacing(5).align_y(Alignment::Center)).padding([3, 10]).style(theme::primary).on_press(Msg::Inspector(Inspector::Git)),
-        ]
-        .spacing(6);
-
         column![
             container(
                 column![
-                    text(title).size(14),
+                    text(run.prompt.clone().unwrap_or_else(|| format!("{} run", run.agent)))
+                        .size(14)
+                        .wrapping(text::Wrapping::WordOrGlyph),
                     text(subtitle).size(SMALL).color(p().muted),
                     actions,
                 ]
                 .spacing(6)
             )
             .padding(10),
-            hrule(),
             scrollable(list).height(Length::Fill),
-            container(
-                text("Open a file, click a line in the diff, and comment — the note is typed into the agent's prompt.")
-                    .size(SMALL)
-                    .color(p().muted)
-            )
-            .padding(10),
         ]
         .into()
     }
@@ -942,7 +950,7 @@ impl App {
             button(row![ico(Icon::Send, 13), text("Send to agent").size(12)].spacing(5).align_y(Alignment::Center))
                 .padding([5, 10])
                 .style(theme::primary)
-                .on_press_maybe((!self.comment.trim().is_empty() && self.session().is_some()).then_some(Msg::SendComment)),
+                .on_press_maybe((!self.comment.trim().is_empty()).then_some(Msg::SendComment)),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
@@ -967,12 +975,33 @@ impl App {
                     .on_press(Msg::Inspector(Inspector::Git)),
             );
         }
-        let waiting = self.sessions.iter().filter(|s| s.attention || s.status == Status::Waiting).count();
-        if waiting > 0 {
+        let working = self.agents.iter().filter(|a| a.agent_status == AgentStatus::Working).count();
+        let blocked = self.agents.iter().filter(|a| a.agent_status == AgentStatus::Blocked).count();
+        if working > 0 {
             left = left.push(
-                row![ico(Icon::Bell, 12).color(p().modified), text(format!("{waiting} waiting")).size(12).color(p().modified)]
+                row![ico(Icon::DotFilled, 10).color(p().accent), text(format!("{working} working")).size(12).color(p().accent)]
                     .spacing(4)
                     .align_y(Alignment::Center),
+            );
+        }
+        if blocked > 0 {
+            left = left.push(
+                row![ico(Icon::Bell, 12).color(p().modified), text(format!("{blocked} need you")).size(12).color(p().modified)]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+            );
+        }
+        let unreviewed = self.runs.unreviewed();
+        if unreviewed > 0 {
+            left = left.push(
+                button(
+                    row![ico(Icon::Diff, 12).color(p().modified), text(format!("{unreviewed} to review")).size(12)]
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                )
+                .padding([1, 4])
+                .style(theme::flat(false))
+                .on_press(Msg::Inspector(Inspector::Review)),
             );
         }
         if let Some((msg, err)) = &self.status {
@@ -997,7 +1026,7 @@ impl App {
             container(text("Switch theme (Ctrl+Shift+T)").size(12)).padding(6).style(theme::bordered(p().bg)),
             tooltip::Position::Top,
         ));
-        right = right.push(text("Ctrl+Shift+ N new · J/K switch · R review · G git · F search · E files · T theme · M focus").size(SMALL).color(p().line_no));
+        right = right.push(text("Ctrl+Shift+ R review · G git · F search · E files · B panel · T theme · M focus").size(SMALL).color(p().line_no));
         container(row![left, space::horizontal(), right].align_y(Alignment::Center))
             .padding([2, 10])
             .width(Length::Fill)

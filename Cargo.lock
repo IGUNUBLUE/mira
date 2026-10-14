@@ -1931,6 +1931,7 @@ dependencies = [
 name = "mira"
 version = "0.1.0"
 dependencies = [
+ "alacritty_terminal",
  "iced",
  "iced_term",
  "ignore",
