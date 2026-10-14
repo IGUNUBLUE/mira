@@ -426,6 +426,20 @@ impl App {
                         ico(Icon::Branch, 14).color(p().accent),
                         text(branch).size(UI),
                         space::horizontal(),
+                        self.chatgpt_account.as_ref().map(|email| tooltip(
+                            icon_button(Icon::Account, Msg::ChatGptSignOut),
+                            container(
+                                text(if email.is_empty() {
+                                    "Signed in to ChatGPT — click to sign out".to_string()
+                                } else {
+                                    format!("ChatGPT: {email} — click to sign out")
+                                })
+                                .size(12)
+                            )
+                            .padding(6)
+                            .style(theme::bordered(p().bg)),
+                            tooltip::Position::Bottom,
+                        )),
                         tip(icon_button(Icon::ArrowDown, Msg::Pull), "Pull (fast-forward)"),
                         tip(icon_button(Icon::ArrowUp, Msg::Push), "Push"),
                         tip(icon_button(Icon::Refresh, Msg::Tick), "Refresh"),
@@ -465,13 +479,26 @@ impl App {
                                 _ => Binding::from_key_press(kp),
                             }),
                         tooltip(
-                            button(ico(if generating { Icon::Close } else { Icon::Sparkle }, 16).color(p().accent))
-                                .padding([6, 7])
-                                .style(theme::flat(generating))
-                                .on_press_maybe(can_generate.then_some(Msg::GenerateCommit)),
+                            button(
+                                container(if generating {
+                                    text(SPINNER[self.spin])
+                                        .size(16)
+                                        .line_height(1.0)
+                                        .font(icons::font().unwrap_or_else(theme::mono_font))
+                                        .color(p().accent)
+                                } else {
+                                    ico(Icon::Sparkle, 16).color(if can_generate { p().accent } else { p().muted })
+                                })
+                                .center(Length::Fill),
+                            )
+                            .width(30)
+                            .height(30)
+                            .padding(0)
+                            .style(theme::outline(generating))
+                            .on_press_maybe(can_generate.then_some(Msg::GenerateCommit)),
                             container(
                                 text(if generating {
-                                    "Generating… click to cancel"
+                                    "Generating… click to stop"
                                 } else {
                                     "Generate commit message"
                                 })

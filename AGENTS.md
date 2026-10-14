@@ -9,9 +9,10 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - **Terminal first.** The terminal is the priority; everything else supports the ask → act → review loop.
 - **Light and fast.** Rust, low RAM, no Electron, no extension host. New features must keep memory low;
   avoid heavy dependencies.
-- **No vendor lock-in, community-friendly.** Don't depend on a single company or service. mira itself makes
-  no network calls and has no telemetry; AI features go through the user's own agent CLIs (e.g. `codex exec`)
-  or a configurable local command.
+- **No vendor lock-in, community-friendly.** Don't depend on a single company or service. No telemetry. mira's
+  only network access is commit-message generation, only when the user clicks ✦, only to the provider they chose
+  (ChatGPT subscription, OpenAI API key) and only the next commit's diff and `--stat`; a local `commit_command`
+  keeps it fully offline. Network goes through `curl` (no HTTP/TLS crates), secrets on curl's stdin.
 - **Integrate, don't re-implement.** herdr owns agents, workspaces, panes, status and persistence; mira uses it
   through its socket API and runs it in the terminal. Don't rebuild what a tool in the stack already does well.
 - **Never patch or monkey-patch dependencies.** No forks, no `[patch]`, no vendored copies of iced_term or
@@ -45,7 +46,11 @@ sits around that loop: review what the agents changed, edit, search, commit.
   temporary `GIT_INDEX_FILE`, tree diffs, restore.
 - `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context).
 - `src/explorer.rs` — lazy tree, only expanded dirs are read.
-- `src/commitgen.rs` — commit message prompt/diff budget; runs `codex exec` or `commit_command` (prompt on stdin), cancellable.
+- `src/commitgen.rs` — commit message prompt/diff budget, provider choice (`commit_provider`), streams `Event`s
+  (Status, Delta, Account, Done) to `Msg::CommitGen`; cancel restores the previous text.
+- `src/openai.rs` — Responses API over `curl` with SSE streaming; ChatGPT OAuth PKCE login (codex's client,
+  localhost:1455/1457), refresh, tokens in `$XDG_STATE_HOME/mira/chatgpt.json` (0600); API key from
+  `OPENAI_API_KEY` or `~/.config/mira/openai_key` (must be 0600). Own SHA-256/base64url, no crypto crates.
 - `src/search.rs` — `ignore` walker + `regex`; replace uses `NoExpand` for literal mode.
 - `src/icons.rs` — `Icon` (Nerd Font codicons + Unicode fallback) and `file_icon` (seti/devicons). Font found via `fc-list`, never bundled.
 - `src/theme.rs` — the four LAGC palettes, active palette via `p()`, `Choice` (auto = follow HyDE `staterc`), style fns.

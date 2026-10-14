@@ -30,15 +30,24 @@ around that loop: ask → the agent acts → you review, correct, accept.
 - **Commit message generation** (the sparkle button next to the commit box, which grows with
   the message): Conventional Commits from the
   staged diff (or all changes when nothing is staged), with lockfiles excluded and the diff
-  capped at 12k chars — same prompt as the `chatgpt-commit-gen` extension. mira runs
-  `codex exec` (your ChatGPT login) in an empty temp dir with a read-only sandbox, so the
-  agent only sees the prompt. Configure in `~/.config/mira/config`:
-  `commit_model = "gpt-6-luna"`, or `commit_command = "…"` for any command that reads the
-  prompt on stdin and prints the message (e.g. a local model via ollama).
+  capped at 12k chars — same prompt as the `chatgpt-commit-gen` extension. The message streams
+  into the box as it is written; while generating, the button spins and clicking it stops and
+  restores what you had. Providers (`commit_provider` in `~/.config/mira/config`):
+  - `chatgpt` — your ChatGPT subscription. The first click opens the browser to sign in (same
+    OAuth flow as `codex login`); the account icon next to Pull/Push signs out.
+  - `openai` — an API key from `OPENAI_API_KEY` or `~/.config/mira/openai_key` (chmod 600).
+  - `command` — `commit_command = "…"`, any command that reads the prompt on stdin and prints
+    the message (e.g. a local model via ollama), streamed as it prints.
+  - `auto` (default) — ChatGPT session if signed in, else API key, else `commit_command`, else
+    sign in with ChatGPT.
+
+  `commit_model = "gpt-6-luna"` picks the model. Only the diff and its `--stat` are sent, and
+  only when you click; this is the one network request mira makes (through `curl`). The
+  subscription endpoint is undocumented and OpenAI may change it.
 - **Search & replace** (respects `.gitignore`), **explorer** and a syntax-highlighted editor
   whose clean tabs reload when an agent changes the file.
 
-No extension host, no telemetry, no accounts. Git operations shell out to your `git`,
+No extension host, no telemetry, no accounts required. Git operations shell out to your `git`,
 so hooks, signing and credential helpers behave exactly as in your terminal.
 
 ## Build & run

@@ -9,6 +9,7 @@ mod explorer;
 mod git;
 mod herdr;
 mod icons;
+mod openai;
 mod persist;
 mod runs;
 mod search;

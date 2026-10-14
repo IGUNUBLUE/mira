@@ -310,6 +310,26 @@ pub fn flat_fn(t: &Theme, status: button::Status) -> button::Style {
     flat(false)(t, status)
 }
 
+/// Outlined icon button (e.g. generate commit message). `busy` keeps the
+/// accent border while its action runs.
+pub fn outline(busy: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let c = p();
+        let (background, border) = match status {
+            button::Status::Hovered => (Some(c.section.into()), c.accent),
+            button::Status::Pressed => (Some(mix(c.section, c.fg, 0.08).into()), c.accent),
+            button::Status::Disabled => (None, c.border.scale_alpha(0.5)),
+            button::Status::Active => (Some(c.bg.into()), if busy { c.accent } else { c.border }),
+        };
+        button::Style {
+            background,
+            text_color: c.fg,
+            border: Border { color: border, width: 1.0, radius: 4.0.into() },
+            ..Default::default()
+        }
+    }
+}
+
 fn filled(base: Color, status: button::Status) -> button::Style {
     let c = p();
     let bg = match status {

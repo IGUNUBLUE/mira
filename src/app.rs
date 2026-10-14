@@ -46,6 +46,18 @@ const MIN_CENTER: f32 = 360.0;
 const DIVIDER: f32 = 5.0;
 const MAX_OPEN_BYTES: usize = 8 * 1024 * 1024;
 
+/// A commit message being generated and streamed into the commit box.
+pub struct CommitGen {
+    id: u64,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The box's text before generating, restored on cancel or error.
+    previous: String,
+    text: String,
+}
+
+/// Spinner frames for the generate button.
+pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inspector {
     /// Git changes, annotated with the agent runs that made them.
@@ -170,8 +182,13 @@ pub struct App {
     pub refreshing: bool,
     pub git_busy: bool,
     pub commit_msg: Content,
-    /// Cancel flag of the running commit-message generation.
-    pub commit_gen: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// The running commit-message generation.
+    pub commit_gen: Option<CommitGen>,
+    commit_gen_seq: u64,
+    /// Spinner frame while generating.
+    pub spin: usize,
+    /// Signed-in ChatGPT account (email, maybe empty), for the sign-out button.
+    pub chatgpt_account: Option<String>,
     pub search: SearchState,
 
     pub status: Option<(String, bool)>,
@@ -265,7 +282,9 @@ pub enum Msg {
     Commit,
     /// Generate a commit message, or cancel the running generation.
     GenerateCommit,
-    CommitGenerated(Result<String, String>),
+    CommitGen(u64, crate::commitgen::Event),
+    Spin,
+    ChatGptSignOut,
     Push,
     Pull,
     GitDone(Result<String, String>),
@@ -408,6 +427,9 @@ impl App {
             git_busy: false,
             commit_msg: Content::new(),
             commit_gen: None,
+            commit_gen_seq: 0,
+            spin: 0,
+            chatgpt_account: crate::openai::account(),
             search: SearchState::default(),
             status: None,
             status_at: Instant::now(),
@@ -432,6 +454,10 @@ impl App {
         }
         subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Msg::Tick));
         subs.push(iced::time::every(Duration::from_millis(700)).map(|_| Msg::StatusTick));
+        // Animate the generate button only while a message is being generated.
+        if self.commit_gen.is_some() {
+            subs.push(iced::time::every(Duration::from_millis(80)).map(|_| Msg::Spin));
+        }
         subs.push(iced::event::listen_with(|event, status, _| match event {
             iced::Event::Keyboard(k @ keyboard::Event::KeyPressed { .. }) => {
                 Some(Msg::Key(k, status == iced::event::Status::Captured))
@@ -467,6 +493,12 @@ impl App {
     fn set_status(&mut self, msg: impl Into<String>, error: bool) {
         self.status = Some((msg.into(), error));
         self.status_at = Instant::now();
+    }
+
+    /// Replace the commit box's text, cursor at the end (where streaming writes).
+    fn set_commit_text(&mut self, text: &str) {
+        self.commit_msg = Content::with_text(text);
+        self.commit_msg.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
     }
 
     // ---------------------------------------------------------------- terminal
@@ -1345,6 +1377,8 @@ impl App {
             }
             Msg::Stage(paths) => return self.git_op(move |r| git::stage(r, &paths)),
             Msg::Unstage(paths) => return self.git_op(move |r| git::unstage(r, &paths)),
+            // The box is the stream's output while generating: allow selecting, not editing.
+            Msg::CommitEdit(action) if self.commit_gen.is_some() && action.is_edit() => {}
             Msg::CommitEdit(action) => self.commit_msg.perform(action),
             Msg::Commit => {
                 let message = self.commit_msg.text().trim().to_string();
@@ -1369,8 +1403,9 @@ impl App {
                 });
             }
             Msg::GenerateCommit => {
-                if let Some(cancel) = self.commit_gen.take() {
-                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Some(job) = self.commit_gen.take() {
+                    job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.set_commit_text(&job.previous);
                     self.set_status("Commit message generation cancelled", false);
                     return Task::none();
                 }
@@ -1383,28 +1418,68 @@ impl App {
                     return Task::none();
                 }
                 let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                self.commit_gen = Some(cancel.clone());
+                self.commit_gen_seq += 1;
+                let id = self.commit_gen_seq;
+                self.commit_gen = Some(CommitGen {
+                    id,
+                    cancel: cancel.clone(),
+                    previous: self.commit_msg.text(),
+                    text: String::new(),
+                });
                 let what = if staged { "staged changes" } else { "all changes" };
                 self.set_status(format!("Generating a commit message for {what}…"), false);
                 let root = self.repo_root();
-                return Task::perform(
-                    blocking(move || crate::commitgen::generate(&root, staged, cancel)),
-                    Msg::CommitGenerated,
-                );
+                let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+                std::thread::spawn(move || {
+                    let mut emit = |e| {
+                        let _ = tx.unbounded_send(e);
+                    };
+                    let result = crate::commitgen::generate(&root, staged, &cancel, &mut emit);
+                    emit(crate::commitgen::Event::Done(result));
+                });
+                return Task::run(rx, move |e| Msg::CommitGen(id, e));
             }
-            Msg::CommitGenerated(result) => {
-                // A cancelled run already cleared `commit_gen`; drop its result.
-                if self.commit_gen.take().is_none() {
+            Msg::CommitGen(id, event) => {
+                use crate::commitgen::Event;
+                if let Event::Account(account) = event {
+                    self.chatgpt_account = account;
                     return Task::none();
                 }
-                match result {
-                    Ok(message) => {
-                        self.commit_msg = Content::with_text(&message);
-                        self.set_status("Commit message ready — review it, then Commit", false);
+                // Events of a cancelled run arrive after `commit_gen` changed; drop them.
+                let Some(job) = self.commit_gen.as_mut().filter(|g| g.id == id) else {
+                    return Task::none();
+                };
+                match event {
+                    Event::Status(s) => self.set_status(s, false),
+                    Event::Delta(d) => {
+                        job.text.push_str(&d);
+                        let text = job.text.clone();
+                        self.set_commit_text(&text);
                     }
-                    Err(e) => self.set_status(format!("Commit message: {e}"), true),
+                    Event::Done(result) => {
+                        let previous = self.commit_gen.take().map(|g| g.previous).unwrap_or_default();
+                        match result {
+                            Ok(message) => {
+                                self.set_commit_text(&message);
+                                self.set_status("Commit message ready — review it, then Commit", false);
+                            }
+                            Err(e) => {
+                                self.set_commit_text(&previous);
+                                self.set_status(format!("Commit message: {e}"), true);
+                            }
+                        }
+                    }
+                    Event::Account(_) => {}
                 }
             }
+            Msg::Spin => self.spin = (self.spin + 1) % SPINNER.len(),
+            Msg::ChatGptSignOut => match crate::openai::sign_out() {
+                Ok(()) => {
+                    self.chatgpt_account = None;
+                    self.set_status("Signed out of ChatGPT", false);
+                }
+                Err(e) => self.set_status(format!("Sign out: {e}"), true),
+            },
             Msg::Push => {
                 self.set_status("Pushing…", false);
                 return self.git_op(|r| git::push(r).map(|_| "Pushed".into()));

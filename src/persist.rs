@@ -36,9 +36,19 @@ fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(fallback)))
 }
 
+/// `$XDG_STATE_HOME/mira`.
+pub fn state_dir() -> Option<PathBuf> {
+    xdg("XDG_STATE_HOME", ".local/state").map(|d| d.join("mira"))
+}
+
+/// `$XDG_CONFIG_HOME/mira`.
+pub fn config_dir() -> Option<PathBuf> {
+    xdg("XDG_CONFIG_HOME", ".config").map(|d| d.join("mira"))
+}
+
 pub fn state_path(root: &Path) -> Option<PathBuf> {
     let key = fnv1a(root.as_os_str().as_encoded_bytes());
-    xdg("XDG_STATE_HOME", ".local/state").map(|d| d.join("mira").join(format!("{key:016x}.json")))
+    state_dir().map(|d| d.join(format!("{key:016x}.json")))
 }
 
 pub fn load(root: &Path) -> Option<State> {
@@ -62,14 +72,20 @@ pub fn save(state: &State) -> Result<(), String> {
 }
 
 fn save_to(path: &Path, state: &State) -> Result<(), String> {
+    let json = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
+    write_private(path, &json)
+}
+
+/// Write `bytes` to `path` readable only by the user (0600), atomically.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let json = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
+    let json = bytes;
     // Write then rename, so a crash never leaves half a file.
-    let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -77,7 +93,7 @@ fn save_to(path: &Path, state: &State) -> Result<(), String> {
         .mode(0o600)
         .open(&tmp)
         .map_err(|e| e.to_string())?;
-    f.write_all(&json).map_err(|e| e.to_string())?;
+    f.write_all(json).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
@@ -85,7 +101,7 @@ fn save_to(path: &Path, state: &State) -> Result<(), String> {
 
 /// `$XDG_CONFIG_HOME/mira/config`: `key = value` lines, `#` comments.
 fn config_path() -> Option<PathBuf> {
-    xdg("XDG_CONFIG_HOME", ".config").map(|d| d.join("mira/config"))
+    config_dir().map(|d| d.join("config"))
 }
 
 pub fn config_get(key: &str) -> Option<String> {

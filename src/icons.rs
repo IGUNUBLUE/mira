@@ -55,7 +55,6 @@ fn pick(list: &str) -> Option<String> {
 pub enum Icon {
     Add,
     Remove,
-    Close,
     Check,
     ChevronRight,
     ChevronDown,
@@ -83,6 +82,7 @@ pub enum Icon {
     Folder,
     FolderOpen,
     DotFilled,
+    Account,
 }
 
 impl Icon {
@@ -91,7 +91,6 @@ impl Icon {
         match self {
             Add => ('\u{EA60}', "+"),
             Remove => ('\u{EB3B}', "−"),
-            Close => ('\u{EA76}', "×"),
             Check => ('\u{EAB2}', "✓"),
             ChevronRight => ('\u{EAB6}', "▸"),
             ChevronDown => ('\u{EAB4}', "▾"),
@@ -119,6 +118,7 @@ impl Icon {
             Folder => ('\u{EA83}', ""),
             FolderOpen => ('\u{EAF7}', ""),
             DotFilled => ('\u{EA71}', "●"),
+            Account => ('\u{EB99}', "@"),
         }
     }
 

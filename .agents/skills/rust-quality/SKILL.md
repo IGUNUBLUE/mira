@@ -20,7 +20,7 @@ General Rust idioms (ownership, errors, clippy, tests, docs): see the `rust-best
 - Newtypes for ids that can be confused (pane ids, tree ids); stable ids instead of `Vec` indices for things that can be removed.
 - Pure logic (state machines, parsers, budgets) lives in functions without IO so it can be unit-tested; IO stays at the edges.
 - New dependency only with a reason (memory, binary size, compile time). Pin exact versions (`=x.y.z`). Prefer std. Check `cargo tree -d` for duplicates.
-- mira makes no network calls and has no telemetry; AI features go through the user's own agent CLIs.
+- No telemetry. The only network access is commit-message generation on click (`openai.rs`, through `curl`, secrets on its stdin); nothing else may talk to the network.
 - Never interpolate untrusted values into a shell; pass argv arrays or JSON.
 - Conventional Commits; no AI attribution trailers.
 

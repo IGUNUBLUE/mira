@@ -1,22 +1,27 @@
 //! Commit message generation. Same prompt, excludes and size budget as the
-//! `chatgpt-commit-gen` VSCodium extension, but mira makes no network calls:
-//! the model is reached through an agent CLI the user already signed in to.
+//! `chatgpt-commit-gen` VSCodium extension, streamed live into the commit box.
 //!
-//! - default: `codex exec` (ChatGPT subscription), read-only sandbox, in an
-//!   empty temp dir so the agent sees only the prompt, never the repository;
-//! - `commit_command` in `~/.config/mira/config`: any shell command that reads
-//!   the prompt on stdin and prints the message (e.g. a local model).
+//! Providers (`commit_provider` in `~/.config/mira/config`, default `auto`):
+//! - `chatgpt`: your ChatGPT subscription, signed in from mira (OAuth);
+//! - `openai`: an API key from `OPENAI_API_KEY` or `~/.config/mira/openai_key`;
+//! - `command`: `commit_command`, any shell command that reads the prompt on
+//!   stdin and prints the message (e.g. a local model), streamed as it prints.
+//!
+//! `auto` uses the ChatGPT session if there is one, else an API key, else
+//! `commit_command`, else asks you to sign in with ChatGPT.
+//! Only the diff of the next commit and its `--stat` leave the machine.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use crate::openai::{self, Auth, StreamError};
+use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 pub const DEFAULT_MODEL: &str = "gpt-6-luna";
 const MAX_DIFF_CHARS: usize = 12_000;
-const TIMEOUT: Duration = Duration::from_secs(180);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
 
 const EXCLUDES: &[&str] = &[
     "**/package-lock.json",
@@ -55,6 +60,17 @@ Rules:
 - Body: optional, separated from the subject by one blank line, wrapped at 72 characters. Only add it when the change needs real context; most commits need only a subject.
 - Footers: "Token: value" or "Token #value" pairs (git trailer style); tokens use hyphens instead of spaces, e.g. Refs: #123.
 - Base the message strictly on the diff; never invent behavior."#;
+
+/// Progress of a generation, sent to the UI as it happens.
+#[derive(Debug, Clone)]
+pub enum Event {
+    Status(String),
+    /// More text of the message.
+    Delta(String),
+    /// The ChatGPT account after the run: `Some(email)` (maybe empty) or signed out.
+    Account(Option<String>),
+    Done(Result<String, String>),
+}
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git")
@@ -99,7 +115,8 @@ pub fn changes(root: &Path, staged: bool) -> Result<(String, String), String> {
     Ok((stat, diff))
 }
 
-pub fn build_prompt(stat: &str, diff: &str) -> String {
+/// The user turn: stat plus the (capped) diff. Instructions go separately.
+pub fn user_text(stat: &str, diff: &str) -> String {
     let body = if diff.len() > MAX_DIFF_CHARS {
         let mut cut = MAX_DIFF_CHARS;
         while !diff.is_char_boundary(cut) {
@@ -112,11 +129,16 @@ pub fn build_prompt(stat: &str, diff: &str) -> String {
         diff.to_string()
     };
     format!(
-        "{SYSTEM_PROMPT}\n\nGenerate a commit message for these staged changes.\n\n\
+        "Generate a commit message for these staged changes.\n\n\
          Files changed (git diff --stat, includes every staged file):\n{}\n\n\
          Diff (lockfiles and generated files may be omitted):\n{body}",
         stat.trim_end()
     )
+}
+
+/// Instructions and user turn in one text, for `commit_command`.
+pub fn build_prompt(stat: &str, diff: &str) -> String {
+    format!("{SYSTEM_PROMPT}\n\n{}", user_text(stat, diff))
 }
 
 /// Strip fences and quotes a model may add despite the instructions.
@@ -135,114 +157,175 @@ pub fn clean(raw: &str) -> String {
     s.trim().to_string()
 }
 
-/// How the model is reached, from the config file.
-pub enum Backend {
-    Codex { model: String },
-    Shell(String),
+/// How the model is reached.
+#[derive(Debug, PartialEq)]
+enum Provider {
+    ChatGpt,
+    ApiKey(String),
+    Command(String),
 }
 
-impl Backend {
-    pub fn from_config() -> Self {
-        match crate::persist::config_get("commit_command").filter(|c| !c.trim().is_empty()) {
-            Some(cmd) => Self::Shell(cmd),
-            None => Self::Codex {
-                model: crate::persist::config_get("commit_model")
-                    .filter(|m| !m.trim().is_empty())
-                    .unwrap_or_else(|| DEFAULT_MODEL.into()),
-            },
+/// Pick the provider from `commit_provider` and what is available.
+fn choose(
+    setting: &str,
+    signed_in: bool,
+    api_key: impl FnOnce() -> Result<Option<String>, String>,
+    command: Option<String>,
+) -> Result<Provider, String> {
+    let no_key = "no OpenAI API key: set OPENAI_API_KEY or put it in ~/.config/mira/openai_key (chmod 600)";
+    match setting.trim().to_ascii_lowercase().as_str() {
+        "chatgpt" => Ok(Provider::ChatGpt),
+        "openai" | "api" => api_key()?.map(Provider::ApiKey).ok_or_else(|| no_key.into()),
+        "command" => {
+            command.map(Provider::Command).ok_or_else(|| "commit_provider = command needs commit_command".into())
+        }
+        "" | "auto" => Ok(if signed_in {
+            Provider::ChatGpt
+        } else if let Some(key) = api_key()? {
+            Provider::ApiKey(key)
+        } else {
+            command.map_or(Provider::ChatGpt, Provider::Command)
+        }),
+        other => Err(format!("unknown commit_provider {other:?}: use auto, chatgpt, openai or command")),
+    }
+}
+
+fn config(key: &str) -> Option<String> {
+    crate::persist::config_get(key).filter(|v| !v.trim().is_empty())
+}
+
+/// Generate a message for the next commit in `root`, sending progress to
+/// `emit`. Blocking; stops early when `cancel` is set.
+pub fn generate(root: &Path, staged: bool, cancel: &AtomicBool, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+    let (stat, diff) = changes(root, staged)?;
+    let model = config("commit_model").unwrap_or_else(|| DEFAULT_MODEL.into());
+    let provider = choose(
+        &config("commit_provider").unwrap_or_default(),
+        openai::load_tokens().is_some(),
+        openai::api_key,
+        config("commit_command"),
+    )?;
+    let raw = match provider {
+        Provider::ChatGpt => {
+            let result = chatgpt(&model, &user_text(&stat, &diff), cancel, emit);
+            emit(Event::Account(openai::account()));
+            result?
+        }
+        Provider::ApiKey(key) => {
+            openai::stream(&Auth::ApiKey(&key), &model, SYSTEM_PROMPT, &user_text(&stat, &diff), cancel, &mut |d| {
+                emit(Event::Delta(d.to_string()))
+            })
+            .map_err(|e| match e {
+                StreamError::Unauthorized => "OpenAI rejected the API key (401)".to_string(),
+                StreamError::Other(e) => e,
+            })?
+        }
+        Provider::Command(line) => run_command(&line, &build_prompt(&stat, &diff), cancel, emit)?,
+    };
+    let message = clean(&raw);
+    if message.is_empty() { Err("The model returned an empty message".into()) } else { Ok(message) }
+}
+
+fn chatgpt(model: &str, input: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+    let tokens = match openai::load_tokens() {
+        Some(t) => openai::fresh(t, cancel)?,
+        None => {
+            emit(Event::Status("Sign in with ChatGPT in your browser…".into()));
+            let t = openai::login(cancel)?;
+            emit(Event::Account(Some(t.email.clone().unwrap_or_default())));
+            emit(Event::Status("Signed in — generating a commit message…".into()));
+            t
+        }
+    };
+    let mut tokens = tokens;
+    let mut retried = false;
+    loop {
+        match openai::stream(&Auth::ChatGpt(&tokens), model, SYSTEM_PROMPT, input, cancel, &mut |d| {
+            emit(Event::Delta(d.to_string()))
+        }) {
+            Ok(text) => return Ok(text),
+            Err(StreamError::Unauthorized) if !retried => {
+                retried = true;
+                tokens = openai::refresh(&tokens, cancel)?;
+            }
+            Err(StreamError::Unauthorized) => {
+                let _ = openai::sign_out();
+                return Err("ChatGPT rejected the session — click ✦ to sign in again".into());
+            }
+            Err(StreamError::Other(e)) => return Err(e),
         }
     }
 }
 
-fn on_path(bin: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
-}
-
-fn scratch_dir() -> Result<PathBuf, String> {
-    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir =
-        std::env::temp_dir().join(format!("mira-commit-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir)
-}
-
-/// Generate a message for the next commit in `root`. Blocking; returns early
-/// with an error when `cancel` is set.
-pub fn generate(root: &Path, staged: bool, cancel: Arc<AtomicBool>) -> Result<String, String> {
-    let (stat, diff) = changes(root, staged)?;
-    let prompt = build_prompt(&stat, &diff);
-    let dir = scratch_dir()?;
-    let result = run(&Backend::from_config(), &dir, &prompt, &cancel);
-    let _ = std::fs::remove_dir_all(&dir);
-    let message = clean(&result?);
-    if message.is_empty() { Err("The model returned an empty message".into()) } else { Ok(message) }
-}
-
-fn run(backend: &Backend, dir: &Path, prompt: &str, cancel: &AtomicBool) -> Result<String, String> {
-    let out_file = dir.join("message.txt");
-    let mut cmd = match backend {
-        Backend::Codex { model } => {
-            if !on_path("codex") {
-                return Err("codex not found — install it, or set commit_command in ~/.config/mira/config".into());
-            }
-            let mut c = Command::new("codex");
-            c.args(["exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only"])
-                .args(["--ignore-user-config", "--ignore-rules", "--color", "never"])
-                .args(["-m", model, "-c", "model_reasoning_effort=\"low\"", "-o"])
-                .arg(&out_file)
-                .arg("-");
-            c
-        }
-        Backend::Shell(line) => {
-            let mut c = Command::new("sh");
-            c.args(["-c", line]);
-            c
-        }
-    };
-    let mut child = cmd
-        .current_dir(dir)
+/// Run `commit_command` with the prompt on stdin, streaming its stdout.
+fn run_command(line: &str, prompt: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
+    let mut child = Command::new("sh")
+        .args(["-c", line])
+        .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not start the generator: {e}"))?;
+        .map_err(|e| format!("could not start commit_command: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes()).map_err(|e| e.to_string())?;
+        // A command that ignores stdin closes it early; that is fine.
+        let _ = stdin.write_all(prompt.as_bytes());
     }
-    // Drain pipes on threads so a chatty process cannot block on a full pipe.
-    let drain = |r: Option<Box<dyn std::io::Read + Send>>| {
+    let stderr = child.stderr.take().map(|mut r| {
         std::thread::spawn(move || {
-            let mut buf = String::new();
-            if let Some(mut r) = r {
-                let _ = r.read_to_string(&mut buf);
-            }
-            buf
+            let mut s = String::new();
+            let _ = r.read_to_string(&mut s);
+            s
         })
-    };
-    let stdout = drain(child.stdout.take().map(|r| Box::new(r) as _));
-    let stderr = drain(child.stderr.take().map(|r| Box::new(r) as _));
-    let started = std::time::Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            break status;
+    });
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    if let Some(mut out) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = out.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    let started = Instant::now();
+    let mut pending = Vec::new();
+    let mut text = String::new();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(bytes) => {
+                pending.extend_from_slice(&bytes);
+                // Emit whole UTF-8 characters only; keep a split one for later.
+                let valid = match std::str::from_utf8(&pending) {
+                    Ok(_) => pending.len(),
+                    Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                    Err(_) => pending.len(),
+                };
+                let chunk = String::from_utf8_lossy(&pending[..valid]).into_owned();
+                pending.drain(..valid);
+                if !chunk.is_empty() {
+                    text.push_str(&chunk);
+                    emit(Event::Delta(chunk));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        if cancel.load(Ordering::Relaxed) || started.elapsed() > TIMEOUT {
+        if cancel.load(Ordering::Relaxed) || started.elapsed() > COMMAND_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
             return Err(if cancel.load(Ordering::Relaxed) { "Cancelled".into() } else { "Timed out".into() });
         }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
+    }
+    text.push_str(&String::from_utf8_lossy(&pending));
+    let status = child.wait().map_err(|e| e.to_string())?;
     if !status.success() {
-        let why = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("generator failed");
+        let err = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
+        let why = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("commit_command failed");
         return Err(why.trim().to_string());
     }
-    match backend {
-        Backend::Codex { .. } => std::fs::read_to_string(&out_file).map_err(|_| "codex wrote no message".into()),
-        Backend::Shell(_) => Ok(stdout),
-    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -263,21 +346,41 @@ mod tests {
         let p = build_prompt(" a | 1 +", &diff);
         assert!(p.contains("(diff truncated)"));
         assert!(p.starts_with(SYSTEM_PROMPT));
+        assert!(!user_text(" a | 1 +", "d").contains("Conventional Commits"));
     }
 
     #[test]
-    fn shell_backend_reads_prompt_on_stdin() {
-        let dir = scratch_dir().unwrap();
-        let out = run(&Backend::Shell("head -c 3".into()), &dir, "fix: stdin", &AtomicBool::new(false));
-        let _ = std::fs::remove_dir_all(dir);
-        assert_eq!(out.unwrap(), "fix");
+    fn auto_prefers_session_then_key_then_command_then_sign_in() {
+        let key = || Ok(Some("sk".to_string()));
+        let none = || Ok(None);
+        let cmd = || Some("ollama".to_string());
+        assert_eq!(choose("", true, key, cmd()), Ok(Provider::ChatGpt));
+        assert_eq!(choose("auto", false, key, cmd()), Ok(Provider::ApiKey("sk".into())));
+        assert_eq!(choose("", false, none, cmd()), Ok(Provider::Command("ollama".into())));
+        assert_eq!(choose("", false, none, None), Ok(Provider::ChatGpt));
+        assert_eq!(choose("ChatGPT", false, key, cmd()), Ok(Provider::ChatGpt));
+        assert_eq!(choose("command", true, key, cmd()), Ok(Provider::Command("ollama".into())));
+        assert!(choose("openai", true, none, None).unwrap_err().contains("OPENAI_API_KEY"));
+        assert!(choose("codex", true, key, None).is_err());
     }
 
     #[test]
-    fn cancel_kills_the_generator() {
-        let dir = scratch_dir().unwrap();
-        let out = run(&Backend::Shell("sleep 30".into()), &dir, "", &AtomicBool::new(true));
-        let _ = std::fs::remove_dir_all(dir);
-        assert_eq!(out.unwrap_err(), "Cancelled");
+    fn command_streams_stdout_in_utf8_pieces() {
+        let mut deltas = Vec::new();
+        let out =
+            run_command("head -c 4; sleep 0.2; printf 'é\\n'", "fix: stdin", &AtomicBool::new(false), &mut |e| {
+                if let Event::Delta(d) = e {
+                    deltas.push(d)
+                }
+            });
+        assert_eq!(out.unwrap(), "fix:é\n");
+        assert_eq!(deltas, ["fix:", "é\n"]);
+    }
+
+    #[test]
+    fn command_failure_and_cancel() {
+        let none = &mut |_: Event| {};
+        assert_eq!(run_command("echo boom >&2; exit 3", "", &AtomicBool::new(false), none).unwrap_err(), "boom");
+        assert_eq!(run_command("sleep 30", "", &AtomicBool::new(true), none).unwrap_err(), "Cancelled");
     }
 }
