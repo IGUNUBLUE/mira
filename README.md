@@ -35,6 +35,11 @@ cargo build --release
 ./target/release/mira [--fresh] [DIRECTORY]
 ```
 
+Themes: the four LAGC palettes (Tech / Calm, light / dark). The default, `auto`,
+follows the active HyDE theme live (`~/.local/state/hyde/staterc`) and falls back to
+LAGC Tech Light. `Ctrl+Shift+T` or the status-bar button cycles auto → each palette;
+the choice is saved in `~/.config/mira/config` (`theme = "LAGC Tech Dark"`).
+
 Fonts default to Inter and JetBrains Mono (medium weight); set `MIRA_FONT` /
 `MIRA_MONO_FONT` to use other installed families.
 
@@ -51,6 +56,7 @@ renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.
 | `Ctrl+Shift+J` / `K` | Next / previous session |
 | `Ctrl+Shift+R` / `G` / `D` / `F` / `E` | Inspector: Review / Git / .env / Search / Files (again to hide) |
 | `Ctrl+B` | Toggle inspector |
+| `Ctrl+Shift+T` | Cycle theme |
 | `Ctrl+Shift+C` / `V` | Copy / paste in the terminal |
 | `Ctrl+S` / `Ctrl+W` | Save / close tab |
 
@@ -61,7 +67,7 @@ renderer (lower memory, no GPU) with `ICED_BACKEND=tiny-skia`.
 - Editor: line numbers, find in file, scroll-to-line, tree-sitter highlighting
 - Commit message generation (provider-agnostic: any OpenAI-compatible endpoint, local models)
 - LSP completion (optional, per language)
-- Config file (fonts, theme, keybindings), dark theme
+- Fonts and keybindings in the config file
 - Hunk navigation and per-hunk staging
 
 ## License

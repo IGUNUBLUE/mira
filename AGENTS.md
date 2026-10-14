@@ -17,7 +17,8 @@ Lightweight terminal-first workspace in Rust (iced 0.14 + iced_term 0.8).
 - `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context).
 - `src/explorer.rs` — lazy tree, only expanded dirs are read.
 - `src/search.rs` — `ignore` walker + `regex`; replace uses `NoExpand` for literal mode.
-- `src/theme.rs` — LAGC Tech Light palette and style fns.
+- `src/theme.rs` — the four LAGC palettes (source: `~/Projects/My-HyDE-dots` VSCodium/kitty themes), active
+  palette via `p()`, `Choice` (auto = follow HyDE `staterc`), style fns. Never hardcode colors in views: use `p().<field>`.
 
 ## Shortcuts
 

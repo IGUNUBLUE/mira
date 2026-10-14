@@ -90,6 +90,50 @@ pub fn save(state: &State) -> Result<(), String> {
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
 }
 
+// ------------------------------------------------------------------ config
+
+/// `$XDG_CONFIG_HOME/mira/config`: `key = value` lines, `#` comments.
+fn config_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|d| d.join("mira/config"))
+}
+
+pub fn config_get(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(config_path()?).ok()?;
+    text.lines().filter(|l| !l.trim_start().starts_with('#')).find_map(|l| {
+        let (k, v) = l.split_once('=')?;
+        (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+    })
+}
+
+/// Set `key`, keeping every other line (and comments) as they are.
+pub fn config_set(key: &str, value: &str) -> Result<(), String> {
+    let path = config_path().ok_or("no config directory")?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let line = format!("{key} = \"{value}\"");
+    let mut found = false;
+    let mut lines: Vec<String> = text
+        .lines()
+        .map(|l| match l.split_once('=') {
+            Some((k, _)) if !l.trim_start().starts_with('#') && k.trim() == key && !found => {
+                found = true;
+                line.clone()
+            }
+            _ => l.to_string(),
+        })
+        .collect();
+    if !found {
+        lines.push(line);
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, lines.join("\n") + "\n").map_err(|e| e.to_string())
+}
+
 // ------------------------------------------------------- agent conversations
 
 /// One conversation an agent CLI recorded on disk.
@@ -216,6 +260,19 @@ pub fn parse_iso_utc(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_set_keeps_other_lines() {
+        let dir = std::env::temp_dir().join(format!("mira-config-{}", std::process::id()));
+        // SAFETY: only this test uses XDG_CONFIG_HOME.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        std::fs::create_dir_all(dir.join("mira")).unwrap();
+        std::fs::write(dir.join("mira/config"), "# mine\nfont = x\ntheme = auto\n").unwrap();
+        config_set("theme", "LAGC Calm Dark").unwrap();
+        assert_eq!(config_get("theme").as_deref(), Some("LAGC Calm Dark"));
+        assert_eq!(std::fs::read_to_string(dir.join("mira/config")).unwrap(), "# mine\nfont = x\ntheme = \"LAGC Calm Dark\"\n");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn parses_iso_timestamps() {

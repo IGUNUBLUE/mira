@@ -145,6 +145,8 @@ pub struct App {
     /// Session id whose close is awaiting a second click.
     pub confirm_close: Option<u64>,
 
+    pub theme: theme::Choice,
+
     // persistence
     state_dirty: bool,
     discovering: bool,
@@ -165,6 +167,7 @@ pub enum Msg {
     /// Tab click: just switch.
     InspectorTab(Inspector),
     ToggleInspector,
+    CycleTheme,
     FocusMode,
     CenterResized(pane_grid::ResizeEvent),
     Key(keyboard::Event, bool),
@@ -314,7 +317,11 @@ impl App {
             .map(|p| if p.is_empty() { p } else { format!("{p}/") })
             .unwrap_or_default();
 
+        let theme_choice =
+            persist::config_get("theme").and_then(|v| theme::Choice::parse(&v)).unwrap_or(theme::Choice::Auto);
+        theme::set_current(theme_choice.resolve());
         let mut app = Self {
+            theme: theme_choice,
             explorer: Explorer::new(root.clone()),
             root,
             center: center_layout(false, 0.55),
@@ -445,7 +452,7 @@ impl App {
         let cs = keyboard::Modifiers::CTRL | keyboard::Modifiers::SHIFT;
         let mut bindings: Vec<_> =
             // Not "v"/"c": Ctrl+Shift+V/C are the terminal's paste/copy.
-            ["r", "g", "d", "f", "e", "m", "n", "b", "j", "k"].iter().map(|c| swallow(c, cs)).collect();
+            ["r", "g", "d", "f", "e", "m", "n", "b", "j", "k", "t"].iter().map(|c| swallow(c, cs)).collect();
         bindings.push(swallow("`", keyboard::Modifiers::CTRL));
         term.handle(iced_term::Command::AddBindings(bindings));
 
@@ -609,6 +616,15 @@ impl App {
             }),
             Msg::Discovered,
         )
+    }
+
+    /// Activate the palette of the current choice; recolor terminals if it changed.
+    fn apply_theme(&mut self) {
+        if theme::set_current(self.theme.resolve()) {
+            for s in &mut self.sessions {
+                s.term.handle(iced_term::Command::ChangeTheme(Box::new(theme::terminal_palette())));
+            }
+        }
     }
 
     fn cycle_session(&mut self, step: isize) -> Task<Msg> {
@@ -1067,6 +1083,9 @@ impl App {
                 }
             }
             Msg::Tick => {
+                if self.theme == theme::Choice::Auto {
+                    self.apply_theme();
+                }
                 self.explorer.refresh();
                 self.reload_changed_files();
                 let mut tasks = vec![self.refresh_git(), self.reload_active_diff(), self.discover_conversations()];
@@ -1084,6 +1103,19 @@ impl App {
                 }
                 self.save_state();
                 return self.status_tick();
+            }
+            Msg::CycleTheme => {
+                self.theme = self.theme.next();
+                self.apply_theme();
+                let name = theme::p().name;
+                let label = match self.theme {
+                    theme::Choice::Auto => format!("Theme: auto (following HyDE · {name})"),
+                    theme::Choice::Fixed(_) => format!("Theme: {name}"),
+                };
+                self.set_status(label, false);
+                if let Err(e) = persist::config_set("theme", &self.theme.label()) {
+                    self.set_status(format!("Could not save theme: {e}"), true);
+                }
             }
             Msg::ToggleInspector => {
                 self.show_inspector = !self.show_inspector;
@@ -1481,6 +1513,7 @@ impl App {
             (Some('r'), true) => return self.update(Msg::Inspector(Inspector::Review)),
             (Some('g'), true) => return self.update(Msg::Inspector(Inspector::Git)),
             (Some('d'), true) => return self.update(Msg::Inspector(Inspector::Env)),
+            (Some('t'), true) => return self.update(Msg::CycleTheme),
             (Some('j'), true) => return self.cycle_session(1),
             (Some('k'), true) => return self.cycle_session(-1),
             (Some('f'), true) => return self.update(Msg::Inspector(Inspector::Search)),
