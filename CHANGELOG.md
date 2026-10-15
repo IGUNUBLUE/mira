@@ -24,6 +24,11 @@ All notable changes to mira are listed here. The format follows
 - The line under the pointer is highlighted in diffs; Commit, Push and Pull spin while they run;
   `Ctrl+Shift+G` focuses the commit message, as in VSCodium.
 
+### Changed
+
+- A new icon: an eye looking at a side-by-side diff (removed | added), with the terminal's
+  cursor as its pupil.
+
 ### Fixed
 
 - Diffs could show an empty body: the cached rows were given no width.

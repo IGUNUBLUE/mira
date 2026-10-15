@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mira.svg" width="96" alt="mira icon: an eye whose pupil is a terminal prompt">
+  <img src="assets/mira.svg" width="96" alt="mira icon: an eye looking at a side-by-side diff, the terminal cursor as its pupil">
 </p>
 
 <h1 align="center">mira</h1>
