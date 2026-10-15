@@ -26,6 +26,7 @@ All notable changes to mira are listed here. The format follows
 
 ### Fixed
 
+- Diffs could show an empty body: the cached rows were given no width.
 - "N new" counted files of older agent turns that were already committed.
 
 ## [0.1.1]

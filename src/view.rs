@@ -1622,7 +1622,9 @@ impl App {
                 // the terminal streams many messages per second while agents work.
                 let (rows, anchor) = (Arc::clone(diff), d.anchor);
                 let cached = lazy((diff.id, anchor, theme::current()), move |_| diff_rows(&rows, anchor));
-                scrollable(container(cached).padding(Padding { right: 12.0, ..Padding::ZERO }))
+                // `lazy` hints Shrink: the widths are set here, or the rows get none.
+                scrollable(container(cached).width(Length::Fill).padding(Padding { right: 12.0, ..Padding::ZERO }))
+                    .width(Length::Fill)
                     .height(Length::Fill)
                     .into()
             }
@@ -1796,7 +1798,7 @@ impl App {
 /// The rows of a diff, owning their text (for `lazy`), at most [`diff::MAX_FULL_ROWS`].
 fn diff_rows(diff: &diff::FileDiff, anchor: Option<usize>) -> Element<'static, Msg> {
     let note = |s: String| container(text(s).size(12).color(p().warn_text)).padding([4, 12]);
-    let mut rows = Column::new();
+    let mut rows = Column::new().width(Length::Fill);
     if diff.full_capped {
         rows = rows.push(note(format!(
             "Over {} rows: showing the changes only. Open the file to see all of it.",
