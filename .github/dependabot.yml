@@ -6,7 +6,10 @@ updates:
       interval: weekly
     groups:
       iced:
-        patterns: ["iced*", "alacritty_terminal"]
+        patterns: ["iced*"]
+    ignore:
+      # Pinned to the exact version iced_term uses; it moves when iced_term does.
+      - dependency-name: alacritty_terminal
   - package-ecosystem: github-actions
     directory: /
     schedule:

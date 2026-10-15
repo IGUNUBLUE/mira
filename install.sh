@@ -17,6 +17,7 @@ REPO="IGUNUBLUE/mira"
 PREFIX="${MIRA_PREFIX:-$HOME/.local}"
 BIN="$PREFIX/bin"
 APPS="$PREFIX/share/applications"
+DOCS="$PREFIX/share/doc/mira"
 ICONS="$PREFIX/share/icons/hicolor/scalable/apps"
 VERSION="latest"
 FROM_SOURCE=0
@@ -31,6 +32,7 @@ while [ $# -gt 0 ]; do
     --source) FROM_SOURCE=1; shift ;;
     --uninstall)
       rm -f "$BIN/mira" "$APPS/mira.desktop" "$ICONS/mira.svg"
+      rm -rf "$DOCS"
       say "removed mira from $PREFIX (your config and state in ~/.config/mira and ~/.local/state/mira are kept)"
       exit 0 ;;
     -h|--help) sed -n '2,15p' "$0" 2>/dev/null || true; exit 0 ;;
@@ -57,6 +59,11 @@ install_files() { # <dir with mira, mira.desktop, mira.svg>
   # Absolute Exec: launchers don't always have ~/.local/bin on their PATH.
   sed "s|^Exec=.*|Exec=$BIN/mira|" "$1/mira.desktop" > "$APPS/mira.desktop"
   chmod 0644 "$APPS/mira.desktop"
+  # Licenses: mira's own and, in release builds, its dependencies' notices.
+  mkdir -p "$DOCS"
+  for f in LICENSE-MIT LICENSE-APACHE THIRD_PARTY_LICENSES.html; do
+    if [ -f "$1/$f" ]; then install -m 0644 "$1/$f" "$DOCS/$f"; fi
+  done
   if has update-desktop-database; then update-desktop-database "$APPS" >/dev/null 2>&1 || true; fi
   if has gtk-update-icon-cache; then gtk-update-icon-cache -q "$PREFIX/share/icons/hicolor" >/dev/null 2>&1 || true; fi
 }
@@ -92,7 +99,8 @@ from_source() {
   git clone --quiet --depth 1 --branch "$REF" "https://github.com/$REPO.git" "$TMP/src"
   cargo build --release --locked --manifest-path "$TMP/src/Cargo.toml"
   mkdir -p "$TMP/pkg"
-  cp "$TMP/src/target/release/mira" "$TMP/src/assets/mira.desktop" "$TMP/src/assets/mira.svg" "$TMP/pkg/"
+  cp "$TMP/src/target/release/mira" "$TMP/src/assets/mira.desktop" "$TMP/src/assets/mira.svg" \
+    "$TMP/src/LICENSE-MIT" "$TMP/src/LICENSE-APACHE" "$TMP/pkg/"
   install_files "$TMP/pkg"
   say "built and installed mira ($REF) to $BIN/mira"
 }

@@ -6,6 +6,14 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1]
+
+### Added
+
+- Release archives include `THIRD_PARTY_LICENSES.html`, the licenses of every crate compiled
+  into mira (generated with cargo-about); the installer puts it and mira's licenses in
+  `~/.local/share/doc/mira`.
+
 ## [0.1.0]
 
 First public release. mira is in early development: expect breaking changes before 1.0.

@@ -80,3 +80,5 @@ Security issues: see [SECURITY.md](SECURITY.md).
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+Release binaries include `THIRD_PARTY_LICENSES.html` with the licenses of the crates compiled
+into them.
