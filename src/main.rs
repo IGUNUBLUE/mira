@@ -40,42 +40,19 @@ fn pick_renderer() {
     }
 }
 
-/// Ask for a folder with the desktop's own dialog (zenity or yad), starting in
-/// `~/Projects` when it exists. `None` if cancelled. Without a dialog tool,
-/// fall back to the current directory.
-fn pick_folder() -> Option<String> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let start = [home.join("Projects"), home.clone()].into_iter().find(|p| p.is_dir()).unwrap_or(home);
-    let start = format!("{}/", start.display());
-    let title = "Open a folder in mira";
-    let tools: [(&str, Vec<&str>); 2] = [
-        ("zenity", vec!["--file-selection", "--directory", "--title", title, "--filename", &start]),
-        ("yad", vec!["--file", "--directory", "--title", title, "--filename", &start]),
-    ];
-    for (tool, args) in tools {
-        match std::process::Command::new(tool).args(&args).output() {
-            Ok(out) if out.status.success() => {
-                let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                return (!dir.is_empty()).then_some(dir);
-            }
-            Ok(_) => return None,
-            Err(_) => continue,
-        }
-    }
-    std::env::current_dir().ok().map(|d| d.to_string_lossy().into_owned())
-}
-
 fn main() -> iced::Result {
     pick_renderer();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let fresh = args.iter().any(|a| a == "--fresh");
-    let pick = args.iter().any(|a| a == "--pick");
+    // `--pick` used to ask for a folder; herdr's workspaces decide now. Accepted for old launchers.
     args.retain(|a| a != "--fresh" && a != "--pick");
-    let mut arg = args.into_iter().next();
+    let arg = args.into_iter().next();
     if matches!(arg.as_deref(), Some("-h" | "--help")) {
         println!(
-            "Usage: mira [--fresh] [--pick] [DIRECTORY]\n\nOpens DIRECTORY (default: current directory) in mira.\n\
-             --fresh forgets the recorded agent turns; --pick asks for the folder when none is given."
+            "Usage: mira [--fresh] [DIRECTORY]\n\nOpens DIRECTORY in mira and focuses its herdr workspace. Without one,\n\
+             mira opens the current directory, or (from the home directory, e.g. the app launcher) the\n\
+             folder of herdr's focused workspace. mira then follows herdr: switching workspace switches\n\
+             the folder. --fresh forgets the recorded agent turns."
         );
         return Ok(());
     }
@@ -84,25 +61,26 @@ fn main() -> iced::Result {
         return Ok(());
     }
 
-    if pick && arg.is_none() {
-        match pick_folder() {
-            Some(dir) => arg = Some(dir),
-            // Cancelled: nothing to open.
-            None => return Ok(()),
+    let start = match arg {
+        Some(dir) => match PathBuf::from(&dir).canonicalize().ok().filter(|p| p.is_dir()) {
+            Some(root) => app::Start::Folder(root),
+            None => {
+                eprintln!("mira: {dir}: not a directory");
+                std::process::exit(2);
+            }
+        },
+        None => {
+            let home = std::env::var_os("HOME").map(PathBuf::from).and_then(|h| h.canonicalize().ok());
+            match std::env::current_dir().ok().and_then(|d| d.canonicalize().ok()) {
+                // Launched from a project directory: open it.
+                Some(cwd) if Some(&cwd) != home.as_ref() => app::Start::Folder(cwd),
+                // From the launcher (cwd = home): whatever herdr is focused on.
+                _ => app::Start::Follow,
+            }
         }
-    }
+    };
 
-    let root = arg
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .and_then(|p| p.canonicalize().ok())
-        .filter(|p| p.is_dir())
-        .unwrap_or_else(|| {
-            eprintln!("mira: not a directory");
-            std::process::exit(2);
-        });
-
-    iced::application(move || app::App::new(root.clone(), fresh), app::App::update, app::App::view)
+    iced::application(move || app::App::new(start.clone(), fresh), app::App::update, app::App::view)
         .title(app::App::title)
         .subscription(app::App::subscription)
         .theme(|_: &app::App| theme::theme())

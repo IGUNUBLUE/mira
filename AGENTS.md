@@ -30,7 +30,10 @@ sits around that loop: review what the agents changed, edit, search, commit.
 
 ## Structure
 
-- `src/main.rs` — CLI args, iced application setup.
+- `src/main.rs` — CLI args, iced application setup. `app::Start`: a folder, or `Follow` (launcher, cwd = home).
+- Folder follows herdr: `poll_herdr` also reads `pane.list`; when the focused workspace changes, `App::follow` →
+  `switch_root` (git, explorer, runs, search, commit box reset; diff tabs close). Async results tied to a folder go
+  through `for_root` (`Msg::ForRoot(epoch, ..)`) so a reply for the old folder is dropped.
 - `src/app.rs` — state, `Msg`, `update`, keyboard. One terminal running herdr (`TermKind`), herdr polled on
   `Msg::StatusTick` (700 ms), runs fed to `runs::Tracker`; Changes shows git files with their run (`Tracker::origin`, `is_new`) or grouped by run. `Msg::Tick` (2 s; every 5th tick while unfocused): git,
   explorer only while Files is visible, reload clean tabs, active diff only when its file changed (`active_diff_stale`).

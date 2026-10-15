@@ -97,6 +97,16 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+/// The folder mira showed last, for a start without a folder or herdr.
+pub fn last_root() -> Option<PathBuf> {
+    let text = std::fs::read_to_string(state_dir()?.join("last_root")).ok()?;
+    Some(PathBuf::from(text.trim_end_matches('\n'))).filter(|p| p.is_dir())
+}
+
+pub fn set_last_root(root: &Path) -> Result<(), String> {
+    write_private(&state_dir().ok_or("no state directory")?.join("last_root"), root.as_os_str().as_encoded_bytes())
+}
+
 // ------------------------------------------------------------------ config
 
 /// `$XDG_CONFIG_HOME/mira/config`: `key = value` lines, `#` comments.

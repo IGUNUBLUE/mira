@@ -184,6 +184,11 @@ pub struct App {
     herdr_session: Option<String>,
     polling: bool,
     workspace: Option<String>,
+    /// Started without a folder before herdr was up: take the folder of
+    /// herdr's focused workspace as soon as it answers.
+    adopt_focused: bool,
+    /// Bumped when the folder changes; async results of an older folder are dropped.
+    root_epoch: u64,
     ensuring_workspace: bool,
     /// Earliest next `ensure_workspace` attempt after a failure.
     workspace_retry: Instant,
@@ -274,7 +279,9 @@ pub enum Msg {
     TermFlush,
 
     // herdr and runs
-    HerdrPolled(Result<Vec<Agent>, herdr::Error>),
+    HerdrPolled(Result<(Vec<Agent>, Option<Focus>), herdr::Error>),
+    /// A result computed for folder epoch `.0`; dropped if the folder changed since.
+    ForRoot(u64, Box<Msg>),
     WorkspaceReady(Result<String, herdr::Error>),
     RunSnapshot(RunId, bool, Result<String, String>),
     RunFiles(RunId, Vec<Change>),
@@ -402,11 +409,26 @@ fn swallow(
 const SHORTCUT_LETTERS: [&str; 6] = ["g", "f", "e", "m", "b", "t"];
 
 impl App {
-    pub fn new(root: PathBuf, fresh: bool) -> (Self, Task<Msg>) {
-        let repo_prefix = git::repo_root(&root)
-            .and_then(|r| root.strip_prefix(&r).ok().map(|p| p.to_string_lossy().into_owned()))
-            .map(|p| if p.is_empty() { p } else { format!("{p}/") })
-            .unwrap_or_default();
+    pub fn new(start: Start, fresh: bool) -> (Self, Task<Msg>) {
+        let herdr_session = persist::config_get("herdr_session").filter(|s| herdr::valid_session(s));
+        let use_herdr = herdr::installed() && persist::config_get("terminal").as_deref() != Some("shell");
+        let herdr_client = if use_herdr { herdr::Client::for_session(herdr_session.as_deref()) } else { None };
+        // Without a folder, show herdr's focused workspace; if herdr isn't up
+        // yet, the last folder until it is (see `adopt_focused`).
+        let (root, workspace, adopt_focused) = match start {
+            Start::Folder(root) => (root, None, false),
+            Start::Follow => match herdr_client.as_ref().and_then(|c| c.panes().ok()).and_then(|p| focused_root(&p)) {
+                Some((ws, root)) => (root, Some(ws), false),
+                None => {
+                    let fallback = persist::last_root()
+                        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+                        .unwrap_or_else(|| PathBuf::from("/"));
+                    (fallback, None, herdr_client.is_some())
+                }
+            },
+        };
+        let _ = persist::set_last_root(&root);
+        let repo_prefix = repo_prefix(&root);
 
         let theme_choice =
             persist::config_get("theme").and_then(|v| theme::Choice::parse(&v)).unwrap_or(theme::Choice::Auto);
@@ -414,8 +436,6 @@ impl App {
         let width = |key: &str, default: f32| {
             persist::config_get(key).and_then(|v| v.parse::<f32>().ok()).filter(|w| w.is_finite()).unwrap_or(default)
         };
-        let herdr_session = persist::config_get("herdr_session").filter(|s| herdr::valid_session(s));
-        let use_herdr = herdr::installed() && persist::config_get("terminal").as_deref() != Some("shell");
         let runs = if fresh { Vec::new() } else { persist::load(&root).map(|s| s.runs).unwrap_or_default() };
 
         let mut app = Self {
@@ -444,10 +464,12 @@ impl App {
             next_term_id: 0,
             gate: termio::Gate::default(),
             flush_scheduled: false,
-            herdr: if use_herdr { herdr::Client::for_session(herdr_session.as_deref()) } else { None },
+            herdr: herdr_client,
             herdr_session,
             polling: false,
-            workspace: None,
+            workspace,
+            adopt_focused,
+            root_epoch: 0,
             ensuring_workspace: false,
             workspace_retry: Instant::now(),
             agents: Vec::new(),
@@ -693,7 +715,87 @@ impl App {
             return Task::none();
         }
         self.polling = true;
-        Task::perform(blocking(move || client.agents()), Msg::HerdrPolled)
+        // Follow herdr's focus once mira knows its workspace (or is waiting to adopt one).
+        let follow = (self.workspace.is_some() || self.adopt_focused) && !self.ensuring_workspace;
+        let since = self.workspace.clone();
+        Task::perform(
+            blocking(move || {
+                let agents = client.agents()?;
+                let focus = if follow {
+                    // Resolve the folder (a git call) only when the focus moved.
+                    client.panes().ok().and_then(|panes| {
+                        let moved = herdr::focused(&panes).is_some_and(|p| Some(&p.workspace_id) != since.as_ref());
+                        moved.then(|| focused_root(&panes)).flatten()
+                    })
+                } else {
+                    None
+                };
+                Ok((agents, focus.map(|(workspace, root)| Focus { workspace, root, since })))
+            }),
+            Msg::HerdrPolled,
+        )
+    }
+
+    /// Wrap a task whose result belongs to the current folder.
+    fn for_root(&self, task: Task<Msg>) -> Task<Msg> {
+        let epoch = self.root_epoch;
+        task.map(move |m| Msg::ForRoot(epoch, Box::new(m)))
+    }
+
+    /// herdr's focused workspace changed: show its folder.
+    fn follow(&mut self, focus: Focus) -> Task<Msg> {
+        if focus.since != self.workspace || self.ensuring_workspace {
+            return Task::none();
+        }
+        self.workspace = Some(focus.workspace);
+        self.adopt_focused = false;
+        if focus.root == self.root {
+            return Task::none();
+        }
+        self.switch_root(focus.root)
+    }
+
+    /// Show another folder: git, explorer, search and agent turns follow it.
+    /// File tabs stay open (they are absolute paths); diff tabs belong to the
+    /// old repository and close.
+    fn switch_root(&mut self, root: PathBuf) -> Task<Msg> {
+        if self.autosave != AutoSave::Off {
+            self.save_dirty_tabs();
+        }
+        self.save_state();
+        if let Some(job) = self.commit_gen.take() {
+            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.root_epoch += 1;
+        let _ = persist::set_last_root(&root);
+        self.repo_prefix = repo_prefix(&root);
+        self.explorer = Explorer::new(root.clone());
+        let runs = persist::load(&root).map(|s| s.runs).unwrap_or_default();
+        self.runs = Tracker::from_runs(runs);
+        self.root = root;
+        self.git = Snapshot::default();
+        self.refreshing = false;
+        self.snapshot_queue.clear();
+        self.snapshot_running = false;
+        self.snapshots_off = false;
+        self.selected_run = None;
+        self.confirm_revert = None;
+        self.state_dirty = false;
+        self.agents.clear();
+        self.commit_msg = Content::new();
+        self.commit_history = crate::history::History::default();
+        let generation = self.search.generation + 1;
+        self.search = SearchState { generation, ..SearchState::default() };
+        let before = self.tabs.len();
+        let active = self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| matches!(t, Tab::File(_)));
+        self.tabs.retain(|t| matches!(t, Tab::File(_)));
+        if self.tabs.len() != before || active == Some(false) {
+            self.active_tab = (!self.tabs.is_empty()).then_some(0);
+        }
+        self.pending_close = None;
+        self.sync_center();
+        self.set_status(format!("Workspace: {}", file_name(&self.root)), false);
+        Task::batch([self.refresh_git(), self.load_all_run_files()])
     }
 
     fn on_agents(&mut self, agents: Vec<Agent>) -> Task<Msg> {
@@ -716,7 +818,11 @@ impl App {
             self.state_dirty = true;
         }
         let mut tasks: Vec<Task<Msg>> = effects.into_iter().map(|e| self.run_effect(e)).collect();
-        if self.workspace.is_none() && !self.ensuring_workspace && Instant::now() >= self.workspace_retry {
+        if self.workspace.is_none()
+            && !self.adopt_focused
+            && !self.ensuring_workspace
+            && Instant::now() >= self.workspace_retry
+        {
             tasks.push(self.ensure_workspace());
         }
         Task::batch(tasks)
@@ -745,10 +851,10 @@ impl App {
         {
             let (dir, start, end) = (run.dir.clone(), run.started, run.finished.unwrap_or(run.started));
             let home = PathBuf::from(home);
-            tasks.push(Task::perform(
+            tasks.push(self.for_root(Task::perform(
                 blocking(move || crate::agentlog::last_prompt(&home, &kind, &dir, start, end)),
                 move |p| Msg::RunPrompt(id, p),
-            ));
+            )));
         }
         Task::batch(tasks)
     }
@@ -761,7 +867,9 @@ impl App {
         let Some((id, after)) = self.snapshot_queue.pop_front() else { return Task::none() };
         self.snapshot_running = true;
         let root = self.repo_root();
-        Task::perform(blocking(move || git::snapshot_tree(&root)), move |r| Msg::RunSnapshot(id, after, r))
+        self.for_root(Task::perform(blocking(move || git::snapshot_tree(&root)), move |r| {
+            Msg::RunSnapshot(id, after, r)
+        }))
     }
 
     /// Changed files of every run whose trees are known (after a restore).
@@ -773,9 +881,10 @@ impl App {
     fn load_run_files(&self, id: RunId) -> Task<Msg> {
         let Some((from, to)) = self.runs.get(id).and_then(|r| r.trees()) else { return Task::none() };
         let (root, from, to) = (self.repo_root(), from.to_string(), to.to_string());
-        Task::perform(blocking(move || git::diff_trees(&root, &from, &to).unwrap_or_default()), move |f| {
-            Msg::RunFiles(id, f)
-        })
+        self.for_root(Task::perform(
+            blocking(move || git::diff_trees(&root, &from, &to).unwrap_or_default()),
+            move |f| Msg::RunFiles(id, f),
+        ))
     }
 
     fn save_state(&mut self) {
@@ -1073,7 +1182,7 @@ impl App {
         }
         self.refreshing = true;
         let root = self.root.clone();
-        Task::perform(blocking(move || git::snapshot(&root)), Msg::GitLoaded)
+        self.for_root(Task::perform(blocking(move || git::snapshot(&root)), Msg::GitLoaded))
     }
 
     fn git_op(&mut self, op: impl FnOnce(&Path) -> Result<String, String> + Send + 'static) -> Task<Msg> {
@@ -1240,9 +1349,10 @@ impl App {
             Msg::HerdrPolled(result) => {
                 self.polling = false;
                 match result {
-                    Ok(agents) => {
+                    Ok((agents, focus)) => {
                         self.herdr_error = None;
-                        return self.on_agents(agents);
+                        let follow = focus.map_or_else(Task::none, |f| self.follow(f));
+                        return Task::batch([follow, self.on_agents(agents)]);
                     }
                     // No server: its agents are gone (or the client in the
                     // terminal is still starting it). Close what was open.
@@ -1251,6 +1361,11 @@ impl App {
                         return self.on_agents(Vec::new());
                     }
                     Err(e) => self.herdr_error = Some(e.to_string()),
+                }
+            }
+            Msg::ForRoot(epoch, msg) => {
+                if epoch == self.root_epoch {
+                    return self.update(*msg);
                 }
             }
             Msg::WorkspaceReady(result) => {
@@ -1760,6 +1875,40 @@ impl App {
 
 pub fn first_line(s: &str) -> Option<&str> {
     s.lines().map(str::trim).find(|l| !l.is_empty())
+}
+
+/// What mira opens at start.
+#[derive(Debug, Clone)]
+pub enum Start {
+    /// This folder (its herdr workspace gets focused, or created).
+    Folder(PathBuf),
+    /// The folder of herdr's focused workspace.
+    Follow,
+}
+
+/// herdr's focused workspace moved to another one.
+#[derive(Debug, Clone)]
+pub struct Focus {
+    workspace: String,
+    root: PathBuf,
+    /// The workspace mira knew when it polled; a stale reply is ignored.
+    since: Option<String>,
+}
+
+/// Folder of the focused pane: its git repository, else its directory.
+fn focused_root(panes: &[herdr::Pane]) -> Option<(String, PathBuf)> {
+    let pane = herdr::focused(panes)?;
+    let cwd = pane.cwd.as_deref()?.canonicalize().ok()?;
+    let root = git::repo_root(&cwd).and_then(|r| r.canonicalize().ok()).unwrap_or(cwd);
+    Some((pane.workspace_id.clone(), root))
+}
+
+/// `root` relative to its repository, with a trailing slash ("" at the top).
+fn repo_prefix(root: &Path) -> String {
+    git::repo_root(root)
+        .and_then(|r| root.strip_prefix(&r).ok().map(|p| p.to_string_lossy().into_owned()))
+        .map(|p| if p.is_empty() { p } else { format!("{p}/") })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

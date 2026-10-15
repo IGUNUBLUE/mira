@@ -100,6 +100,14 @@ pub struct Pane {
     pub workspace_id: String,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
+    /// The pane the user is in (one per server: in the focused workspace).
+    #[serde(default)]
+    pub focused: bool,
+}
+
+/// The focused pane, i.e. where the user is working in herdr.
+pub fn focused(panes: &[Pane]) -> Option<&Pane> {
+    panes.iter().find(|p| p.focused)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,6 +397,21 @@ pub(crate) mod tests {
         assert_eq!(methods, ["pane.list", "workspace.focus", "pane.list", "workspace.create"]);
         assert_eq!(reqs[1].1, json!({"workspace_id": "w2"}));
         assert_eq!(reqs[3].1, json!({"cwd": "/new", "label": "new", "focus": true}));
+    }
+
+    #[test]
+    fn focused_pane_is_where_the_user_is() {
+        let server = fake_server(|_, _| {
+            json!({"result": {"type": "pane_list", "panes": [
+                {"pane_id": "w1:p1", "workspace_id": "w1", "cwd": "/a", "focused": false},
+                {"pane_id": "w2:p1", "workspace_id": "w2", "cwd": "/b", "focused": true},
+                {"pane_id": "w3:p1", "workspace_id": "w3"}
+            ]}})
+        });
+        let panes = Client::new(server.socket.clone()).panes().expect("panes");
+        let f = focused(&panes).expect("focused");
+        assert_eq!((f.workspace_id.as_str(), f.cwd.as_deref()), ("w2", Some(Path::new("/b"))));
+        assert!(focused(&panes[..1]).is_none());
     }
 
     #[test]

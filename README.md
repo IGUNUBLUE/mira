@@ -61,11 +61,15 @@ so hooks, signing and credential helpers behave exactly as in your terminal.
 
 ```bash
 cargo build --release
-./target/release/mira [--fresh] [--pick] [DIRECTORY]
+./target/release/mira [--fresh] [DIRECTORY]
 ```
 
-`--fresh` forgets the recorded agent turns. `--pick` asks for the folder with a native dialog
-(zenity or yad) when none is given; the desktop entry uses it. Config (`~/.config/mira/config`):
+mira never asks for a folder; herdr's workspaces decide. With `DIRECTORY` (or when run from a
+project directory) mira opens it and focuses its herdr workspace, creating one if needed. From
+the app launcher it opens the folder of herdr's focused workspace (the last folder if herdr
+isn't up yet). After that it follows herdr: switch workspace in herdr and mira's Changes,
+Files, Search and history switch with it; open file tabs stay. `--fresh` forgets the recorded
+agent turns. Config (`~/.config/mira/config`):
 `herdr_session = "name"` attaches to a named herdr session instead of the default one;
 `terminal = "shell"` skips herdr.
 
