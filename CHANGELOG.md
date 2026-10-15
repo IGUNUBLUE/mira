@@ -8,12 +8,13 @@ All notable changes to mira are listed here. The format follows
 
 ## [0.1.0]
 
-First public release.
+First public release. mira is in early development: expect breaking changes before 1.0.
 
 ### Added
 
 - Terminal running [herdr](https://herdr.dev), with the agents of the folder in its header
-  and a jump to any agent's pane. mira follows herdr's focused workspace.
+  and a jump to any agent's pane. mira follows herdr's focused workspace and reports its
+  light/dark palette to herdr (as Ghostty does), so herdr's theme can follow.
 - Changes panel with the agent that changed each file, new-change dots, and a view by agent
   turn titled with the prompt (Codex and Kiro logs); stage or revert a whole turn.
 - Side-by-side diffs with inline highlights; comments on a line are typed into the pane of the

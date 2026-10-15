@@ -110,8 +110,12 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - iced_term 0.8 sends PTY events with `blocking_send` into a channel of 100 while holding the terminal lock.
   Calling `Terminal::handle` during an event burst deadlocks the UI (herdr asks for 256 colors at startup).
   Never call `handle` directly: use `App::term_send` / `term_write`, which go through `termio::Gate`.
-- herdr's `terminal` theme maps tokens to ANSI colors; mira's light palettes put a dark color in ANSI 7, which
-  herdr uses for some UI elements (e.g. the focused pane's scrollbar track).
+- herdr's `terminal` theme maps tokens to ANSI colors and assumes a dark terminal: `overlay1` is White (15), which
+  is the background color in mira's light palettes (tab labels vanished), and the active tab is DarkGray (8) on
+  Blue (4). mira reports light/dark like Ghostty (`CSI ? 997 ; 1|2 n`, `termio::color_scheme_report`) at start,
+  on focus and on theme change, so herdr's `auto_switch` can apply `[theme.custom.light]`/`[theme.custom.dark]`
+  overrides; the recommended ones are in docs/guide.md (checked in all four palettes). ANSI 7 is dark in the
+  light palettes, which herdr uses for the focused pane's scrollbar track (`pane_scrollbars = false`).
 
 ## Quality gate
 

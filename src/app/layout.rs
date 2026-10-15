@@ -96,6 +96,10 @@ impl App {
                 if self.term_kind == TermKind::Herdr {
                     self.term_write(if f { b"\x1b[I".to_vec() } else { b"\x1b[O".to_vec() });
                 }
+                // Cheap and idempotent: also covers the herdr client just started.
+                if f {
+                    self.report_color_scheme();
+                }
             }
             Msg::DividerHover(d) => self.hovered_divider = d,
             Msg::DividerPress(d) => {
@@ -155,6 +159,7 @@ impl App {
     pub(super) fn apply_theme(&mut self) {
         if theme::set_current(self.theme.resolve()) {
             self.term_send(iced_term::Command::ChangeTheme(Box::new(theme::terminal_palette())));
+            self.report_color_scheme();
         }
     }
 

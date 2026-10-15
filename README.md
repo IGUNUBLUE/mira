@@ -17,6 +17,11 @@
 *Mira* is Spanish for "look!". You talk to your agents (Codex, Claude Code, Kiro, …) in the
 terminal; mira sits around that loop so you can **see what they did**, fix it, and commit it.
 
+> [!NOTE]
+> **mira is in early development.** I use it every day, but it is young: expect rough edges,
+> missing features and breaking changes before 1.0. Linux only for now.
+> [Bug reports and ideas](https://github.com/IGUNUBLUE/mira/issues) are very welcome.
+
 ## Why
 
 I moved most of my coding to agents that run in a terminal, and kept an editor open only to
@@ -49,7 +54,8 @@ This installs a release binary (or builds from source with cargo) into `~/.local
 desktop entry and icon. Linux only for now (x86_64, aarch64). Uninstall with
 `… | sh -s -- --uninstall`.
 
-Works best with [herdr](https://herdr.dev) (agent tracking) and a
+Works best with [herdr](https://herdr.dev) (agent tracking; see the
+[recommended herdr settings](docs/guide.md#herdr-settings)) and a
 [Nerd Font](https://www.nerdfonts.com) (icons). It needs `git` and `curl`.
 
 From source: `cargo install --git https://github.com/IGUNUBLUE/mira --locked`.

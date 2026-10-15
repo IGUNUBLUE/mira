@@ -398,6 +398,21 @@ pub fn bracketed(text: &str) -> Vec<u8> {
     out
 }
 
+/// The terminal's light/dark report (`CSI ? 997 ; 1 n` dark, `; 2 n` light),
+/// as Ghostty and other terminals send it for mode 2031. alacritty_terminal
+/// doesn't implement it, so mira types it to the app (herdr reads it at any
+/// time and switches between its `dark_name` and `light_name` themes).
+pub fn color_scheme_report(dark: bool) -> &'static [u8] {
+    if dark { b"\x1b[?997;1n" } else { b"\x1b[?997;2n" }
+}
+
+/// Whether `palette` is dark, judged like terminals and herdr do:
+/// perceived luminance (Rec. 601) of the background below one half.
+pub fn is_dark(palette: &theme::Palette) -> bool {
+    let bg = palette.bg;
+    0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b < 0.5
+}
+
 fn hex_rgb(s: &str) -> (u8, u8, u8) {
     let v = u32::from_str_radix(s.trim_start_matches('#'), 16).unwrap_or(0);
     ((v >> 16) as u8, (v >> 8) as u8, v as u8)
@@ -431,6 +446,15 @@ pub fn color_reply_rgb(index: usize) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn color_scheme_report_matches_each_palette() {
+        assert_eq!(color_scheme_report(true), b"\x1b[?997;1n");
+        assert_eq!(color_scheme_report(false), b"\x1b[?997;2n");
+        for p in &theme::PALETTES {
+            assert_eq!(is_dark(p), p.name.ends_with("Dark"), "{}", p.name);
+        }
+    }
 
     #[test]
     fn grid_maps_pixels_to_clamped_cells() {

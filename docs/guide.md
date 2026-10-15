@@ -31,9 +31,35 @@ running in herdr when mira closes and are there again when it opens.
 - Text is copied on selection; the mouse wheel, right/middle clicks and Alt+key reach herdr.
 - `Ctrl+Shift+V` pastes (bracketed paste).
 
-Recommended herdr settings (`~/.config/herdr/config.toml`): `[theme] name = "terminal"`, so
-herdr draws with mira's colors; and `[ui.toast] delivery = "system"` for notifications (mira
-doesn't send its own).
+### herdr settings
+
+These go in `~/.config/herdr/config.toml`. They make herdr draw with mira's colors and stay
+readable in light and dark palettes (herdr's `terminal` theme alone assumes a dark terminal):
+
+```toml
+[theme]
+name = "terminal"
+auto_switch = true      # mira tells herdr whether its palette is light or dark
+dark_name = "terminal"
+light_name = "terminal"
+
+[theme.custom.light]
+overlay1 = "gray"       # tab labels and the right side of the tab bar
+surface_dim = "white"   # text of the active tab
+active_row_bg = "white"
+
+[theme.custom.dark]
+surface_dim = "black"
+active_row_bg = "darkgray"
+
+[ui]
+pane_scrollbars = false # its track uses a color that is dark in light palettes
+
+[ui.toast]
+delivery = "system"     # notifications (mira doesn't send its own)
+```
+
+Then restart mira (or choose `reload config` in herdr's menu).
 
 ## Changes: what the agents did
 

@@ -10,7 +10,7 @@ use alacritty_terminal::vte::ansi::Rgb;
 use iced::{Task, keyboard};
 use iced_term::{AlacrittyEvent, BackendCommand};
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// What runs in the center terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +44,7 @@ impl App {
         match msg {
             Msg::Term(iced_term::Event::BackendCall(_, cmd)) => return self.on_term_call(cmd),
             Msg::TermInput(input) => return self.on_term_input(input),
+            Msg::ReportColorScheme => self.report_color_scheme(),
             Msg::TermFlush => {
                 self.flush_scheduled = false;
                 if self.gate.flush_due(Instant::now()) {
@@ -98,7 +99,13 @@ impl App {
         self.gate = termio::Gate::default();
         self.term_cell = None;
         self.workspace = None;
-        self.focus_terminal()
+        // The client needs a moment to start reading its input.
+        let report = if self.term_kind == TermKind::Herdr {
+            Task::perform(blocking(|| std::thread::sleep(Duration::from_secs(2))), |()| Msg::ReportColorScheme)
+        } else {
+            Task::none()
+        };
+        Task::batch([self.focus_terminal(), report])
     }
 
     pub(super) fn focus_terminal(&mut self) -> Task<Msg> {
@@ -109,6 +116,14 @@ impl App {
 
     pub(super) fn term_write(&mut self, bytes: Vec<u8>) {
         self.term_send(iced_term::Command::ProxyToBackend(BackendCommand::Write(bytes)));
+    }
+
+    /// Tell herdr whether mira's palette is light or dark, as a terminal does
+    /// (see `termio::color_scheme_report`), so its theme can follow.
+    pub(super) fn report_color_scheme(&mut self) {
+        if self.term_kind == TermKind::Herdr && self.term.is_some() {
+            self.term_write(termio::color_scheme_report(termio::is_dark(theme::p())).to_vec());
+        }
     }
 
     /// Every command for the terminal goes through the gate (see `termio::Gate`).

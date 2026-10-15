@@ -189,6 +189,8 @@ pub enum Msg {
     RestartTerminal,
     /// Flush terminal commands queued by the gate after a quiet moment.
     TermFlush,
+    /// Tell herdr light/dark once its client has started (see `report_color_scheme`).
+    ReportColorScheme,
 
     // herdr and runs
     HerdrPolled(Result<(Vec<Agent>, Option<Focus>), herdr::Error>),
@@ -535,7 +537,9 @@ impl App {
             | Msg::WindowSize(_)
             | Msg::DismissStatus
             | Msg::CycleTheme) => self.update_layout(m),
-            m @ (Msg::Term(_) | Msg::TermInput(_) | Msg::TermFlush | Msg::RestartTerminal) => self.update_terminal(m),
+            m @ (Msg::Term(_) | Msg::TermInput(_) | Msg::TermFlush | Msg::ReportColorScheme | Msg::RestartTerminal) => {
+                self.update_terminal(m)
+            }
             m @ (Msg::StatusTick
             | Msg::HerdrPolled(_)
             | Msg::ForRoot(..)
