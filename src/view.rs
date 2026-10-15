@@ -641,8 +641,7 @@ impl App {
             container(
                 column![
                     row![
-                        ico(Icon::Branch, 14).color(p().accent),
-                        branch,
+                        row![ico(Icon::Branch, 14).color(p().accent), branch].spacing(6).align_y(Alignment::Center),
                         space::horizontal(),
                         self.chatgpt_account.as_ref().map(|email| if self.confirm_signout {
                             tip(
