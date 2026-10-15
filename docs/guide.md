@@ -125,7 +125,9 @@ command are the stable options. See [privacy](privacy.md) for exactly what is se
 
 ## Editor, search and files
 
-- **Editor**: syntax highlighting, `Ctrl+S` to save, `Ctrl+W` or middle-click to close a tab.
+- **Editor**: syntax highlighting and line numbers (the cursor's line is highlighted), `Ctrl+S`
+  to save, `Ctrl+W` or middle-click to close a tab. Long lines don't wrap; the view follows the
+  cursor sideways.
   Tabs without unsaved edits reload when an agent changes the file.
 - **Undo / redo**: `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y`, in the editor and the commit box, one
   step per word as in VS Code. A reload caused by an agent is undoable too.

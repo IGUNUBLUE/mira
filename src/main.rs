@@ -8,6 +8,7 @@ mod diff;
 mod explorer;
 mod files;
 mod git;
+mod gutter;
 mod herdr;
 mod history;
 mod icons;

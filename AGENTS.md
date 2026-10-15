@@ -67,6 +67,10 @@ sits around that loop: review what the agents changed, edit, search, commit.
   view over `MAX_FULL_ROWS` falls back to hunks. Tabs hold `Arc<FileDiff>`; `FileDiff.id` keys the cached rows.
 - `src/explorer.rs` — lazy tree, only expanded dirs are read, and only again when their mtime moves; git `Marks`
   (status, ignored) are computed per snapshot and copied onto entries.
+- `src/gutter.rs` — editor line numbers. iced 0.14 exposes no editor scroll, so `gutter::Scroll` mirrors
+  cosmic-text's three rules (wheel, follow the cursor, clamp) with wrapping off; tested step by step against a real
+  cosmic-text editor (dev-dependency). Every file-editor action must go through `FileTab::follow` (or `scrolled`
+  for `Action::Scroll`); the text area height comes from a `sensor` (`Msg::EditorViewport`).
 - `src/history.rs` — undo/redo for a `text_editor::Content` (iced has none): word-grouped steps storing only the
   changed span, capped (500 steps / 8 MB). File tabs and the commit box own one; `FileTab.dirty` follows it.
   Autosave (`AutoSave`, VSCodium's names) lives in app/documents.rs: `save_tab(i, manual)`; autosave skips files whose

@@ -15,6 +15,10 @@ use std::time::{Duration, Instant, SystemTime};
 /// Largest file opened in a tab or diffed (bytes).
 const MAX_OPEN_BYTES: u64 = 8 * 1024 * 1024;
 
+/// The file editor's padding (view.rs) above and below its text.
+pub const EDITOR_PADDING_TOP: f32 = 6.0;
+const EDITOR_PADDING_Y: f32 = 2.0 * EDITOR_PADDING_TOP;
+
 /// `autosave` in the config, named like VSCodium's `files.autoSave`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoSave {
@@ -57,6 +61,39 @@ pub struct FileTab {
     /// The file changed on disk while this tab had unsaved edits: autosave
     /// stops for it until the user saves by hand.
     pub(super) conflict: bool,
+    /// The editor's scroll, mirrored for the line numbers (see `gutter.rs`).
+    pub scroll: crate::gutter::Scroll,
+    /// Opened at a line and not touched since: keep that line in view while
+    /// the editor's size settles (the panes are laid out after it opens).
+    reveal: bool,
+}
+
+impl FileTab {
+    /// Height of one editor row.
+    pub fn row() -> f32 {
+        crate::gutter::line_height(super::CODE_SIZE as f32)
+    }
+
+    /// After an editor action: the view follows the cursor, as the editor does.
+    fn follow(&mut self, view: Option<f32>) {
+        self.scroll.settle(self.content.cursor().position, Self::row(), self.content.line_count(), view);
+    }
+
+    /// Scroll the cursor's line into view. The editor only scrolls when the
+    /// cursor moves, and the size it first scrolled for may change right after
+    /// a file opens: so move it off its line and back, then follow.
+    fn reveal(&mut self, view: Option<f32>) {
+        let cursor = self.content.cursor();
+        let line = cursor.position.line;
+        let other = if line + 1 < self.content.line_count() { line + 1 } else { line.saturating_sub(1) };
+        if other != line {
+            let away = text_editor::Position { line: other, column: 0 };
+            self.content.move_to(text_editor::Cursor { position: away, selection: None });
+            self.content.move_to(cursor);
+        }
+        self.scroll.force_follow();
+        self.follow(view);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,8 +184,18 @@ impl App {
                     // Editing again: a later Ctrl+W must warn again.
                     self.pending_close = None;
                 }
+                let view = self.editor_view;
                 if let Some(t) = self.active_file_mut() {
+                    let wheel = match action {
+                        text_editor::Action::Scroll { lines } => Some(lines),
+                        _ => None,
+                    };
+                    t.reveal = false;
                     t.history.perform(&mut t.content, action);
+                    match wheel {
+                        Some(lines) => t.scroll.scrolled(lines, FileTab::row(), t.content.line_count(), view),
+                        None => t.follow(view),
+                    }
                     if edit {
                         t.dirty = true;
                         t.edited_at = Some(Instant::now());
@@ -160,7 +207,21 @@ impl App {
                     self.save_tab(i, true);
                 }
             }
+            Msg::EditorViewport(size) => {
+                // The text area: the editor minus its vertical padding.
+                self.editor_view = Some((size.height - EDITOR_PADDING_Y).max(0.0));
+                let view = self.editor_view;
+                if let Some(t) = self.active_file_mut() {
+                    // Until the user acts, keep the line a file was opened at in view.
+                    if t.reveal {
+                        t.reveal(view);
+                    } else {
+                        t.follow(view);
+                    }
+                }
+            }
             Msg::Undo | Msg::Redo => {
+                let view = self.editor_view;
                 if let Some(t) = self.active_file_mut() {
                     let done = if matches!(msg, Msg::Undo) {
                         t.history.undo(&mut t.content)
@@ -168,6 +229,7 @@ impl App {
                         t.history.redo(&mut t.content)
                     };
                     if done {
+                        t.follow(view);
                         t.dirty = t.history.is_dirty();
                         t.edited_at = Some(Instant::now());
                     }
@@ -275,6 +337,8 @@ impl App {
                         history: crate::history::History::default(),
                         edited_at: None,
                         conflict: false,
+                        scroll: crate::gutter::Scroll::default(),
+                        reveal: false,
                     }))
                 }
                 Err(e) => {
@@ -283,10 +347,13 @@ impl App {
                 }
             },
         };
+        let view = self.editor_view;
         if let (Some(line), Tab::File(t)) = (line, &mut self.tabs[idx]) {
             let line = line.min(t.content.line_count().saturating_sub(1));
             t.content
                 .move_to(text_editor::Cursor { position: text_editor::Position { line, column: 0 }, selection: None });
+            t.follow(view);
+            t.reveal = true;
         }
         self.active_tab = Some(idx);
         self.focus_mode = false;
@@ -429,6 +496,7 @@ impl App {
     }
 
     pub(super) fn reload_changed_files(&mut self) {
+        let view = self.editor_view;
         let mut deleted = Vec::new();
         for tab in &mut self.tabs {
             let Tab::File(t) = tab else { continue };
@@ -449,11 +517,14 @@ impl App {
                 let old = t.content.text();
                 let before = t.content.cursor();
                 t.content = Content::with_text(&text);
+                // A new editor starts at the top, then follows its cursor.
+                t.scroll = crate::gutter::Scroll::default();
                 let line = before.position.line.min(t.content.line_count().saturating_sub(1));
                 t.content.move_to(text_editor::Cursor {
                     position: text_editor::Position { line, column: 0 },
                     selection: None,
                 });
+                t.follow(view);
                 // Undoable, like VSCodium: Ctrl+Z brings back the text before the agent's change.
                 t.history.record(&old, &t.content.text(), before, t.content.cursor());
                 t.history.mark_saved(&t.content);

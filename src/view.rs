@@ -1173,7 +1173,9 @@ impl App {
             .font(theme::mono_font())
             .size(CODE_SIZE)
             .height(Length::Fill)
-            .padding(Padding { top: 6.0, right: 12.0, bottom: 6.0, left: 16.0 })
+            // No wrapping: one row per line, so the line numbers can follow (gutter.rs).
+            .wrapping(text::Wrapping::None)
+            .padding(Padding { top: EDITOR_PADDING_TOP, right: 12.0, bottom: EDITOR_PADDING_TOP, left: 8.0 })
             .style(|_, _| text_editor::Style {
                 background: p().bg.into(),
                 border: iced::Border::default(),
@@ -1196,6 +1198,7 @@ impl App {
                 }
             })
             .highlight(&t.syntax, p().syntax);
+        let editor = iced::widget::sensor(editor).on_show(Msg::EditorViewport).on_resize(Msg::EditorViewport);
         column![
             container(
                 row![
@@ -1206,9 +1209,49 @@ impl App {
                 .align_y(Alignment::Center)
             )
             .padding([2, 12]),
-            editor,
+            row![self.view_gutter(t), editor].height(Length::Fill),
         ]
         .into()
+    }
+
+    /// Line numbers beside the editor, lined up with its scroll (see
+    /// `gutter.rs`); the cursor's line is highlighted, as in VSCodium. Only
+    /// the visible numbers are built, and only when they change.
+    fn view_gutter<'a>(&'a self, t: &'a FileTab) -> Element<'a, Msg> {
+        let row_h = FileTab::row();
+        let count = t.content.line_count();
+        let width = crate::gutter::width(count, CODE_SIZE as f32 * 0.6);
+        let numbers: Element<'a, Msg> = match self.editor_view {
+            Some(view) => {
+                let offset = t.scroll.offset(row_h, count, view);
+                let (first, shown, cut) = crate::gutter::visible(offset, row_h, count, view);
+                let cursor = t.content.cursor().position.line;
+                lazy((first, shown, cut.to_bits(), cursor, theme::current()), move |_| {
+                    let mut rows = Column::new();
+                    for line in first..first + shown {
+                        let color = if line == cursor { p().fg } else { p().line_no };
+                        rows = rows.push(
+                            container(
+                                text((line + 1).to_string()).size(CODE_SIZE).font(theme::mono_font()).color(color),
+                            )
+                            .height(row_h)
+                            .width(Length::Fill)
+                            .align_x(Alignment::End),
+                        );
+                    }
+                    Element::<'static, Msg>::from(iced::widget::pin(rows).y(-cut).width(Length::Fill))
+                })
+                .into()
+            }
+            None => space().into(),
+        };
+        container(numbers)
+            .width(width)
+            .height(Length::Fill)
+            .padding(Padding { top: EDITOR_PADDING_TOP, right: 4.0, bottom: EDITOR_PADDING_TOP, left: 8.0 })
+            .clip(true)
+            .style(theme::bg(p().bg))
+            .into()
     }
 
     fn view_diff<'a>(&'a self, d: &'a DiffTab) -> Element<'a, Msg> {

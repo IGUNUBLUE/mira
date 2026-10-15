@@ -67,6 +67,12 @@ cargo test
 By contributing you agree that your work is licensed under the project's dual
 MIT / Apache-2.0 license.
 
+## Releases
+
+Changes land on `main` and are listed under *Unreleased* in the changelog. A release goes out
+once five or six improvements have accumulated; bug fixes and hotfixes are released right away.
+Tagging `vX.Y.Z` builds and publishes the binaries.
+
 ## Using coding agents
 
 mira is built with coding agents, and [AGENTS.md](AGENTS.md) is written for them as much as for

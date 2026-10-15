@@ -18,7 +18,7 @@ mod review;
 mod scm;
 mod terminal;
 
-pub use documents::{AutoSave, DiffSource, DiffTab, FileTab, Tab};
+pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, Tab};
 pub use find::SearchState;
 pub use layout::{CenterPane, Divider, Inspector, SEARCH_INPUT};
 pub use scm::{CommitGen, GitOutcome, SPINNER, SignIn, SignInEvent, SignInStage};
@@ -105,6 +105,8 @@ pub struct App {
 
     // documents
     pub tabs: Vec<Tab>,
+    /// Height of the file editor's text area, once laid out (for the line numbers).
+    pub editor_view: Option<f32>,
     pub active_tab: Option<usize>,
     /// The dirty file tab a first close attempt warned about.
     pub pending_close: Option<PathBuf>,
@@ -227,6 +229,8 @@ pub enum Msg {
     SelectTab(usize),
     CloseTab(usize),
     Edit(text_editor::Action),
+    /// The file editor got this size (its line numbers need the height).
+    EditorViewport(iced::Size),
     Save,
     Undo,
     Redo,
@@ -380,6 +384,7 @@ impl App {
             comment: String::new(),
             state_dirty: false,
             tabs: Vec::new(),
+            editor_view: None,
             active_tab: None,
             pending_close: None,
             git: Snapshot::default(),
@@ -575,6 +580,7 @@ impl App {
             | Msg::SelectTab(_)
             | Msg::CloseTab(_)
             | Msg::Edit(_)
+            | Msg::EditorViewport(_)
             | Msg::Save
             | Msg::Undo
             | Msg::Redo
