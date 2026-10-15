@@ -2,38 +2,43 @@
   <title>mira</title>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#173B4F"/>
-      <stop offset="1" stop-color="#081620"/>
-    </linearGradient>
-    <linearGradient id="iris" x1="0.2" y1="0" x2="0.8" y2="1">
-      <stop offset="0" stop-color="#62E1EA"/>
+      <stop offset="0" stop-color="#5BDCE6"/>
       <stop offset="1" stop-color="#0E6672"/>
     </linearGradient>
-    <clipPath id="eye"><path d="M20 128 C60 52 196 52 236 128 C196 204 60 204 20 128 Z"/></clipPath>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16303E"/>
+      <stop offset="1" stop-color="#08151E"/>
+    </linearGradient>
   </defs>
-  <!-- tile, with a faint rim so it holds on dark docks -->
   <rect width="256" height="256" rx="56" fill="url(#bg)"/>
-  <rect x="1.5" y="1.5" width="253" height="253" rx="54.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="3"/>
-  <!-- ¡mira! An eye on a side-by-side diff: before (removed) | after (added) -->
-  <g clip-path="url(#eye)">
-    <rect x="0" y="0" width="128" height="256" fill="#FFD9D2"/>
-    <rect x="128" y="0" width="128" height="256" fill="#CFF6E3"/>
-    <g fill="#F06A5C">
-      <rect x="34" y="102" width="40" height="11" rx="5.5"/>
-      <rect x="26" y="123" width="52" height="11" rx="5.5"/>
-      <rect x="40" y="144" width="30" height="11" rx="5.5"/>
-    </g>
-    <g fill="#27B776">
-      <rect x="178" y="102" width="44" height="11" rx="5.5"/>
-      <rect x="178" y="123" width="56" height="11" rx="5.5"/>
-      <rect x="178" y="144" width="34" height="11" rx="5.5"/>
-    </g>
-    <rect x="126" y="0" width="4" height="256" fill="#0B1B26" opacity="0.35"/>
+  <!-- ¡mira! Binoculars whose lenses are a diff: removed | added -->
+  <g fill="url(#body)">
+    <!-- eyepieces -->
+    <rect x="62" y="40" width="40" height="30" rx="9"/>
+    <rect x="154" y="40" width="40" height="30" rx="9"/>
+    <!-- tubes, wider toward the lenses -->
+    <path d="M60 64 H104 L126 130 H34 Z" stroke="url(#body)" stroke-width="10" stroke-linejoin="round"/>
+    <path d="M196 64 H152 L130 130 H222 Z" stroke="url(#body)" stroke-width="10" stroke-linejoin="round"/>
+    <!-- hinge -->
+    <rect x="98" y="92" width="60" height="58" rx="12"/>
+    <!-- objectives -->
+    <circle cx="78" cy="164" r="52"/>
+    <circle cx="178" cy="164" r="52"/>
   </g>
-  <circle cx="128" cy="128" r="50" fill="url(#iris)"/>
-  <circle cx="128" cy="128" r="50" fill="none" stroke="#0B4954" stroke-width="4"/>
-  <circle cx="128" cy="128" r="25" fill="#0B1B26"/>
-  <!-- the pupil is the terminal's cursor -->
-  <rect x="123" y="114" width="10" height="28" rx="2.5" fill="#7CF2BD"/>
-  <ellipse cx="150" cy="106" rx="8" ry="6" fill="#FFFFFF" opacity="0.85"/>
+  <!-- focus wheel -->
+  <rect x="114" y="58" width="28" height="40" rx="7" fill="#24495A"/>
+  <g stroke="#5BDCE6" stroke-opacity="0.55" stroke-width="3" stroke-linecap="round">
+    <path d="M121 66 V90"/><path d="M128 66 V90"/><path d="M135 66 V90"/>
+  </g>
+  <!-- lenses -->
+  <circle cx="78" cy="164" r="37" fill="#FFD9D2"/>
+  <circle cx="178" cy="164" r="37" fill="#CFF6E3"/>
+  <rect x="58" y="156" width="40" height="16" rx="8" fill="#F06A5C"/>
+  <rect x="158" y="156" width="40" height="16" rx="8" fill="#27B776"/>
+  <rect x="170" y="144" width="16" height="40" rx="8" fill="#27B776"/>
+  <!-- glints -->
+  <path d="M54 146 A30 30 0 0 1 70 132" fill="none" stroke="#FFFFFF" stroke-opacity="0.8"
+        stroke-width="6" stroke-linecap="round"/>
+  <path d="M154 146 A30 30 0 0 1 170 132" fill="none" stroke="#FFFFFF" stroke-opacity="0.8"
+        stroke-width="6" stroke-linecap="round"/>
 </svg>

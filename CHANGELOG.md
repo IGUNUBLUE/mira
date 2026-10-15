@@ -26,8 +26,7 @@ All notable changes to mira are listed here. The format follows
 
 ### Changed
 
-- A new icon: an eye looking at a side-by-side diff (removed | added), with the terminal's
-  cursor as its pupil.
+- A new icon: binoculars (*mira* is Spanish for "look") whose lenses are a diff, − and +.
 
 ### Fixed
 

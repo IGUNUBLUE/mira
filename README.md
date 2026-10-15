@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mira.svg" width="96" alt="mira icon: an eye looking at a side-by-side diff, the terminal cursor as its pupil">
+  <img src="assets/mira.svg" width="96" alt="mira icon: binoculars whose lenses are a diff, minus and plus">
 </p>
 
 <h1 align="center">mira</h1>
