@@ -20,7 +20,7 @@ mod review;
 mod scm;
 mod terminal;
 
-pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, Tab};
+pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, ImageData, ImageTab, Tab};
 pub use find::SearchState;
 pub use layout::{COMMIT_INPUT, CenterPane, Divider, Inspector, SEARCH_INPUT};
 pub use navigate::{EDITOR, FIND_INPUT, FindBar, PALETTE_INPUT, QuickOpen};
@@ -245,6 +245,8 @@ pub enum Msg {
 
     // documents
     OpenFile(PathBuf, Option<usize>),
+    /// Show this SVG (open as text) rendered, in an image tab.
+    OpenImage(PathBuf),
     SelectTab(usize),
     CloseTab(usize),
     Edit(text_editor::Action),
@@ -667,6 +669,7 @@ impl App {
             | Msg::Comment(_)
             | Msg::SendComment) => self.update_review(m),
             m @ (Msg::OpenFile(..)
+            | Msg::OpenImage(_)
             | Msg::SelectTab(_)
             | Msg::CloseTab(_)
             | Msg::Edit(_)

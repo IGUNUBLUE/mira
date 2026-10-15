@@ -23,6 +23,7 @@ All notable changes to mira are listed here. The format follows
   hunk can be undone.
 - The line under the pointer is highlighted in diffs; Commit, Push and Pull spin while they run;
   `Ctrl+Shift+G` focuses the commit message, as in VSCodium.
+- Open images (PNG, JPEG, GIF, WebP, BMP, ICO) with zoom and pan; SVG files get a Preview.
 
 ### Changed
 

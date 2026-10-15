@@ -12,7 +12,9 @@ categories = ["development-tools", "text-editors"]
 exclude = ["/.agents", "/.kiro", "/.github", "/docs/images"]
 
 [dependencies]
-iced = { version = "0.14.0", features = ["highlighter", "tokio", "advanced", "lazy"] }
+iced = { version = "0.14.0", features = ["highlighter", "tokio", "advanced", "lazy", "image-without-codecs", "svg"] }
+# Image tabs: only the common formats are decoded (iced's `image` would enable them all).
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 iced_term = "0.8.0"
 # Same version iced_term uses; only for its event and grid types.
 alacritty_terminal = "=0.25.1"

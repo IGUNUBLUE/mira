@@ -93,6 +93,8 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - `src/hunks.rs` — git's own hunks of one file (`git::file_patch`, patience) for per-hunk stage/unstage/discard
   via `git::apply` (patch on stdin); `FileDiff::patch`, toolbars placed at each hunk's first changed line.
 - `src/files.rs` — `read_text` (size cap, NUL sniff, UTF-8) for tabs and search; `test_dir` for tests.
+- `src/imagefile.rs` — image tabs (`Tab::Image`): which extensions open as images, header-only read (size and
+  pixel caps); iced decodes on draw (`image-without-codecs` + our `image` with a few formats; `svg` for previews).
 - `src/proc.rs` — streams a child's stdout with stdin fed from a thread, cancel and timeout (commit_command, curl).
 - `src/icons.rs` — `Icon` (Nerd Font codicons + Unicode fallback) and `file_icon` (seti/devicons). Font found via `fc-list`, never bundled.
 - `src/theme.rs` — the four LAGC palettes, active palette via `p()`, `Choice` (auto = follow HyDE `staterc`), style fns.

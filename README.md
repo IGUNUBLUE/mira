@@ -40,7 +40,7 @@ with the terminal at the center and the review around it. [The longer story →]
 - **Commit messages that stream.** Conventional Commits from your ChatGPT subscription, an
   OpenAI API key, or any local command (e.g. ollama).
 - **The VS Code basics, without the weight.** Source control, search & replace, an explorer,
-  a syntax-highlighted editor with undo and autosave, file icons, four themes.
+  a syntax-highlighted editor with undo and autosave, an image viewer, file icons, four themes.
 - **Private by default.** No telemetry, no account needed, no network unless you ask for a
   commit message. [What leaves your machine →](docs/privacy.md)
 

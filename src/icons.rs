@@ -85,6 +85,7 @@ pub enum Icon {
     DotFilled,
     Account,
     Close,
+    Preview,
 }
 
 impl Icon {
@@ -123,6 +124,7 @@ impl Icon {
             DotFilled => ('\u{EA71}', "●"),
             Account => ('\u{EB99}', "@"),
             Close => ('\u{EA76}', "×"),
+            Preview => ('\u{EB2F}', "◫"),
         }
     }
 

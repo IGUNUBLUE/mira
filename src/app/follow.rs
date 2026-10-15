@@ -167,11 +167,13 @@ impl App {
         // Its file list is the old folder's.
         self.palette = None;
         let before = self.tabs.len();
-        let active = self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| matches!(t, Tab::File(_)));
-        self.tabs.retain(|t| matches!(t, Tab::File(_)));
+        let active = self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| t.file_path().is_some());
+        self.tabs.retain(|t| t.file_path().is_some());
         for tab in &mut self.tabs {
-            if let Tab::File(t) = tab {
-                t.crumbs = super::documents::crumbs(&self.root, &t.path);
+            match tab {
+                Tab::File(t) => t.crumbs = super::documents::crumbs(&self.root, &t.path),
+                Tab::Image(t) => t.crumbs = super::documents::crumbs(&self.root, &t.path),
+                Tab::Diff(_) => {}
             }
         }
         if self.tabs.len() != before || active == Some(false) {

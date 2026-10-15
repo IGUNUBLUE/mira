@@ -1252,10 +1252,7 @@ impl App {
     }
 
     fn view_explorer(&self) -> Element<'_, Msg> {
-        let open = match self.active_tab.and_then(|i| self.tabs.get(i)) {
-            Some(Tab::File(t)) => Some(t.path.as_path()),
-            _ => None,
-        };
+        let open = self.active_tab.and_then(|i| self.tabs.get(i)).and_then(Tab::file_path);
         let mut list = Column::new();
         // Status and ignored flags are computed in update (see `Explorer::set_marks`).
         for e in &self.explorer.entries {
@@ -1327,6 +1324,10 @@ impl App {
                     let name = file_name(&f.path);
                     if f.dirty { format!("● {name}") } else { name }
                 }
+                Tab::Image(f) => match f.image {
+                    ImageData::Raster(_) => file_name(&f.path),
+                    ImageData::Svg(_) => format!("{} (Preview)", file_name(&f.path)),
+                },
                 Tab::Diff(d) => {
                     let (name, _) = split_path(&d.rel);
                     let side = match &d.source {
@@ -1383,8 +1384,53 @@ impl App {
             None => space().into(),
             Some(Tab::File(t)) => self.view_editor(t),
             Some(Tab::Diff(d)) => self.view_diff(d),
+            Some(Tab::Image(t)) => self.view_image(t),
         };
         container(column![tab_bar, body]).width(Length::Fill).height(Length::Fill).style(theme::panel(p().bg)).into()
+    }
+
+    /// An image: zoom with the wheel and drag to pan (raster), or fit to the
+    /// tab (SVG). Small images keep their size.
+    fn view_image<'a>(&'a self, t: &'a ImageTab) -> Element<'a, Msg> {
+        let mut info = vec![crate::imagefile::human_bytes(t.bytes)];
+        if let Some((w, h)) = t.size {
+            info.insert(0, format!("{w} × {h}"));
+        }
+        let hint = match t.image {
+            ImageData::Raster(_) => "Scroll to zoom · drag to pan",
+            ImageData::Svg(_) => "Scaled to fit",
+        };
+        let header = row![
+            text(t.crumbs.as_str()).size(12).color(p().muted),
+            text(info.join(" · ")).size(12).color(p().muted),
+            t.gone.then(|| text("Deleted on disk").size(12).color(p().warn_text)),
+            space::horizontal(),
+            text(hint).size(12).color(p().line_no),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center);
+        let body: Element<'a, Msg> = match &t.image {
+            ImageData::Raster(h) => iced::widget::image::viewer(h.clone())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(16)
+                .content_fit(iced::ContentFit::ScaleDown)
+                .max_scale(32.0)
+                .into(),
+            ImageData::Svg(h) => container(
+                iced::widget::svg(h.clone())
+                    .content_fit(iced::ContentFit::Contain)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            )
+            .padding(24)
+            .into(),
+        };
+        column![
+            container(header).padding([4, 12]),
+            container(body).width(Length::Fill).height(Length::Fill).style(theme::panel(p().sidebar)),
+        ]
+        .into()
     }
 
     fn view_editor<'a>(&'a self, t: &'a FileTab) -> Element<'a, Msg> {
@@ -1435,6 +1481,10 @@ impl App {
                 row![
                     text(t.crumbs.as_str()).size(12).color(p().muted),
                     space::horizontal(),
+                    (crate::imagefile::kind(&t.path) == Some(crate::imagefile::Kind::Svg)).then(|| tip(
+                        icon_label(Icon::Preview, "Preview", Some(Msg::OpenImage(t.path.clone()))),
+                        "Show the image this SVG draws"
+                    )),
                     icon_label(Icon::Send, "Send line to agent", Some(Msg::SendLine)),
                 ]
                 .align_y(Alignment::Center)

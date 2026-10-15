@@ -3,6 +3,7 @@
 use super::{App, Msg, blocking, file_name};
 use crate::diff::{self, FileDiff};
 use crate::git;
+use crate::imagefile;
 use crate::persist;
 use crate::runs::RunId;
 
@@ -121,9 +122,60 @@ pub struct DiffTab {
     pub on_disk: bool,
 }
 
+/// An image, shown with zoom and pan (raster) or scaled to fit (SVG).
+pub struct ImageTab {
+    pub path: PathBuf,
+    pub crumbs: String,
+    pub image: ImageData,
+    /// Pixel size (raster only).
+    pub size: Option<(u32, u32)>,
+    pub bytes: u64,
+    mtime: Option<SystemTime>,
+    /// The file was deleted on disk; the last image stays.
+    pub gone: bool,
+}
+
+/// What iced draws. A new handle (new id) per read, so a changed file redraws.
+pub enum ImageData {
+    Raster(iced::widget::image::Handle),
+    Svg(iced::widget::svg::Handle),
+}
+
+impl ImageTab {
+    fn load(root: &Path, path: PathBuf, kind: imagefile::Kind) -> Result<Self, String> {
+        let loaded = imagefile::load(&path, kind)?;
+        let bytes = loaded.bytes.len() as u64;
+        let image = match kind {
+            imagefile::Kind::Raster => ImageData::Raster(iced::widget::image::Handle::from_bytes(loaded.bytes)),
+            imagefile::Kind::Svg => ImageData::Svg(iced::widget::svg::Handle::from_memory(loaded.bytes)),
+        };
+        Ok(Self {
+            crumbs: crumbs(root, &path),
+            mtime: mtime(&path),
+            path,
+            image,
+            size: loaded.size,
+            bytes,
+            gone: false,
+        })
+    }
+}
+
 pub enum Tab {
     File(FileTab),
     Diff(DiffTab),
+    Image(ImageTab),
+}
+
+impl Tab {
+    /// The file a file or image tab shows.
+    pub fn file_path(&self) -> Option<&Path> {
+        match self {
+            Tab::File(t) => Some(&t.path),
+            Tab::Image(t) => Some(&t.path),
+            Tab::Diff(_) => None,
+        }
+    }
 }
 
 fn mtime(p: &Path) -> Option<SystemTime> {
@@ -175,6 +227,7 @@ impl App {
     pub(super) fn update_documents(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
             Msg::OpenFile(path, line) => self.open_file(path, line),
+            Msg::OpenImage(path) => self.open_image(path),
             Msg::SelectTab(i) => {
                 if i < self.tabs.len() {
                     if self.autosave == AutoSave::OnFocusChange
@@ -329,6 +382,10 @@ impl App {
     }
 
     fn open_file(&mut self, path: PathBuf, line: Option<usize>) {
+        if imagefile::kind(&path) == Some(imagefile::Kind::Raster) {
+            self.open_image(path);
+            return;
+        }
         let idx = match self.tabs.iter().position(|t| matches!(t, Tab::File(f) if f.path == path)) {
             Some(i) => i,
             None => match read_text(&path) {
@@ -366,6 +423,24 @@ impl App {
             t.go_to_line(line, view);
             t.reveal = true;
         }
+        self.active_tab = Some(idx);
+        self.focus_mode = false;
+        self.sync_center();
+    }
+
+    /// Open `path` in an image tab (a raster image, or an SVG's preview).
+    pub(super) fn open_image(&mut self, path: PathBuf) {
+        let Some(kind) = imagefile::kind(&path) else { return };
+        let idx = match self.tabs.iter().position(|t| matches!(t, Tab::Image(f) if f.path == path)) {
+            Some(i) => i,
+            None => match ImageTab::load(&self.root, path.clone(), kind) {
+                Ok(tab) => self.open_tab(Tab::Image(tab)),
+                Err(e) => {
+                    self.set_status(format!("{}: {e}", file_name(&path)), true);
+                    return;
+                }
+            },
+        };
         self.active_tab = Some(idx);
         self.focus_mode = false;
         self.sync_center();
@@ -510,6 +585,20 @@ impl App {
         let view = self.editor_view;
         let mut deleted = Vec::new();
         for tab in &mut self.tabs {
+            if let Tab::Image(t) = tab {
+                // An agent re-rendered a screenshot or an icon: show the new one.
+                let now = mtime(&t.path);
+                if now != t.mtime {
+                    t.mtime = now;
+                    t.gone = now.is_none();
+                    if let (false, Some(kind)) = (t.gone, imagefile::kind(&t.path))
+                        && let Ok(fresh) = ImageTab::load(&self.root, t.path.clone(), kind)
+                    {
+                        *t = fresh;
+                    }
+                }
+                continue;
+            }
             let Tab::File(t) = tab else { continue };
             let now = mtime(&t.path);
             if t.dirty || now == t.mtime {

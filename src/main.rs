@@ -13,6 +13,7 @@ mod herdr;
 mod history;
 mod hunks;
 mod icons;
+mod imagefile;
 mod openai;
 mod persist;
 mod proc;

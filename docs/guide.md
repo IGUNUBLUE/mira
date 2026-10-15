@@ -142,6 +142,9 @@ command are the stable options. See [privacy](privacy.md) for exactly what is se
   to save, `Ctrl+W` or middle-click to close a tab. Long lines don't wrap; the view follows the
   cursor sideways.
   Tabs without unsaved edits reload when an agent changes the file.
+- **Images** (PNG, JPEG, GIF, WebP, BMP, ICO) open in an image tab with their size: scroll to
+  zoom, drag to pan. An SVG opens as text; **Preview** shows what it draws. Both reload when
+  the file changes.
 - **Undo / redo**: `Ctrl+Z`, `Ctrl+Shift+Z` or `Ctrl+Y`, in the editor and the commit box, one
   step per word as in VS Code. A reload caused by an agent is undoable too.
 - **Autosave** is on: files save 1 s after you stop typing, and when you leave the window,
