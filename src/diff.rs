@@ -56,6 +56,9 @@ pub struct FileDiff {
     pub too_large: bool,
     /// Asked for the full file, but it has over [`MAX_FULL_ROWS`] rows: these are hunks.
     pub full_capped: bool,
+    /// git's hunks of an index diff, for the per-change actions (stage,
+    /// unstage, discard); `None` for run diffs and when git has none.
+    pub patch: Option<crate::hunks::Patch>,
 }
 
 /// Rows a full-file diff may have; past it the diff falls back to hunks.

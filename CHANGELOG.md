@@ -19,6 +19,10 @@ All notable changes to mira are listed here. The format follows
   numbers.
 - Quick open (`Ctrl+Shift+P`, or `Ctrl+P` outside the terminal): fuzzy search of the folder's
   files (.gitignore respected); `:` followed by a number, or `Ctrl+G` in the editor, goes to a line.
+- Stage, unstage or discard a single change (git's hunk) from its bar in the diff; a discarded
+  hunk can be undone.
+- The line under the pointer is highlighted in diffs; Commit, Push and Pull spin while they run;
+  `Ctrl+Shift+G` focuses the commit message, as in VSCodium.
 
 ### Fixed
 

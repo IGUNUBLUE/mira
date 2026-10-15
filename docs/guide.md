@@ -104,6 +104,9 @@ resize it.
 - **Discard is undoable.** mira snapshots the working tree first (the same snapshots it takes
   around agent turns), so one file discards with one click and the status bar offers **Undo**.
   Discard all asks for a second click. New (untracked) files are deleted, and come back with Undo.
+- **One change at a time.** In a diff from Changes, each of git's hunks has a bar with its
+  `@@` line and **Stage** / **Discard** (unstaged diff) or **Unstage** (staged diff), like
+  VSCodium's per-change actions. Discarding a hunk is undoable too.
 - The "N new" count only counts files that are still in Changes and you haven't opened since an
   agent changed them.
 
@@ -164,7 +167,7 @@ plain symbols. Fonts default to Inter and JetBrains Mono (medium weight); see
 |---|---|
 | ``Ctrl+` `` | Focus the terminal |
 | `Ctrl+B` … | herdr's prefix |
-| `Ctrl+Shift+G` / `F` / `E` | Show Changes / Search (focuses the query) / Files |
+| `Ctrl+Shift+G` / `F` / `E` | Show Changes (focuses the commit message) / Search (focuses the query) / Files |
 | `Ctrl+Shift+B` | Show or hide the inspector |
 | `Ctrl+Shift+M` | Focus mode |
 | `Ctrl+Shift+T` | Next theme |

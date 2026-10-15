@@ -22,9 +22,9 @@ mod terminal;
 
 pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, Tab};
 pub use find::SearchState;
-pub use layout::{CenterPane, Divider, Inspector, SEARCH_INPUT};
+pub use layout::{COMMIT_INPUT, CenterPane, Divider, Inspector, SEARCH_INPUT};
 pub use navigate::{EDITOR, FIND_INPUT, FindBar, PALETTE_INPUT, QuickOpen};
-pub use scm::{CommitGen, GitOutcome, SPINNER, SignIn, SignInEvent, SignInStage};
+pub use scm::{BusyOp, CommitGen, GitOutcome, HunkOp, SPINNER, SignIn, SignInEvent, SignInStage};
 pub use terminal::TermKind;
 
 use crate::diff::FileDiff;
@@ -137,6 +137,8 @@ pub struct App {
     /// A snapshot of this folder arrived, so `git.root` says whether it is a repository.
     pub git_loaded: bool,
     pub git_busy: bool,
+    /// The running git action whose button spins (commit, push, pull).
+    pub busy_op: Option<BusyOp>,
     pub commit_msg: Content,
     commit_history: crate::history::History,
     /// The running commit-message generation.
@@ -182,7 +184,8 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    /// Shortcut: show this inspector and focus its input (Search). Never hides it.
+    /// Shortcut: show this inspector and focus its input (Search's query, the
+    /// commit box). Never hides it.
     Inspector(Inspector),
     /// Tab click: just switch.
     InspectorTab(Inspector),
@@ -272,6 +275,9 @@ pub enum Msg {
     /// Discard every listed change (asks for a second click).
     DiscardAll,
     UndoDiscard,
+    /// A per-change action in the active diff: hunk `.2` of the diff with id `.1`
+    /// (ignored if the diff was reloaded since it was drawn).
+    Hunk(HunkOp, u64, usize),
     /// Review a section's changes file by file: open the first diff (`true` = staged).
     OpenChanges(bool),
     OpenChangedFile(String),
@@ -451,6 +457,7 @@ impl App {
             git_with_ignored: false,
             git_loaded: false,
             git_busy: false,
+            busy_op: None,
             commit_msg: Content::new(),
             commit_history: crate::history::History::default(),
             commit_gen: None,
@@ -485,9 +492,9 @@ impl App {
         }
         subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Msg::Tick));
         subs.push(iced::time::every(Duration::from_millis(700)).map(|_| Msg::StatusTick));
-        // Animate the generate button only while a message is being generated.
+        // Spinners: generating a message, the sign-in dialog waiting, a commit, push or pull.
         let waiting = matches!(&self.signin, Some(s) if s.stage != SignInStage::Ask);
-        if self.commit_gen.is_some() || waiting {
+        if self.commit_gen.is_some() || waiting || self.busy_op.is_some() {
             subs.push(iced::time::every(Duration::from_millis(80)).map(|_| Msg::Spin));
         }
         // Autosave timer, only while some tab has unsaved edits.
@@ -681,6 +688,7 @@ impl App {
             | Msg::Discard(_)
             | Msg::DiscardAll
             | Msg::UndoDiscard
+            | Msg::Hunk(..)
             | Msg::OpenChanges(_)
             | Msg::OpenChangedFile(_)
             | Msg::HoverChange(..)

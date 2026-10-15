@@ -27,7 +27,24 @@ pub enum GitOutcome {
     /// Output to show in the status bar (may be empty).
     Info(String),
     /// Files were discarded; `tree` is the snapshot taken just before (Undo).
-    Discarded { tree: String, paths: Vec<String> },
+    /// `whole`: the files' changes are gone (their diffs close), else one hunk.
+    Discarded { tree: String, paths: Vec<String>, whole: bool },
+}
+
+/// What to do with one hunk of an index diff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HunkOp {
+    Stage,
+    Unstage,
+    Discard,
+}
+
+/// The git action that shows a spinner on its button while it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusyOp {
+    Commit,
+    Push,
+    Pull,
 }
 
 /// Spinner frames for the generate button.
@@ -132,9 +149,31 @@ impl App {
                     let tree = git::snapshot_tree(r)
                         .map_err(|e| format!("couldn't back the files up, nothing was discarded: {e}"))?;
                     git::discard(r, &files)?;
-                    Ok(GitOutcome::Discarded { tree, paths: files.into_iter().map(|(p, _)| p).collect() })
+                    Ok(GitOutcome::Discarded { tree, paths: files.into_iter().map(|(p, _)| p).collect(), whole: true })
                 });
             }
+            Msg::Hunk(op, id, i) if !self.git_busy => {
+                let Some(d) = self.active_diff() else { return Task::none() };
+                let rel = d.rel.clone();
+                let patch = d.diff.as_ref().filter(|diff| diff.id == id).and_then(|diff| diff.patch.as_ref());
+                let Some(text) = patch.and_then(|p| p.single(i)) else { return Task::none() };
+                let name = rel.rsplit('/').next().unwrap_or("").to_string();
+                return match op {
+                    HunkOp::Stage => self.git_op(move |r| {
+                        git::apply(r, &text, &["--cached"]).map(|_| format!("Staged a change in {name}"))
+                    }),
+                    HunkOp::Unstage => self.git_op(move |r| {
+                        git::apply(r, &text, &["--cached", "-R"]).map(|_| format!("Unstaged a change in {name}"))
+                    }),
+                    HunkOp::Discard => self.git_task(move |r| {
+                        let tree = git::snapshot_tree(r)
+                            .map_err(|e| format!("couldn't back the file up, nothing was discarded: {e}"))?;
+                        git::apply(r, &text, &["-R"])?;
+                        Ok(GitOutcome::Discarded { tree, paths: vec![rel], whole: false })
+                    }),
+                };
+            }
+            Msg::Hunk(..) => {}
             Msg::DiscardAll if !self.git_busy => {
                 let paths: Vec<String> =
                     self.git.unstaged.iter().filter(|c| c.code != '!').map(|c| c.path.clone()).collect();
@@ -239,21 +278,23 @@ impl App {
                     return Task::none();
                 }
                 let prefix = self.repo_prefix.clone();
-                return self.git_task(move |r| {
-                    // `git commit` takes the whole index: files staged outside
-                    // this folder are not on screen and must not ride along.
-                    let outside = git::staged_outside(r, &prefix)?;
-                    if let Some(first) = outside.first() {
-                        return Err(format!(
-                            "{} file(s) outside this folder are staged ({first}…): commit or unstage them first",
-                            outside.len()
-                        ));
-                    }
-                    if !stage_all.is_empty() {
-                        git::stage(r, &stage_all)?;
-                    }
-                    let out = git::commit(r, &message)?;
-                    Ok(GitOutcome::Committed(first_line(&out).unwrap_or("Committed").to_string()))
+                return self.spinning(BusyOp::Commit, |a| {
+                    a.git_task(move |r| {
+                        // `git commit` takes the whole index: files staged outside
+                        // this folder are not on screen and must not ride along.
+                        let outside = git::staged_outside(r, &prefix)?;
+                        if let Some(first) = outside.first() {
+                            return Err(format!(
+                                "{} file(s) outside this folder are staged ({first}…): commit or unstage them first",
+                                outside.len()
+                            ));
+                        }
+                        if !stage_all.is_empty() {
+                            git::stage(r, &stage_all)?;
+                        }
+                        let out = git::commit(r, &message)?;
+                        Ok(GitOutcome::Committed(first_line(&out).unwrap_or("Committed").to_string()))
+                    })
                 });
             }
             Msg::GitInit => return self.git_op(git::init),
@@ -416,15 +457,19 @@ impl App {
             // Said only once the action really starts (one git action at a time).
             Msg::Push if !self.git_busy => {
                 self.set_status("Pushing…", false);
-                return self.git_op(|r| git::push(r).map(|_| "Pushed".into()));
+                let task = self.spinning(BusyOp::Push, |a| a.git_op(|r| git::push(r).map(|_| "Pushed".into())));
+                return task;
             }
             Msg::Pull if !self.git_busy => {
                 self.set_status("Pulling…", false);
-                return self.git_op(|r| git::pull(r).map(|o| first_line(&o).unwrap_or("Pulled").into()));
+                return self.spinning(BusyOp::Pull, |a| {
+                    a.git_op(|r| git::pull(r).map(|o| first_line(&o).unwrap_or("Pulled").into()))
+                });
             }
             Msg::Push | Msg::Pull => {}
             Msg::GitDone(epoch, result) => {
                 self.git_busy = false;
+                self.busy_op = None;
                 // Started in a folder mira has left: its commit box and status
                 // belong to the old folder, and the new one was refreshed on switch.
                 if epoch != self.root_epoch {
@@ -445,16 +490,18 @@ impl App {
                             self.set_status(line.to_string(), false);
                         }
                     }
-                    Ok(GitOutcome::Discarded { tree, paths }) => {
+                    Ok(GitOutcome::Discarded { tree, paths, whole }) => {
                         let n = paths.len();
-                        let what = if n == 1 {
-                            paths[0].rsplit('/').next().unwrap_or("").to_string()
-                        } else {
-                            format!("{n} files")
+                        let name = |p: &String| p.rsplit('/').next().unwrap_or("").to_string();
+                        let what = match (whole, n) {
+                            (false, _) => format!("a change in {}", paths.first().map(name).unwrap_or_default()),
+                            (true, 1) => name(&paths[0]),
+                            _ => format!("{n} files"),
                         };
                         // Their diffs would only say "No changes" now.
                         for i in (0..self.tabs.len()).rev() {
-                            if matches!(&self.tabs[i], Tab::Diff(d) if matches!(d.source, DiffSource::Index { staged: false }) && paths.contains(&d.rel))
+                            if whole
+                                && matches!(&self.tabs[i], Tab::Diff(d) if matches!(d.source, DiffSource::Index { staged: false }) && paths.contains(&d.rel))
                             {
                                 self.close_tab(i);
                             }
@@ -496,6 +543,19 @@ impl App {
     /// Run a git action whose output is just informative (stage, push, …).
     pub(super) fn git_op(&mut self, op: impl FnOnce(&Path) -> Result<String, String> + Send + 'static) -> Task<Msg> {
         self.git_task(move |r| op(r).map(GitOutcome::Info))
+    }
+
+    /// Start a git action with `start` (through `git_task`); its button spins
+    /// until `GitDone`. Nothing starts while another action runs.
+    fn spinning(&mut self, op: BusyOp, start: impl FnOnce(&mut Self) -> Task<Msg>) -> Task<Msg> {
+        if self.git_busy {
+            return Task::none();
+        }
+        let task = start(self);
+        if self.git_busy {
+            self.busy_op = Some(op);
+        }
+        task
     }
 
     /// Run one git action at a time in the repository, off the UI thread.

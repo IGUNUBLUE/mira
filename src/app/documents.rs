@@ -161,7 +161,14 @@ fn load_diff(root: &Path, rel: &str, source: &DiffSource, full: bool) -> FileDif
         }
         DiffSource::Trees { from, to, .. } => (git::show(root, from, rel), git::show(root, to, rel)),
     };
-    diff::compute(&old, &new, if full { None } else { Some(3) })
+    let mut d = diff::compute(&old, &new, if full { None } else { Some(3) });
+    if let DiffSource::Index { staged } = *source
+        && !d.binary
+        && !d.items.is_empty()
+    {
+        d.patch = git::file_patch(root, rel, staged).ok().and_then(|p| crate::hunks::parse(&p, staged));
+    }
+    d
 }
 
 impl App {

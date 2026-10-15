@@ -348,6 +348,50 @@ pub fn discard(root: &Path, files: &[(String, char)]) -> Result<String, String> 
     Ok(format!("Discarded {} file{}", files.len(), if files.len() == 1 { "" } else { "s" }))
 }
 
+/// git's diff of one file (`--cached`: HEAD ⇄ index), as `git apply` reads
+/// it back: plain prefixes and no color, external diff or textconv, whatever
+/// the user's config says. Patience, like mira's side-by-side view, so the
+/// hunks line up with its rows.
+pub fn file_patch(root: &Path, rel: &str, staged: bool) -> Result<String, String> {
+    let mut args = vec![
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--diff-algorithm=patience",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "-U3",
+    ];
+    if staged {
+        args.push("--cached");
+    }
+    args.extend(["--", rel]);
+    git(root, &args)
+}
+
+/// `git apply <flags>` with `patch` on stdin (`--cached`: to the index; `-R`:
+/// in reverse). git checks that it applies cleanly before touching anything.
+pub fn apply(root: &Path, patch: &str, flags: &[&str]) -> Result<String, String> {
+    use std::io::Write;
+    let mut args = vec!["apply", "--whitespace=nowarn"];
+    args.extend_from_slice(flags);
+    let mut child = command("git", root, &[])
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git: {e}"))?;
+    // Fed from a thread: git may answer before it read everything.
+    let mut stdin = child.stdin.take().ok_or("git apply: no stdin")?;
+    let input = patch.to_owned();
+    let feed = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let out = child.wait_with_output().map_err(|e| format!("git: {e}"))?;
+    let _ = feed.join();
+    to_result(&out, &args)
+}
+
 pub fn unstage(root: &Path, paths: &[String]) -> Result<String, String> {
     let mut args = vec!["restore", "--staged", "--"];
     args.extend(paths.iter().map(String::as_str));
@@ -722,6 +766,57 @@ mod snapshot_tests {
         assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), "scratch\n");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn stages_unstages_and_discards_single_hunks() {
+        let dir = repo();
+        let id = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
+        let base: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("f.txt"), &base).unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &[&id[..], &["commit", "-qm", "base"]].concat()).unwrap();
+        // Two changes far apart: two hunks.
+        let edited = base.replace("line 2\n", "line two\n").replace("line 18\n", "line 18\nline 18.5\n");
+        std::fs::write(dir.join("f.txt"), &edited).unwrap();
+        let patch = |staged| crate::hunks::parse(&file_patch(&dir, "f.txt", staged).unwrap(), staged);
+        let unstaged = patch(false).unwrap();
+        assert_eq!(unstaged.hunks.len(), 2);
+        // Each hunk's first change is a changed row of mira's own diff (its toolbar goes there).
+        let rows = crate::diff::compute(&base, &edited, Some(3));
+        for h in &unstaged.hunks {
+            let found = rows.items.iter().any(|item| match (item, h.anchor) {
+                (crate::diff::Item::Row { left, .. }, crate::hunks::Anchor::Old(n)) => {
+                    left.kind == crate::diff::Kind::Delete && left.number == Some(n)
+                }
+                (crate::diff::Item::Row { right, .. }, crate::hunks::Anchor::New(n)) => {
+                    right.kind == crate::diff::Kind::Insert && right.number == Some(n)
+                }
+                _ => false,
+            });
+            assert!(found, "{h:?}");
+        }
+
+        // Stage the first one only.
+        apply(&dir, &unstaged.single(0).unwrap(), &["--cached"]).unwrap();
+        let staged = patch(true).unwrap();
+        assert_eq!(staged.hunks.len(), 1);
+        assert_eq!(show(&dir, "", "f.txt"), base.replace("line 2\n", "line two\n"));
+        assert_eq!(patch(false).unwrap().hunks.len(), 1, "the other one is still unstaged");
+
+        // Unstage it again: the index is back to HEAD, the file untouched.
+        apply(&dir, &staged.single(0).unwrap(), &["--cached", "-R"]).unwrap();
+        assert!(patch(true).is_none());
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), edited);
+
+        // Discard the second one in the working tree.
+        let unstaged = patch(false).unwrap();
+        apply(&dir, &unstaged.single(1).unwrap(), &["-R"]).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), base.replace("line 2\n", "line two\n"));
+        // A stale patch (already applied) fails and changes nothing.
+        assert!(apply(&dir, &unstaged.single(1).unwrap(), &["-R"]).is_err());
+        assert_eq!(patch(false).unwrap().hunks.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

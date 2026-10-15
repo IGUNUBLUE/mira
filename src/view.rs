@@ -332,6 +332,24 @@ impl App {
             .into()
     }
 
+    /// The spinner's current frame, in the accent color.
+    fn spinner<'a>(&self, size: u32) -> text::Text<'a> {
+        text(SPINNER[self.spin])
+            .size(size)
+            .line_height(1.0)
+            .font(icons::font().unwrap_or_else(theme::mono_font))
+            .color(p().accent)
+    }
+
+    /// A git action's icon button; it spins while that action runs.
+    fn git_button<'a>(&self, icon: Icon, op: BusyOp, msg: Option<Msg>) -> Element<'a, Msg> {
+        if self.busy_op == Some(op) {
+            button(self.spinner(15)).padding([3, 5]).style(theme::flat(false)).into()
+        } else {
+            icon_button_maybe(icon, msg)
+        }
+    }
+
     /// Quick open: the query, then the best matching files (or go to line after `:`).
     fn view_palette<'a>(&'a self, pal: &'a QuickOpen) -> Element<'a, Msg> {
         let input = text_input("Go to file by name · : to go to a line", &pal.query)
@@ -863,14 +881,18 @@ impl App {
                                 },
                             )
                         }),
-                        tip(icon_button_maybe(Icon::ArrowDown, when_idle(Msg::Pull)), "Pull (fast-forward)"),
-                        tip(icon_button_maybe(Icon::ArrowUp, when_idle(Msg::Push)), "Push"),
+                        tip(
+                            self.git_button(Icon::ArrowDown, BusyOp::Pull, when_idle(Msg::Pull)),
+                            "Pull (fast-forward)"
+                        ),
+                        tip(self.git_button(Icon::ArrowUp, BusyOp::Push, when_idle(Msg::Push)), "Push"),
                         tip(icon_button_maybe(Icon::Refresh, when_idle(Msg::Tick)), "Refresh"),
                     ]
                     .align_y(Alignment::Center),
                     row![
                         // Grows with the message (wrapped to the panel width), then scrolls.
                         iced::widget::text_editor(&self.commit_msg)
+                            .id(COMMIT_INPUT)
                             .placeholder("Commit message (Ctrl+Enter to commit)")
                             .on_action(Msg::CommitEdit)
                             .size(UI)
@@ -912,11 +934,7 @@ impl App {
                         tooltip(
                             button(
                                 container(if generating {
-                                    text(SPINNER[self.spin])
-                                        .size(16)
-                                        .line_height(1.0)
-                                        .font(icons::font().unwrap_or_else(theme::mono_font))
-                                        .color(p().accent)
+                                    self.spinner(16)
                                 } else {
                                     ico(Icon::Sparkle, 16).color(if can_generate { p().accent } else { p().muted })
                                 })
@@ -945,9 +963,16 @@ impl App {
                     tip(
                         button(
                             container(
-                                row![ico(Icon::Check, 14), text(commit_label).size(UI)]
-                                    .spacing(6)
-                                    .align_y(Alignment::Center)
+                                row![
+                                    if self.busy_op == Some(BusyOp::Commit) {
+                                        self.spinner(14)
+                                    } else {
+                                        ico(Icon::Check, 14)
+                                    },
+                                    text(commit_label).size(UI)
+                                ]
+                                .spacing(6)
+                                .align_y(Alignment::Center)
                             )
                             .center_x(Length::Fill),
                         )
@@ -1779,7 +1804,25 @@ fn diff_rows(diff: &diff::FileDiff, anchor: Option<usize>) -> Element<'static, M
         )));
     }
     let capped = diff.full_capped;
+    // Each git hunk's toolbar goes above the row of its first changed line.
+    let (mut old_at, mut new_at) = (std::collections::HashMap::new(), std::collections::HashMap::new());
+    if let Some(patch) = &diff.patch {
+        for (i, h) in patch.hunks.iter().enumerate() {
+            match h.anchor {
+                crate::hunks::Anchor::Old(n) => old_at.insert(n, i),
+                crate::hunks::Anchor::New(n) => new_at.insert(n, i),
+            };
+        }
+    }
     for item in diff.items.iter().take(diff::MAX_FULL_ROWS) {
+        if let (Item::Row { left, right }, Some(patch)) = (item, &diff.patch) {
+            let at = |side: &diff::Side, kind, map: &std::collections::HashMap<usize, usize>| {
+                side.number.filter(|_| side.kind == kind).and_then(|n| map.get(&n).copied())
+            };
+            if let Some(i) = at(left, Kind::Delete, &old_at).or_else(|| at(right, Kind::Insert, &new_at)) {
+                rows = rows.push(hunk_bar(&patch.hunks[i].header, patch.staged, diff.id, i));
+            }
+        }
         rows = rows.push(match item {
             Item::Gap(n) => Element::from(
                 button(
@@ -1806,6 +1849,39 @@ fn diff_rows(diff: &diff::FileDiff, anchor: Option<usize>) -> Element<'static, M
     rows.into()
 }
 
+/// The bar above one git hunk: its `@@` line and what can be done with it.
+fn hunk_bar(header: &str, staged: bool, diff: u64, i: usize) -> Element<'static, Msg> {
+    let mut bar = row![
+        container(
+            text(header.to_string()).size(11).font(theme::mono_font()).color(p().muted).wrapping(text::Wrapping::None)
+        )
+        .width(Length::Fill)
+        .clip(true),
+    ]
+    .spacing(4)
+    .align_y(Alignment::Center);
+    if staged {
+        bar = bar.push(tip(
+            icon_label(Icon::Remove, "Unstage", Some(Msg::Hunk(HunkOp::Unstage, diff, i))),
+            "Take this change out of the index",
+        ));
+    } else {
+        bar = bar
+            .push(tip(
+                icon_label(Icon::Discard, "Discard", Some(Msg::Hunk(HunkOp::Discard, diff, i))),
+                "Throw away this change (Undo available)",
+            ))
+            .push(tip(
+                icon_label(Icon::Add, "Stage", Some(Msg::Hunk(HunkOp::Stage, diff, i))),
+                "Stage only this change",
+            ));
+    }
+    container(bar)
+        .padding(Padding { top: 1.0, right: 8.0, bottom: 1.0, left: 12.0 })
+        .style(theme::panel(p().section))
+        .into()
+}
+
 fn diff_bg(kind: Kind, anchored: bool) -> Element<'static, Msg> {
     let bg = match (kind, anchored) {
         (_, true) => Some(p().selection.scale_alpha(0.5)),
@@ -1828,13 +1904,19 @@ fn diff_row(left: &diff::Side, right: &diff::Side, anchor: Option<usize>) -> Ele
     let anchored = anchor.is_some() && line == anchor;
     let backgrounds = row![diff_bg(left.kind, anchored), vrule(), diff_bg(right.kind, anchored)];
     let content = row![diff_side(left), space().width(1), diff_side(right)];
-    let stacked = Stack::new().width(Length::Fill).push(content).push_under(backgrounds);
-    match line {
-        Some(l) => {
-            mouse_area(stacked).on_press(Msg::DiffAnchor(l)).interaction(iced::mouse::Interaction::Pointer).into()
-        }
-        None => stacked.into(),
-    }
+    // The pointer's row is tinted by a button on top (it also takes the click):
+    // its hover is drawn by the widget itself, so the cached rows need no messages.
+    let hover = button(space().width(Length::Fill).height(Length::Fill))
+        .padding(0)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_, s| button::Style {
+            background: matches!(s, button::Status::Hovered | button::Status::Pressed)
+                .then(|| p().fg.scale_alpha(0.06).into()),
+            ..Default::default()
+        })
+        .on_press_maybe(line.map(Msg::DiffAnchor));
+    Stack::new().width(Length::Fill).push(content).push_under(backgrounds).push(hover).into()
 }
 
 fn diff_side(side: &diff::Side) -> Element<'static, Msg> {

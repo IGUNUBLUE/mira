@@ -11,6 +11,7 @@ mod git;
 mod gutter;
 mod herdr;
 mod history;
+mod hunks;
 mod icons;
 mod openai;
 mod persist;

@@ -26,6 +26,8 @@ const DIVIDER: f32 = 5.0;
 
 /// Widget id of the Search query input (focused by Ctrl+Shift+F).
 pub const SEARCH_INPUT: &str = "search-query";
+/// Widget id of the commit message box (focused by Ctrl+Shift+G).
+pub const COMMIT_INPUT: &str = "commit-message";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inspector {
@@ -69,6 +71,12 @@ impl App {
                     self.term_focus = false;
                     return iced::widget::operation::focus(SEARCH_INPUT)
                         .chain(iced::widget::operation::select_all(SEARCH_INPUT));
+                }
+                // Like VSCodium's Ctrl+Shift+G: straight to the commit message.
+                if i == Inspector::Changes && self.git.root.is_some() {
+                    self.focus_epoch += 1;
+                    self.term_focus = false;
+                    return iced::widget::operation::focus(COMMIT_INPUT);
                 }
             }
             Msg::DismissStatus => self.clear_status(),
