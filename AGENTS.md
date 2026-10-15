@@ -46,6 +46,11 @@ sits around that loop: review what the agents changed, edit, search, commit.
   temporary `GIT_INDEX_FILE`, tree diffs, restore.
 - `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context).
 - `src/explorer.rs` — lazy tree, only expanded dirs are read.
+- `src/history.rs` — undo/redo for a `text_editor::Content` (iced has none): word-grouped steps storing only the
+  changed span, capped (500 steps / 8 MB). File tabs and the commit box own one; `FileTab.dirty` follows it.
+  Autosave (`AutoSave`, VSCodium's names) lives in app.rs: `save_tab(i, manual)`; autosave skips files whose
+  mtime changed under unsaved edits (`FileTab.conflict`). The window doesn't exit on close: `Msg::CloseRequested`
+  saves, then `iced::exit()`.
 - `src/commitgen.rs` — commit message prompt/diff budget, provider choice (`commit_provider`), streams `Event`s
   (Status, Delta, Account, Done) to `Msg::CommitGen`; cancel restores the previous text.
 - `src/openai.rs` — Responses API over `curl` with SSE streaming; ChatGPT OAuth PKCE login (codex's client,

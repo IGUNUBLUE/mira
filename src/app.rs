@@ -46,6 +46,34 @@ const MIN_CENTER: f32 = 360.0;
 const DIVIDER: f32 = 5.0;
 const MAX_OPEN_BYTES: usize = 8 * 1024 * 1024;
 
+/// `autosave` in the config, named like VSCodium's `files.autoSave`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoSave {
+    Off,
+    /// Save once edits pause for `autosave_delay` ms (default 1000).
+    AfterDelay(Duration),
+    /// Save when switching tabs, closing a tab or leaving the window.
+    OnFocusChange,
+    /// Save when leaving the window.
+    OnWindowChange,
+}
+
+impl AutoSave {
+    fn parse(mode: Option<&str>, delay_ms: Option<&str>) -> Self {
+        let delay = Duration::from_millis(delay_ms.and_then(|d| d.trim().parse().ok()).unwrap_or(1000).max(100));
+        match mode.map(|m| m.trim().to_ascii_lowercase()).as_deref() {
+            Some("off") => Self::Off,
+            Some("onfocuschange") => Self::OnFocusChange,
+            Some("onwindowchange") => Self::OnWindowChange,
+            _ => Self::AfterDelay(delay),
+        }
+    }
+
+    fn from_config() -> Self {
+        Self::parse(persist::config_get("autosave").as_deref(), persist::config_get("autosave_delay").as_deref())
+    }
+}
+
 /// A commit message being generated and streamed into the commit box.
 pub struct CommitGen {
     id: u64,
@@ -86,6 +114,12 @@ pub struct FileTab {
     pub dirty: bool,
     pub mtime: Option<SystemTime>,
     pub syntax: String,
+    pub history: crate::history::History,
+    /// Last edit, for autosave after a delay.
+    edited_at: Option<Instant>,
+    /// The file changed on disk while this tab had unsaved edits: autosave
+    /// stops for it until the user saves by hand.
+    conflict: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,7 +167,7 @@ pub struct App {
     pub focus_mode: bool,
     pub inspector: Inspector,
     pub window_focused: bool,
-
+    autosave: AutoSave,
     // terminal
     pub term: Option<iced_term::Terminal>,
     pub term_kind: TermKind,
@@ -182,6 +216,7 @@ pub struct App {
     pub refreshing: bool,
     pub git_busy: bool,
     pub commit_msg: Content,
+    commit_history: crate::history::History,
     /// The running commit-message generation.
     pub commit_gen: Option<CommitGen>,
     commit_gen_seq: u64,
@@ -227,6 +262,7 @@ pub enum Msg {
     CenterResized(pane_grid::ResizeEvent),
     Key(keyboard::Event, bool),
     WindowFocus(bool),
+    CloseRequested,
     Tick,
     StatusTick,
 
@@ -268,6 +304,10 @@ pub enum Msg {
     CloseTab(usize),
     Edit(text_editor::Action),
     Save,
+    Undo,
+    Redo,
+    /// Save the tabs whose edits paused long enough (`AutoSave::AfterDelay`).
+    AutoSaveTick,
     DiffLoaded(String, DiffSource, bool, FileDiff),
     DiffFull(bool),
     DiffAnchor(usize),
@@ -279,6 +319,8 @@ pub enum Msg {
     Stage(Vec<String>),
     Unstage(Vec<String>),
     CommitEdit(text_editor::Action),
+    CommitUndo,
+    CommitRedo,
     Commit,
     /// Generate a commit message, or cancel the running generation.
     GenerateCommit,
@@ -394,6 +436,7 @@ impl App {
             focus_mode: false,
             inspector: Inspector::Changes,
             window_focused: true,
+            autosave: AutoSave::from_config(),
             term: None,
             term_kind: if use_herdr { TermKind::Herdr } else { TermKind::Shell },
             term_cell: None,
@@ -426,6 +469,7 @@ impl App {
             refreshing: false,
             git_busy: false,
             commit_msg: Content::new(),
+            commit_history: crate::history::History::default(),
             commit_gen: None,
             commit_gen_seq: 0,
             spin: 0,
@@ -458,12 +502,19 @@ impl App {
         if self.commit_gen.is_some() {
             subs.push(iced::time::every(Duration::from_millis(80)).map(|_| Msg::Spin));
         }
+        // Autosave timer, only while some tab has unsaved edits.
+        if matches!(self.autosave, AutoSave::AfterDelay(_))
+            && self.tabs.iter().any(|t| matches!(t, Tab::File(f) if f.dirty && !f.conflict))
+        {
+            subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Msg::AutoSaveTick));
+        }
         subs.push(iced::event::listen_with(|event, status, _| match event {
             iced::Event::Keyboard(k @ keyboard::Event::KeyPressed { .. }) => {
                 Some(Msg::Key(k, status == iced::event::Status::Captured))
             }
             iced::Event::Window(iced::window::Event::Focused) => Some(Msg::WindowFocus(true)),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Msg::WindowFocus(false)),
+            iced::Event::Window(iced::window::Event::CloseRequested) => Some(Msg::CloseRequested),
             iced::Event::Window(iced::window::Event::Opened { size, .. } | iced::window::Event::Resized(size)) => {
                 Some(Msg::WindowSize(size))
             }
@@ -840,6 +891,9 @@ impl App {
                         path,
                         dirty: false,
                         syntax,
+                        history: crate::history::History::default(),
+                        edited_at: None,
+                        conflict: false,
                     }))
                 }
                 Err(e) => {
@@ -920,6 +974,9 @@ impl App {
         if i >= self.tabs.len() {
             return;
         }
+        if matches!(&self.tabs[i], Tab::File(t) if t.dirty) && self.autosave != AutoSave::Off {
+            self.save_tab(i, false);
+        }
         if matches!(&self.tabs[i], Tab::File(t) if t.dirty) && self.pending_close != Some(i) {
             self.pending_close = Some(i);
             self.set_status("Unsaved changes — close again to discard them (Ctrl+S to save)", true);
@@ -936,16 +993,51 @@ impl App {
         self.sync_center();
     }
 
-    fn save(&mut self) {
-        let Some(Tab::File(t)) = self.active_tab.and_then(|i| self.tabs.get_mut(i)) else { return };
+    /// Save tab `i`. Autosave (`manual == false`) never overwrites a file that
+    /// changed on disk since it was loaded (an agent may have written it): it
+    /// pauses for that tab and says so; Ctrl+S still overwrites.
+    fn save_tab(&mut self, i: usize, manual: bool) -> bool {
+        let Some(Tab::File(t)) = self.tabs.get_mut(i) else { return false };
+        if !manual {
+            if !t.dirty || t.conflict {
+                return false;
+            }
+            if mtime(&t.path) != t.mtime {
+                t.conflict = true;
+                let name = file_name(&t.path);
+                self.set_status(
+                    format!("{name} changed on disk — autosave paused for it; Ctrl+S overwrites the file"),
+                    true,
+                );
+                return false;
+            }
+        }
         match std::fs::write(&t.path, t.content.text()) {
             Ok(()) => {
+                t.history.mark_saved(&t.content);
                 t.dirty = false;
+                t.conflict = false;
+                t.edited_at = None;
                 t.mtime = mtime(&t.path);
                 let name = file_name(&t.path);
-                self.set_status(format!("Saved {name}"), false);
+                if manual {
+                    self.set_status(format!("Saved {name}"), false);
+                }
+                true
             }
-            Err(e) => self.set_status(format!("Save failed: {e}"), true),
+            Err(e) => {
+                // Stop retrying every tick; a manual save tries again.
+                t.conflict = true;
+                let name = file_name(&t.path);
+                self.set_status(format!("Save {name} failed: {e}"), true);
+                false
+            }
+        }
+    }
+
+    fn save_dirty_tabs(&mut self) {
+        for i in 0..self.tabs.len() {
+            self.save_tab(i, false);
         }
     }
 
@@ -958,13 +1050,17 @@ impl App {
             }
             t.mtime = now;
             if let Ok(text) = read_text(&t.path) {
-                let pos = t.content.cursor().position;
+                let old = t.content.text();
+                let before = t.content.cursor();
                 t.content = Content::with_text(&text);
-                let line = pos.line.min(t.content.line_count().saturating_sub(1));
+                let line = before.position.line.min(t.content.line_count().saturating_sub(1));
                 t.content.move_to(text_editor::Cursor {
                     position: text_editor::Position { line, column: 0 },
                     selection: None,
                 });
+                // Undoable, like VSCodium: Ctrl+Z brings back the text before the agent's change.
+                t.history.record(&old, &t.content.text(), before, t.content.cursor());
+                t.history.mark_saved(&t.content);
             }
         }
     }
@@ -1038,10 +1134,20 @@ impl App {
             Msg::Key(event, captured) => return self.on_key(event, captured),
             Msg::WindowFocus(f) => {
                 self.window_focused = f;
+                if !f && self.autosave != AutoSave::Off {
+                    self.save_dirty_tabs();
+                }
                 // herdr enables focus reporting (mode 1004) and redraws on focus.
                 if self.term_kind == TermKind::Herdr {
                     self.term_write(if f { b"\x1b[I".to_vec() } else { b"\x1b[O".to_vec() });
                 }
+            }
+            Msg::CloseRequested => {
+                if self.autosave != AutoSave::Off {
+                    self.save_dirty_tabs();
+                }
+                self.save_state();
+                return iced::exit();
             }
             Msg::Tick => {
                 self.ticks = self.ticks.wrapping_add(1);
@@ -1313,6 +1419,11 @@ impl App {
             Msg::OpenFile(path, line) => self.open_file(path, line),
             Msg::SelectTab(i) => {
                 if i < self.tabs.len() {
+                    if self.autosave == AutoSave::OnFocusChange
+                        && let Some(prev) = self.active_tab.filter(|p| *p != i)
+                    {
+                        self.save_tab(prev, false);
+                    }
                     self.active_tab = Some(i);
                     return self.reload_active_diff();
                 }
@@ -1320,13 +1431,42 @@ impl App {
             Msg::CloseTab(i) => self.close_tab(i),
             Msg::Edit(action) => {
                 if let Some(Tab::File(t)) = self.active_tab.and_then(|i| self.tabs.get_mut(i)) {
-                    if action.is_edit() {
+                    let edit = action.is_edit();
+                    t.history.perform(&mut t.content, action);
+                    if edit {
                         t.dirty = true;
+                        t.edited_at = Some(Instant::now());
                     }
-                    t.content.perform(action);
                 }
             }
-            Msg::Save => self.save(),
+            Msg::Save => {
+                if let Some(i) = self.active_tab {
+                    self.save_tab(i, true);
+                }
+            }
+            Msg::Undo | Msg::Redo => {
+                if let Some(Tab::File(t)) = self.active_tab.and_then(|i| self.tabs.get_mut(i)) {
+                    let done = if matches!(msg, Msg::Undo) {
+                        t.history.undo(&mut t.content)
+                    } else {
+                        t.history.redo(&mut t.content)
+                    };
+                    if done {
+                        t.dirty = t.history.is_dirty();
+                        t.edited_at = Some(Instant::now());
+                    }
+                }
+            }
+            Msg::AutoSaveTick => {
+                if let AutoSave::AfterDelay(delay) = self.autosave {
+                    for i in 0..self.tabs.len() {
+                        if matches!(&self.tabs[i], Tab::File(t) if t.dirty && t.edited_at.is_none_or(|e| e.elapsed() >= delay))
+                        {
+                            self.save_tab(i, false);
+                        }
+                    }
+                }
+            }
             Msg::DiffLoaded(rel, source, full, diff) => {
                 for tab in &mut self.tabs {
                     if let Tab::Diff(d) = tab
@@ -1379,7 +1519,14 @@ impl App {
             Msg::Unstage(paths) => return self.git_op(move |r| git::unstage(r, &paths)),
             // The box is the stream's output while generating: allow selecting, not editing.
             Msg::CommitEdit(action) if self.commit_gen.is_some() && action.is_edit() => {}
-            Msg::CommitEdit(action) => self.commit_msg.perform(action),
+            Msg::CommitEdit(action) => self.commit_history.perform(&mut self.commit_msg, action),
+            Msg::CommitUndo if self.commit_gen.is_none() => {
+                self.commit_history.undo(&mut self.commit_msg);
+            }
+            Msg::CommitRedo if self.commit_gen.is_none() => {
+                self.commit_history.redo(&mut self.commit_msg);
+            }
+            Msg::CommitUndo | Msg::CommitRedo => {}
             Msg::Commit => {
                 let message = self.commit_msg.text().trim().to_string();
                 if message.is_empty() {
@@ -1461,6 +1608,12 @@ impl App {
                         match result {
                             Ok(message) => {
                                 self.set_commit_text(&message);
+                                // One step: Ctrl+Z brings back what the box had before.
+                                let start = text_editor::Cursor {
+                                    position: text_editor::Position { line: 0, column: 0 },
+                                    selection: None,
+                                };
+                                self.commit_history.record(&previous, &message, start, self.commit_msg.cursor());
                                 self.set_status("Commit message ready — review it, then Commit", false);
                             }
                             Err(e) => {
@@ -1494,6 +1647,7 @@ impl App {
                     Ok(out) => {
                         if let Some(summary) = out.strip_prefix("COMMIT:") {
                             self.commit_msg = Content::new();
+                            self.commit_history = crate::history::History::default();
                             self.set_status(summary.to_string(), false);
                         } else if !out.trim().is_empty() {
                             self.set_status(first_line(&out).unwrap_or_default().to_string(), false);
@@ -1577,7 +1731,14 @@ impl App {
             return Task::none();
         }
         match (latin, shift) {
-            (Some('s'), false) => self.save(),
+            (Some('s'), false) => {
+                if let Some(i) = self.active_tab {
+                    self.save_tab(i, true);
+                }
+            }
+            // Editor not focused (e.g. after clicking a tab): undo/redo the active file.
+            (Some('z'), false) => return self.update(Msg::Undo),
+            (Some('z'), true) | (Some('y'), false) if !captured => return self.update(Msg::Redo),
             (Some('w'), false) => {
                 if let Some(i) = self.active_tab {
                     self.close_tab(i);
@@ -1599,4 +1760,24 @@ impl App {
 
 pub fn first_line(s: &str) -> Option<&str> {
     s.lines().map(str::trim).find(|l| !l.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autosave_setting_follows_vscodium_names() {
+        let second = Duration::from_millis(1000);
+        assert_eq!(AutoSave::parse(None, None), AutoSave::AfterDelay(second));
+        assert_eq!(
+            AutoSave::parse(Some("afterDelay"), Some("2500")),
+            AutoSave::AfterDelay(Duration::from_millis(2500))
+        );
+        assert_eq!(AutoSave::parse(Some("afterDelay"), Some("5")), AutoSave::AfterDelay(Duration::from_millis(100)));
+        assert_eq!(AutoSave::parse(Some("afterDelay"), Some("soon")), AutoSave::AfterDelay(second));
+        assert_eq!(AutoSave::parse(Some("off"), None), AutoSave::Off);
+        assert_eq!(AutoSave::parse(Some("onFocusChange"), None), AutoSave::OnFocusChange);
+        assert_eq!(AutoSave::parse(Some("onWindowChange"), None), AutoSave::OnWindowChange);
+    }
 }

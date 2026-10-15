@@ -8,6 +8,7 @@ mod diff;
 mod explorer;
 mod git;
 mod herdr;
+mod history;
 mod icons;
 mod openai;
 mod persist;
@@ -107,6 +108,8 @@ fn main() -> iced::Result {
         .theme(|_: &app::App| theme::theme())
         .default_font(theme::ui_font())
         .window_size((1400.0, 900.0))
+        // mira saves edited files before closing (see `Msg::CloseRequested`).
+        .exit_on_close_request(false)
         .antialiasing(true)
         .run()
 }

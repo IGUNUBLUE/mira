@@ -46,6 +46,13 @@ around that loop: ask → the agent acts → you review, correct, accept.
   subscription endpoint is undocumented and OpenAI may change it.
 - **Search & replace** (respects `.gitignore`), **explorer** and a syntax-highlighted editor
   whose clean tabs reload when an agent changes the file.
+- **Undo / redo** (`Ctrl+Z`, `Ctrl+Shift+Z` / `Ctrl+Y`) in the editor and the commit box, one
+  step per word like VSCodium. Reloads caused by an agent are undoable too.
+- **Autosave**, on by default: files save 1 s after you stop typing, and when you leave the
+  window, close a tab or quit. Set `autosave = "afterDelay" | "onFocusChange" |
+  "onWindowChange" | "off"` and `autosave_delay = "1000"` (ms) in `~/.config/mira/config`.
+  Autosave never overwrites a file that changed on disk under your edits (e.g. an agent wrote
+  it): it pauses for that tab and tells you; `Ctrl+S` overwrites.
 
 No extension host, no telemetry, no accounts required. Git operations shell out to your `git`,
 so hooks, signing and credential helpers behave exactly as in your terminal.
@@ -93,6 +100,7 @@ the CPU instead: about a quarter of the memory, but typing and panel resizing fe
 | `Ctrl+Shift+G` / `F` / `E` | Inspector: Changes / Search / Files (again to hide) |
 | `Ctrl+Shift+B` | Toggle inspector |
 | `Ctrl+Shift+T` | Cycle theme |
+| `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | Undo / redo (editor, commit box) |
 | `Ctrl+Shift+V` | Paste in the terminal (bracketed) |
 | `Ctrl+S` / `Ctrl+W` | Save / close tab |
 

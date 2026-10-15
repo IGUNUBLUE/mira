@@ -476,6 +476,14 @@ impl App {
                             .key_binding(|kp| match kp.key.as_ref() {
                                 Key::Named(Named::Enter) if kp.modifiers.command() =>
                                     Some(Binding::Custom(Msg::Commit)),
+                                Key::Character(c) if kp.modifiers.command() && c.eq_ignore_ascii_case("z") =>
+                                    Some(Binding::Custom(if kp.modifiers.shift() {
+                                        Msg::CommitRedo
+                                    } else {
+                                        Msg::CommitUndo
+                                    })),
+                                Key::Character(c) if kp.modifiers.command() && c.eq_ignore_ascii_case("y") =>
+                                    Some(Binding::Custom(Msg::CommitRedo)),
                                 _ => Binding::from_key_press(kp),
                             }),
                         tooltip(
@@ -891,6 +899,10 @@ impl App {
                 let ctrl = kp.modifiers.command();
                 match kp.key.as_ref() {
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("s") => Some(Binding::Custom(Msg::Save)),
+                    Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => {
+                        Some(Binding::Custom(if kp.modifiers.shift() { Msg::Redo } else { Msg::Undo }))
+                    }
+                    Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => Some(Binding::Custom(Msg::Redo)),
                     Key::Named(Named::Tab) if !ctrl && matches!(kp.status, text_editor::Status::Focused { .. }) => {
                         Some(Binding::Sequence(vec![Binding::Insert(' '); 4]))
                     }
