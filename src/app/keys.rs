@@ -9,13 +9,41 @@ impl App {
         let keyboard::Event::KeyPressed { key, modifiers, physical_key, .. } = event else {
             return Task::none();
         };
-        // Escape that no widget took: the terminal (iced_term writes ESC and
-        // captures it) and a focused text input (it unfocuses and captures)
-        // keep theirs. The editors unfocus without capturing, so it lands here.
-        if key == keyboard::Key::Named(keyboard::key::Named::Escape) && !captured && modifiers.is_empty() {
-            return self.escape();
+        use keyboard::key::Named;
+        if key == keyboard::Key::Named(Named::Escape) && modifiers.is_empty() {
+            // The palette's input takes Escape (it unfocuses and captures it); the
+            // terminal can't have it while the palette is open.
+            if self.palette.is_some() {
+                return self.update(Msg::PaletteClose);
+            }
+            // Escape that no widget took: the terminal (iced_term writes ESC and
+            // captures it) and a focused text input (it unfocuses and captures)
+            // keep theirs. The editors unfocus without capturing, so it lands here.
+            if !captured {
+                return self.escape();
+            }
+            // Captured with the find bar open: from its input, unless the terminal took it.
+            if self.active_find().is_some() {
+                let close = |terminal: bool| if terminal { Task::none() } else { Task::done(Msg::FindClose) };
+                return match &self.term {
+                    Some(t) => iced::widget::operation::is_focused(t.widget_id().clone()).then(close),
+                    None => close(false),
+                };
+            }
+            return Task::none();
         }
         if !modifiers.command() {
+            match key {
+                // The palette's input leaves Up/Down alone.
+                keyboard::Key::Named(Named::ArrowUp | Named::ArrowDown) if self.palette.is_some() => {
+                    let step = if key == keyboard::Key::Named(Named::ArrowUp) { -1 } else { 1 };
+                    return self.update(Msg::PaletteMove(step));
+                }
+                keyboard::Key::Named(Named::F3) if !captured && self.active_find().is_some() => {
+                    return self.update(Msg::FindStep(!modifiers.shift()));
+                }
+                _ => {}
+            }
             return Task::none();
         }
         let shift = modifiers.shift();
@@ -44,6 +72,11 @@ impl App {
             (Some('b'), true) => return self.update(Msg::ToggleInspector),
             (Some('g'), true) => return self.update(Msg::Inspector(Inspector::Changes)),
             (Some('f'), true) => return self.update(Msg::Inspector(Inspector::Search)),
+            // A file tab is active but its editor doesn't have the keyboard (the
+            // editor's own Ctrl+F binding covers it when it does).
+            (Some('f'), false) if self.active_file().is_some() => return self.update(Msg::FindOpen),
+            // Plain Ctrl+P only gets here when no widget took it: shells use it.
+            (Some('p'), _) => return self.update(Msg::PaletteOpen(false)),
             (Some('e'), true) => return self.update(Msg::Inspector(Inspector::Files)),
             (Some('t'), true) => return self.update(Msg::CycleTheme),
             (Some('m'), true) => return self.update(Msg::FocusMode),
@@ -54,14 +87,20 @@ impl App {
     }
 
     /// Escape cancels the most pressing pending thing, one per press: the
-    /// ChatGPT sign-in dialog, a
+    /// quick-open palette, the ChatGPT sign-in dialog, the find bar, a
     /// confirmation (revert, replace, sign out, discard tab), the diff's
     /// anchored line, its typed comment, then the status message. It never
     /// stops a commit-message generation: Escape also reaches mira from the
     /// file editor, and ✦ already stops it.
     fn escape(&mut self) -> Task<Msg> {
+        if self.palette.is_some() {
+            return self.update(Msg::PaletteClose);
+        }
         if self.signin.is_some() {
             return self.update(Msg::SignInCancel);
+        }
+        if self.active_find().is_some() {
+            return self.update(Msg::FindClose);
         }
         if self.clear_confirms() {
             self.status = None;

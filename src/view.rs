@@ -96,6 +96,25 @@ fn hdivider<'a>(d: Divider, active: bool) -> Element<'a, Msg> {
         .into()
 }
 
+/// A search option toggle (`Aa`, `ab`, `.*`), as in VSCodium.
+fn option_toggle<'a>(label: &'static str, on: bool, msg: Msg, name: &'static str) -> Element<'a, Msg> {
+    tip(
+        button(text(label).size(12).font(theme::mono_font())).padding([2, 5]).style(theme::flat(on)).on_press(msg),
+        name,
+    )
+}
+
+/// The icon of a file (by name) in a list row, if a Nerd Font is installed.
+fn file_glyph<'a>(name: &str, size: u32) -> Element<'a, Msg> {
+    match icons::font() {
+        Some(f) => {
+            let (glyph, c) = icons::file_icon(name);
+            text(glyph).font(f).size(size).line_height(1.0).color(c).width(size as f32 + 3.0).into()
+        }
+        None => space().width(0).into(),
+    }
+}
+
 fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
     button(text(label).size(12)).padding([2, 8]).style(theme::flat(false)).on_press_maybe(msg).into()
 }
@@ -199,6 +218,30 @@ impl App {
             body = body.push(divider(Divider::Inspector, active)).push(self.view_inspector());
         }
         let base: Element<'_, Msg> = column![body.height(Length::Fill), self.view_status_bar()].into();
+        if let Some(palette) = &self.palette {
+            // Near the top like VSCodium's, so the input stays put while the list
+            // grows. A click outside closes it; `opaque` keeps it from what is behind
+            // (and, inside, keeps clicks on the palette from closing it).
+            let panel = iced::widget::opaque(self.view_palette(palette));
+            return iced::widget::stack![
+                base,
+                iced::widget::opaque(
+                    mouse_area(
+                        container(panel)
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .align_x(Alignment::Center)
+                            .padding(Padding { top: 56.0, right: 16.0, bottom: 16.0, left: 16.0 })
+                            .style(|_| container::Style {
+                                background: Some(p().bg.scale_alpha(0.35).into()),
+                                ..Default::default()
+                            })
+                    )
+                    .on_press(Msg::PaletteClose)
+                )
+            ]
+            .into();
+        }
         match &self.signin {
             // Modal: `opaque` keeps clicks and the wheel from reaching what is behind.
             Some(signin) => iced::widget::stack![
@@ -275,6 +318,89 @@ impl App {
         container(column![title, body, actions].spacing(18))
             .padding(24)
             .max_width(480)
+            .style(|_| container::Style {
+                background: Some(p().sidebar.into()),
+                text_color: Some(p().fg),
+                border: iced::Border { color: p().border, width: 1.0, radius: 8.0.into() },
+                shadow: iced::Shadow {
+                    color: Color::BLACK.scale_alpha(0.25),
+                    offset: iced::Vector::new(0.0, 6.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    /// Quick open: the query, then the best matching files (or go to line after `:`).
+    fn view_palette<'a>(&'a self, pal: &'a QuickOpen) -> Element<'a, Msg> {
+        let input = text_input("Go to file by name · : to go to a line", &pal.query)
+            .id(PALETTE_INPUT)
+            .on_input(Msg::PaletteQuery)
+            .on_submit(Msg::PaletteSubmit)
+            .size(UI)
+            .padding(8)
+            .style(theme::input);
+        let note = |s: Cow<'a, str>, color: Color| container(text(s).size(SMALL).color(color)).padding([6, 10]);
+        let mut list = Column::new().spacing(1);
+        if let Some(line) = pal.line_query() {
+            let hint: Cow<'a, str> = match self.active_file() {
+                None => "Open a file to go to a line".into(),
+                Some(t) => {
+                    let count = t.content.line_count();
+                    match line.parse::<usize>() {
+                        Ok(n) => {
+                            format!("Go to line {} of {} (Enter)", n.clamp(1, count.max(1)), file_name(&t.path)).into()
+                        }
+                        Err(_) => format!("Type a line number, 1 to {count}").into(),
+                    }
+                }
+            };
+            list = list.push(note(hint, p().muted));
+        } else {
+            match &pal.files {
+                None => list = list.push(note("Listing files…".into(), p().muted)),
+                Some(_) if pal.results.is_empty() => list = list.push(note("No matching files".into(), p().muted)),
+                Some(files) => {
+                    for (i, &fi) in pal.results.iter().enumerate() {
+                        let Some(rel) = files.get(fi) else { continue };
+                        let (name, dir) = split_path(rel);
+                        let line = row![
+                            file_glyph(name, 15),
+                            container(
+                                row![
+                                    text(name).size(UI).color(p().fg).wrapping(text::Wrapping::None),
+                                    text(dir).size(SMALL).color(p().muted).wrapping(text::Wrapping::None),
+                                ]
+                                .spacing(8)
+                                .align_y(Alignment::Center),
+                            )
+                            .width(Length::Fill)
+                            .clip(true),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center);
+                        list = list.push(
+                            button(line)
+                                .width(Length::Fill)
+                                .padding([4, 10])
+                                .style(theme::flat(i == pal.selected))
+                                .on_press(Msg::PalettePick(i)),
+                        );
+                    }
+                }
+            }
+            if pal.capped {
+                list = list.push(note(
+                    format!("Only the first {} files are listed", crate::quickopen::MAX_FILES).into(),
+                    p().warn_text,
+                ));
+            }
+        }
+        container(column![input, list].spacing(6))
+            .padding(8)
+            .width(Length::Fill)
+            .max_width(600)
             .style(|_| container::Style {
                 background: Some(p().sidebar.into()),
                 text_color: Some(p().fg),
@@ -975,15 +1101,7 @@ impl App {
 
     fn view_search(&self) -> Element<'_, Msg> {
         let s = &self.search;
-        let toggle = |label: &'static str, on: bool, which: u8, name: &'static str| {
-            tip(
-                button(text(label).size(12).font(theme::mono_font()))
-                    .padding([2, 5])
-                    .style(theme::flat(on))
-                    .on_press(Msg::SearchToggle(which)),
-                name,
-            )
-        };
+        let toggle = |label, on, which, name| option_toggle(label, on, Msg::SearchToggle(which), name);
         let capped = if s.total >= search::MAX_MATCHES { "+" } else { "" };
         // Two steps, like Revert: files not open in a tab can't be undone.
         let replace: Element<'_, Msg> = if self.confirm_replace {
@@ -1246,6 +1364,7 @@ impl App {
 
     fn view_editor<'a>(&'a self, t: &'a FileTab) -> Element<'a, Msg> {
         let editor = iced::widget::text_editor(&t.content)
+            .id(EDITOR)
             .on_action(Msg::Edit)
             .font(theme::mono_font())
             .size(CODE_SIZE)
@@ -1262,8 +1381,18 @@ impl App {
             })
             .key_binding(|kp| {
                 let ctrl = kp.modifiers.command();
+                // iced asks for bindings even while the editor is unfocused: these
+                // must not take Ctrl+F / Ctrl+G from the terminal.
+                let focused = matches!(kp.status, text_editor::Status::Focused { .. });
+                let plain_ctrl = ctrl && !kp.modifiers.shift() && !kp.modifiers.alt();
                 match kp.key.as_ref() {
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("s") => Some(Binding::Custom(Msg::Save)),
+                    Key::Character(c) if focused && plain_ctrl && c.eq_ignore_ascii_case("f") => {
+                        Some(Binding::Custom(Msg::FindOpen))
+                    }
+                    Key::Character(c) if focused && plain_ctrl && c.eq_ignore_ascii_case("g") => {
+                        Some(Binding::Custom(Msg::PaletteOpen(true)))
+                    }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => {
                         Some(Binding::Custom(if kp.modifiers.shift() { Msg::Redo } else { Msg::Undo }))
                     }
@@ -1286,9 +1415,43 @@ impl App {
                 .align_y(Alignment::Center)
             )
             .padding([2, 12]),
+            t.find.as_deref().map(|f| self.view_find_bar(f)),
             row![self.view_gutter(t), editor].height(Length::Fill),
         ]
         .into()
+    }
+
+    /// Find in the file: query, Match Case, `3/17`, previous / next, close.
+    fn view_find_bar<'a>(&'a self, f: &'a FindBar) -> Element<'a, Msg> {
+        let any = !f.matches.is_empty();
+        let count: Element<'a, Msg> = if f.query.is_empty() {
+            space().width(0).into()
+        } else if !any {
+            text("No results").size(SMALL).color(p().error_text).into()
+        } else {
+            let plus = if f.capped { "+" } else { "" };
+            let at = f.current.map_or_else(|| "?".to_string(), |i| (i + 1).to_string());
+            text(format!("{at}/{}{plus}", f.matches.len())).size(SMALL).color(p().muted).into()
+        };
+        let step = |forward: bool| any.then_some(Msg::FindStep(forward));
+        let bar = row![
+            text_input("Find", &f.query)
+                .id(FIND_INPUT)
+                .on_input(Msg::FindQuery)
+                .on_submit(Msg::FindSubmit)
+                .size(UI)
+                .padding([3, 6])
+                .width(280)
+                .style(theme::input),
+            option_toggle("Aa", f.case_sensitive, Msg::FindToggleCase, "Match Case"),
+            container(count).width(Length::Fixed(72.0)).padding([0, 4]),
+            tip(icon_button_maybe(Icon::ArrowUp, step(false)), "Previous match (Shift+Enter · Shift+F3)"),
+            tip(icon_button_maybe(Icon::ArrowDown, step(true)), "Next match (Enter · F3)"),
+            tip(icon_button(Icon::Close, Msg::FindClose), "Close (Escape)"),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center);
+        container(bar).padding([3, 12]).width(Length::Fill).style(theme::panel(p().sidebar)).into()
     }
 
     /// Line numbers beside the editor, lined up with its scroll (see
@@ -1303,17 +1466,43 @@ impl App {
                 let offset = t.scroll.offset(row_h, count, view);
                 let (first, shown, cut) = crate::gutter::visible(offset, row_h, count, view);
                 let cursor = t.content.cursor().position.line;
-                lazy((first, shown, cut.to_bits(), cursor, theme::current()), move |_| {
+                // Lines with find matches on screen (the current one marked): the editor
+                // only draws its selection while it has the keyboard, so these show the
+                // way while typing in the find bar.
+                let marks: Vec<(usize, bool)> = match &t.find {
+                    Some(f) => {
+                        let current = f.current.and_then(|i| f.matches.get(i)).map(|m| m.line);
+                        let from = f.matches.partition_point(|m| m.line < first);
+                        let mut marks: Vec<(usize, bool)> = Vec::new();
+                        for m in f.matches[from..].iter().take_while(|m| m.line < first + shown) {
+                            if marks.last().is_none_or(|(l, _)| *l != m.line) {
+                                marks.push((m.line, current == Some(m.line)));
+                            }
+                        }
+                        marks
+                    }
+                    None => Vec::new(),
+                };
+                lazy((first, shown, cut.to_bits(), cursor, theme::current(), marks), move |dep| {
+                    let marks = &dep.5;
                     let mut rows = Column::new();
+                    let mut next_mark = marks.iter().peekable();
                     for line in first..first + shown {
                         let color = if line == cursor { p().fg } else { p().line_no };
+                        let mark = next_mark.next_if(|(l, _)| *l == line).map(|(_, current)| *current);
+                        let (color, bg) = match mark {
+                            Some(true) => (p().fg, Some(p().selection)),
+                            Some(false) => (p().fg, Some(p().selection.scale_alpha(0.35))),
+                            None => (color, None),
+                        };
                         rows = rows.push(
                             container(
                                 text((line + 1).to_string()).size(CODE_SIZE).font(theme::mono_font()).color(color),
                             )
                             .height(row_h)
                             .width(Length::Fill)
-                            .align_x(Alignment::End),
+                            .align_x(Alignment::End)
+                            .style(move |_| container::Style { background: bg.map(Into::into), ..Default::default() }),
                         );
                     }
                     Element::<'static, Msg>::from(iced::widget::pin(rows).y(-cut).width(Length::Fill))
@@ -1557,7 +1746,7 @@ impl App {
         // First run (nothing open, no agents): the shortcuts; later they live in tooltips.
         if self.tabs.is_empty() && self.agents.is_empty() && self.status.is_none() {
             right = right.push(
-                text("Ctrl+Shift+ G changes · F search · E files · B panel · T theme · M focus")
+                text("Ctrl+Shift+ P open file · G changes · F search · E files · B panel · T theme · M focus")
                     .size(SMALL)
                     .color(p().muted)
                     .wrapping(text::Wrapping::None),

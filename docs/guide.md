@@ -169,10 +169,15 @@ plain symbols. Fonts default to Inter and JetBrains Mono (medium weight); see
 | `Ctrl+Shift+M` | Focus mode |
 | `Ctrl+Shift+T` | Next theme |
 | `Ctrl+Shift+V` | Paste into the terminal |
+| `Ctrl+Shift+P`, `Ctrl+P` | Quick open: go to a file of the folder by name (fuzzy; `:` + a number goes to a line) |
+| `Ctrl+F` | Find in the open file (`Enter` / `Shift+Enter` or `F3` / `Shift+F3`: next / previous) |
+| `Ctrl+G` | Go to line in the open file |
 | `Ctrl+S` / `Ctrl+W` | Save / close tab |
 | `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | Undo / redo |
 | `Ctrl+Enter` | Commit (in the commit box) |
-| `Escape` | Cancel, one at a time: the sign-in dialog, a pending confirmation, the diff's selected line, its comment, the status message |
+| `Escape` | Cancel, one at a time: quick open, the sign-in dialog, the find bar, a pending confirmation, the diff's selected line, its comment, the status message |
 
-`Ctrl+Shift+…` and ``Ctrl+` `` work while the terminal has focus. `Escape` stays with the
-terminal and with focused inputs; mira only acts on it when nothing else does.
+`Ctrl+Shift+…` and ``Ctrl+` `` work while the terminal has focus; plain `Ctrl+P`, `Ctrl+F` and
+`Ctrl+G` stay with the shell there and act in mira only outside the terminal. `Escape` stays with the
+terminal and with focused inputs (except quick open and the find bar, which it closes); mira only
+acts on it when nothing else does.

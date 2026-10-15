@@ -42,7 +42,8 @@ sits around that loop: review what the agents changed, edit, search, commit.
   `term_send`/`term_write`, `SHORTCUT_LETTERS`), `follow.rs` (herdr polling, `follow`/`switch_root`, `for_root`,
   `send_to_agent`), `review.rs` (run snapshots/files/prompts, review actions, `save_state`), `documents.rs`
   (`Tab`/`FileTab`/`DiffTab`, `AutoSave`, open/save/close, diffs, `active_diff`), `scm.rs` (git ops, commit,
-  `CommitGen`), `find.rs` (`SearchState`, search & replace), `keys.rs` (`on_key`; Escape only when no widget captured it, see `escape`).
+  `CommitGen`), `find.rs` (`SearchState`, search & replace), `navigate.rs` (find bar per file tab in
+  `FileTab::find`, quick-open `QuickOpen` palette, go to line; cursor moves go through `FileTab::follow`), `keys.rs` (`on_key`; Escape only when no widget captured it, see `escape`).
   One terminal running herdr (`TermKind`), herdr polled on
   `Msg::StatusTick` (700 ms; every 3rd while unfocused), runs fed to `runs::Tracker`; Changes shows git files with their run (`Tracker::origin`, `is_new`) or grouped by run. `Msg::Tick` (2 s; every 5th tick while unfocused): git,
   explorer only while Files is visible, reload clean tabs, active diff only when its file changed (`active_diff_stale`).
@@ -87,6 +88,8 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - `src/search.rs` — `ignore` walker + `regex` (multi-line, CRLF-aware: `^`/`$` per line); replace expands `$1` only
   in regex mode and skips matches spanning lines, like the per-line results. Results keep a ~300-byte preview window;
   typing is debounced (150 ms) and a newer search cancels the running one (shared generation).
+- `src/textfind.rs` — find in file: literal matches per line with byte columns (as the editor's), next/previous
+  from the cursor. `src/quickopen.rs` — file list (Search's `ignore` walk, capped) and the fuzzy score/rank.
 - `src/files.rs` — `read_text` (size cap, NUL sniff, UTF-8) for tabs and search; `test_dir` for tests.
 - `src/proc.rs` — streams a child's stdout with stdin fed from a thread, cancel and timeout (commit_command, curl).
 - `src/icons.rs` — `Icon` (Nerd Font codicons + Unicode fallback) and `file_icon` (seti/devicons). Font found via `fc-list`, never bundled.

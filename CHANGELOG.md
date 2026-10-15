@@ -14,6 +14,11 @@ All notable changes to mira are listed here. The format follows
 - Agent turns of Claude Code are titled with the prompt too (from `~/.claude/projects`).
 - Discard with Undo: a snapshot is taken first, so a discard (even of new files) can be undone
   from the status bar.
+- Find in the open file (`Ctrl+F`): a find bar with Match Case, a `3/17` count and previous /
+  next (`Enter` / `Shift+Enter`, `F3` / `Shift+F3`); lines with matches are marked in the line
+  numbers.
+- Quick open (`Ctrl+Shift+P`, or `Ctrl+P` outside the terminal): fuzzy search of the folder's
+  files (.gitignore respected); `:` followed by a number, or `Ctrl+G` in the editor, goes to a line.
 
 ### Fixed
 

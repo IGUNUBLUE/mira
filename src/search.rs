@@ -49,15 +49,19 @@ pub fn build_regex(query: &str, opts: &Options) -> Result<Regex, String> {
         .map_err(|e| e.to_string())
 }
 
-fn files(root: &Path) -> impl Iterator<Item = PathBuf> {
+/// The files under `root` as ripgrep walks them: .gitignore respected,
+/// dotfiles included, `.git` skipped. Shared with quick open.
+pub fn walk(root: &Path) -> impl Iterator<Item = ignore::DirEntry> {
     WalkBuilder::new(root)
         .hidden(false)
         .filter_entry(|e| e.file_name() != ".git")
         .build()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-        .filter(|e| e.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES))
-        .map(|e| e.into_path())
+}
+
+fn files(root: &Path) -> impl Iterator<Item = PathBuf> {
+    walk(root).filter(|e| e.metadata().is_ok_and(|m| m.len() <= MAX_FILE_BYTES)).map(|e| e.into_path())
 }
 
 fn read_text(path: &Path) -> Option<String> {

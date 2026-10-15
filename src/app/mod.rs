@@ -7,13 +7,15 @@
 //!
 //! `update` dispatches each `Msg` to the child module that owns it; each one
 //! adds an `impl App` block: `layout`, `terminal`, `follow` (herdr), `review`,
-//! `documents`, `scm` (git and commit messages), `find` and `keys`.
+//! `documents`, `scm` (git and commit messages), `find` (Search), `navigate`
+//! (find in file, go to line, quick open) and `keys`.
 
 mod documents;
 mod find;
 mod follow;
 mod keys;
 mod layout;
+mod navigate;
 mod review;
 mod scm;
 mod terminal;
@@ -21,6 +23,7 @@ mod terminal;
 pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, Tab};
 pub use find::SearchState;
 pub use layout::{CenterPane, Divider, Inspector, SEARCH_INPUT};
+pub use navigate::{EDITOR, FIND_INPUT, FindBar, PALETTE_INPUT, QuickOpen};
 pub use scm::{CommitGen, GitOutcome, SPINNER, SignIn, SignInEvent, SignInStage};
 pub use terminal::TermKind;
 
@@ -147,6 +150,11 @@ pub struct App {
     /// Signed-in ChatGPT account (email, maybe empty), for the sign-out button.
     pub chatgpt_account: Option<String>,
     pub search: SearchState,
+    /// The quick-open palette (Ctrl+P, Ctrl+G), while open.
+    pub palette: Option<QuickOpen>,
+    palette_seq: u64,
+    /// Keyboard modifiers held now (Shift+Enter in the find bar).
+    modifiers: keyboard::Modifiers,
 
     pub status: Option<(String, bool)>,
     /// The whole text behind a shortened status (e.g. git's stderr), for its tooltip.
@@ -305,6 +313,32 @@ pub enum Msg {
     ReplaceAll,
     /// `.0`: the results were capped, so files past the cap were not replaced.
     ReplaceDone(bool, Result<usize, String>),
+
+    // navigate
+    /// The keyboard modifiers changed.
+    Modifiers(keyboard::Modifiers),
+    /// Ctrl+F: open the active file's find bar (or focus it), seeded with the selection.
+    FindOpen,
+    FindQuery(String),
+    FindToggleCase,
+    /// Next (`true`) or previous match from the cursor.
+    FindStep(bool),
+    /// Enter in the find input: next, or previous with Shift.
+    FindSubmit,
+    FindClose,
+    /// Open the palette: quick open, or go to line (`true`, prefilled with `:`).
+    PaletteOpen(bool),
+    /// Whether the terminal had the keyboard when the palette opened.
+    PaletteFrom(bool),
+    /// The folder's files for palette `.0`, and whether the list was capped.
+    PaletteFiles(u64, (Vec<String>, bool)),
+    PaletteQuery(String),
+    /// Move the selected result by this many rows (wrapping).
+    PaletteMove(isize),
+    /// Open result `.0` (a click).
+    PalettePick(usize),
+    PaletteSubmit,
+    PaletteClose,
 }
 
 /// Run blocking work (git, search, sockets) off the UI thread.
@@ -426,6 +460,9 @@ impl App {
             spin: 0,
             chatgpt_account: crate::openai::account(),
             search: SearchState::default(),
+            palette: None,
+            palette_seq: 0,
+            modifiers: keyboard::Modifiers::default(),
             status: None,
             status_detail: None,
             status_at: Instant::now(),
@@ -463,6 +500,7 @@ impl App {
             iced::Event::Keyboard(k @ keyboard::Event::KeyPressed { .. }) => {
                 Some(Msg::Key(k, status == iced::event::Status::Captured))
             }
+            iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => Some(Msg::Modifiers(m)),
             iced::Event::Window(iced::window::Event::Focused) => Some(Msg::WindowFocus(true)),
             iced::Event::Window(iced::window::Event::Unfocused) => Some(Msg::WindowFocus(false)),
             iced::Event::Window(iced::window::Event::CloseRequested) => Some(Msg::CloseRequested),
@@ -672,6 +710,21 @@ impl App {
             | Msg::SearchSend(..)
             | Msg::ReplaceAll
             | Msg::ReplaceDone(..)) => self.update_find(m),
+            m @ (Msg::Modifiers(_)
+            | Msg::FindOpen
+            | Msg::FindQuery(_)
+            | Msg::FindToggleCase
+            | Msg::FindStep(_)
+            | Msg::FindSubmit
+            | Msg::FindClose
+            | Msg::PaletteOpen(_)
+            | Msg::PaletteFrom(_)
+            | Msg::PaletteFiles(..)
+            | Msg::PaletteQuery(_)
+            | Msg::PaletteMove(_)
+            | Msg::PalettePick(_)
+            | Msg::PaletteSubmit
+            | Msg::PaletteClose) => self.update_navigate(m),
         }
     }
 

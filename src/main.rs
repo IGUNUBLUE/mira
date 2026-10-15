@@ -15,9 +15,11 @@ mod icons;
 mod openai;
 mod persist;
 mod proc;
+mod quickopen;
 mod runs;
 mod search;
 mod termio;
+mod textfind;
 mod theme;
 mod view;
 

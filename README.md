@@ -64,7 +64,7 @@ From source: `cargo install --git https://github.com/IGUNUBLUE/mira --locked`.
 
 Open mira from your app launcher, or run `mira [folder]`. Ask an agent to do something in the
 terminal; its changes show up on the right as it works. Key shortcuts: ``Ctrl+` `` terminal ·
-`Ctrl+Shift+G` changes · `Ctrl+Shift+F` search · `Ctrl+Shift+E` files.
+`Ctrl+Shift+P` open a file · `Ctrl+Shift+G` changes · `Ctrl+Shift+F` search · `Ctrl+Shift+E` files.
 
 - [User guide](docs/guide.md): every panel, shortcuts, commit messages, herdr
 - [Configuration](docs/configuration.md): `~/.config/mira/config`, environment, files

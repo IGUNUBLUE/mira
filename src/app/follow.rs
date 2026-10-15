@@ -164,6 +164,8 @@ impl App {
         let generation = std::sync::Arc::clone(&self.search.generation);
         generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.search = SearchState { generation, ..SearchState::default() };
+        // Its file list is the old folder's.
+        self.palette = None;
         let before = self.tabs.len();
         let active = self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| matches!(t, Tab::File(_)));
         self.tabs.retain(|t| matches!(t, Tab::File(_)));

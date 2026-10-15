@@ -37,7 +37,7 @@ fn swallow(
 
 /// mira's `Ctrl+Shift+<letter>` shortcuts; swallowed by the terminal so they
 /// work while it has focus. Never `c`/`v` (copy/paste).
-const SHORTCUT_LETTERS: [&str; 6] = ["g", "f", "e", "m", "b", "t"];
+const SHORTCUT_LETTERS: [&str; 7] = ["g", "f", "e", "m", "b", "t", "p"];
 
 impl App {
     pub(super) fn update_terminal(&mut self, msg: Msg) -> Task<Msg> {

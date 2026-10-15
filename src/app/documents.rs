@@ -65,7 +65,9 @@ pub struct FileTab {
     pub scroll: crate::gutter::Scroll,
     /// Opened at a line and not touched since: keep that line in view while
     /// the editor's size settles (the panes are laid out after it opens).
-    reveal: bool,
+    pub(super) reveal: bool,
+    /// The find bar (Ctrl+F), while open; its matches follow the text.
+    pub find: Option<Box<super::FindBar>>,
 }
 
 impl FileTab {
@@ -75,7 +77,7 @@ impl FileTab {
     }
 
     /// After an editor action: the view follows the cursor, as the editor does.
-    fn follow(&mut self, view: Option<f32>) {
+    pub(super) fn follow(&mut self, view: Option<f32>) {
         self.scroll.settle(self.content.cursor().position, Self::row(), self.content.line_count(), view);
     }
 
@@ -199,6 +201,9 @@ impl App {
                     if edit {
                         t.dirty = true;
                         t.edited_at = Some(Instant::now());
+                        t.refind();
+                    } else {
+                        t.sync_find();
                     }
                 }
             }
@@ -232,6 +237,7 @@ impl App {
                         t.follow(view);
                         t.dirty = t.history.is_dirty();
                         t.edited_at = Some(Instant::now());
+                        t.refind();
                     }
                 }
             }
@@ -303,7 +309,7 @@ impl App {
     }
 
     /// The active tab, if it is a file.
-    fn active_file_mut(&mut self) -> Option<&mut FileTab> {
+    pub(super) fn active_file_mut(&mut self) -> Option<&mut FileTab> {
         match self.active_tab.and_then(|i| self.tabs.get_mut(i)) {
             Some(Tab::File(t)) => Some(t),
             _ => None,
@@ -339,6 +345,7 @@ impl App {
                         conflict: false,
                         scroll: crate::gutter::Scroll::default(),
                         reveal: false,
+                        find: None,
                     }))
                 }
                 Err(e) => {
@@ -349,10 +356,7 @@ impl App {
         };
         let view = self.editor_view;
         if let (Some(line), Tab::File(t)) = (line, &mut self.tabs[idx]) {
-            let line = line.min(t.content.line_count().saturating_sub(1));
-            t.content
-                .move_to(text_editor::Cursor { position: text_editor::Position { line, column: 0 }, selection: None });
-            t.follow(view);
+            t.go_to_line(line, view);
             t.reveal = true;
         }
         self.active_tab = Some(idx);
@@ -528,6 +532,7 @@ impl App {
                 // Undoable, like VSCodium: Ctrl+Z brings back the text before the agent's change.
                 t.history.record(&old, &t.content.text(), before, t.content.cursor());
                 t.history.mark_saved(&t.content);
+                t.refind();
             }
         }
         if let Some(first) = deleted.first() {
@@ -544,6 +549,27 @@ fn active_after_remove(active: Option<usize>, removed: usize, len: usize) -> Opt
         Some(a) if a > removed => Some(a - 1),
         Some(a) if a == removed => Some(removed.min(len - 1)),
         other => other,
+    }
+}
+
+#[cfg(test)]
+impl FileTab {
+    /// A tab holding `text`, not backed by a file.
+    pub(super) fn for_test(text: &str) -> Self {
+        Self {
+            path: PathBuf::from("test.txt"),
+            crumbs: String::new(),
+            content: Content::with_text(text),
+            dirty: false,
+            mtime: None,
+            syntax: "txt".into(),
+            history: crate::history::History::default(),
+            edited_at: None,
+            conflict: false,
+            scroll: crate::gutter::Scroll::default(),
+            reveal: false,
+            find: None,
+        }
     }
 }
 

@@ -84,6 +84,7 @@ pub enum Icon {
     FolderOpen,
     DotFilled,
     Account,
+    Close,
 }
 
 impl Icon {
@@ -121,6 +122,7 @@ impl Icon {
             FolderOpen => ('\u{EAF7}', "■"),
             DotFilled => ('\u{EA71}', "●"),
             Account => ('\u{EB99}', "@"),
+            Close => ('\u{EA76}', "×"),
         }
     }
 
