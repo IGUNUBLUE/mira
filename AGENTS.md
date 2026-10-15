@@ -34,24 +34,42 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - Folder follows herdr: `poll_herdr` also reads `pane.list`; when the focused workspace changes, `App::follow` →
   `switch_root` (git, explorer, runs, search, commit box reset; diff tabs close). Async results tied to a folder go
   through `for_root` (`Msg::ForRoot(epoch, ..)`) so a reply for the old folder is dropped.
-- `src/app.rs` — state, `Msg`, `update`, keyboard. One terminal running herdr (`TermKind`), herdr polled on
-  `Msg::StatusTick` (700 ms), runs fed to `runs::Tracker`; Changes shows git files with their run (`Tracker::origin`, `is_new`) or grouped by run. `Msg::Tick` (2 s; every 5th tick while unfocused): git,
+- `src/app/` — state and update logic. `mod.rs` holds `App`, the flat `Msg` (view.rs uses `crate::app::*`;
+  child types are re-exported), `new`, `subscription`, `Tick`, `CloseRequested` and `update`, a dispatcher with no
+  wildcard that hands each `Msg` group to a child module's `update_<module>`. Each child adds an `impl App` block
+  (helpers shared across children are `pub(super)`):
+  `layout.rs` (inspector, focus mode, dividers, window, theme, `sync_center`), `terminal.rs` (`TermKind`, spawn,
+  `term_send`/`term_write`, `SHORTCUT_LETTERS`), `follow.rs` (herdr polling, `follow`/`switch_root`, `for_root`,
+  `send_to_agent`), `review.rs` (run snapshots/files/prompts, review actions, `save_state`), `documents.rs`
+  (`Tab`/`FileTab`/`DiffTab`, `AutoSave`, open/save/close, diffs, `active_diff`), `scm.rs` (git ops, commit,
+  `CommitGen`), `find.rs` (`SearchState`, search & replace), `keys.rs` (`on_key`; Escape only when no widget captured it, see `escape`).
+  One terminal running herdr (`TermKind`), herdr polled on
+  `Msg::StatusTick` (700 ms; every 3rd while unfocused), runs fed to `runs::Tracker`; Changes shows git files with their run (`Tracker::origin`, `is_new`) or grouped by run. `Msg::Tick` (2 s; every 5th tick while unfocused): git,
   explorer only while Files is visible, reload clean tabs, active diff only when its file changed (`active_diff_stale`).
-  `GitLoaded` is a no-op when the snapshot is unchanged. Dividers (`Divider::Inspector`, `Divider::History`) persist
+  `GitLoaded(gen, ..)` drops replies of an older refresh (`git_gen`) and is a no-op when the snapshot is unchanged;
+  it also sets `repo_prefix`, the explorer's `Marks`, and says whether the folder is a repo (`has_repo` never runs git). `GitDone(epoch, GitOutcome)`
+  always clears `git_busy` but only touches the commit box for the current folder. Dividers (`Divider::Inspector`, `Divider::History`) persist
   `inspector_width` / `history_height`. Every terminal command goes through `termio::Gate` (see Gotchas).
 - `src/view.rs` — all views. Layout: pane_grid(document / terminal) | inspector (Changes · Search · Files) + status bar.
+  `view` runs after every message batch (the terminal sends one per PTY event): no IO, no per-row formatting or
+  cloning; precompute in update/models and borrow. Diff rows are built once per diff/anchor/palette (`lazy`).
 - `src/herdr.rs` — blocking client of herdr's socket (NDJSON); `launch_command` strips `HERDR_*`. Facts: `herdr-client` skill.
-- `src/runs.rs` — pure run state machine (`Tracker::observe` → `Effect::Before/After`), tested without IO.
+- `src/runs.rs` — pure run state machine (`Tracker::observe` → `Effect::Before/After`), tested without IO. A derived
+  index makes `origin`/`is_new`/`new_files` O(1); runs change only through `Tracker` methods (`edit`), which reindex.
 - `src/agentlog.rs` — run titles from kiro/codex conversation logs.
 - `src/termio.rs` — `TermInput` wrapper (wheel, right/middle, Alt, bracketed paste), `Gate`, color-query answers.
 - `src/persist.rs` — per-folder runs (`$XDG_STATE_HOME/mira/<fnv>.json`, 0600) and `~/.config/mira/config`.
-- `src/git.rs` — `git` CLI wrapper (status scoped to opened folder, capped at `MAX_CHANGES`); tree snapshots via a
-  temporary `GIT_INDEX_FILE`, tree diffs, restore.
-- `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context).
-- `src/explorer.rs` — lazy tree, only expanded dirs are read.
+- `src/git.rs` — `git` CLI wrapper (no stdin, no prompts; status scoped to opened folder, capped at `MAX_CHANGES`;
+  push/pull under a timeout); tree snapshots via a temporary `GIT_INDEX_FILE` in `$XDG_STATE_HOME/mira/index` (0700),
+  tree diffs, restore (refuses when the tree is gone). `snapshot` reuses a `git::Cache` (repo root; `log` reread only
+  when HEAD/refs mtimes move or after 60 s) and lists ignored files only while Files is visible. Commit All and commit messages are scoped to `repo_prefix`.
+- `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context); a full
+  view over `MAX_FULL_ROWS` falls back to hunks. Tabs hold `Arc<FileDiff>`; `FileDiff.id` keys the cached rows.
+- `src/explorer.rs` — lazy tree, only expanded dirs are read, and only again when their mtime moves; git `Marks`
+  (status, ignored) are computed per snapshot and copied onto entries.
 - `src/history.rs` — undo/redo for a `text_editor::Content` (iced has none): word-grouped steps storing only the
   changed span, capped (500 steps / 8 MB). File tabs and the commit box own one; `FileTab.dirty` follows it.
-  Autosave (`AutoSave`, VSCodium's names) lives in app.rs: `save_tab(i, manual)`; autosave skips files whose
+  Autosave (`AutoSave`, VSCodium's names) lives in app/documents.rs: `save_tab(i, manual)`; autosave skips files whose
   mtime changed under unsaved edits (`FileTab.conflict`). The window doesn't exit on close: `Msg::CloseRequested`
   saves, then `iced::exit()`.
 - `src/commitgen.rs` — commit message prompt/diff budget, provider choice (`commit_provider`), streams `Event`s
@@ -59,16 +77,23 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - `src/openai.rs` — Responses API over `curl` with SSE streaming; ChatGPT OAuth PKCE login (codex's client,
   localhost:1455/1457), refresh, tokens in `$XDG_STATE_HOME/mira/chatgpt.json` (0600); API key from
   `OPENAI_API_KEY` or `~/.config/mira/openai_key` (must be 0600). Own SHA-256/base64url, no crypto crates.
-- `src/search.rs` — `ignore` walker + `regex`; replace uses `NoExpand` for literal mode.
+- `src/search.rs` — `ignore` walker + `regex` (multi-line, CRLF-aware: `^`/`$` per line); replace expands `$1` only
+  in regex mode and skips matches spanning lines, like the per-line results. Results keep a ~300-byte preview window;
+  typing is debounced (150 ms) and a newer search cancels the running one (shared generation).
+- `src/files.rs` — `read_text` (size cap, NUL sniff, UTF-8) for tabs and search; `test_dir` for tests.
+- `src/proc.rs` — streams a child's stdout with stdin fed from a thread, cancel and timeout (commit_command, curl).
 - `src/icons.rs` — `Icon` (Nerd Font codicons + Unicode fallback) and `file_icon` (seti/devicons). Font found via `fc-list`, never bundled.
 - `src/theme.rs` — the four LAGC palettes, active palette via `p()`, `Choice` (auto = follow HyDE `staterc`), style fns.
 
 ## Conventions
 
 - Blocking work (git, search, diff, sockets) runs via `blocking()` (`spawn_blocking`) and returns a `Msg`.
-- Colors only through `theme::p().<field>`; never literal colors in views (themes switch at runtime).
+- Colors only through `theme::p().<field>`; never literal colors in views (themes switch at runtime). Text uses
+  `fg`, `muted` or the `warn_text`/`error_text`/`added_text` variants (4.5:1, tested); `line_no` only for gutters.
+- Destructive actions are two-step (`set_confirm`, `theme::danger` label, cleared with the status or Escape:
+  `clear_confirms`); icon-only buttons get a `tip`; git buttons are disabled while `git_busy`.
 - Diff rows: content row is the stack base layer, backgrounds go `push_under` so wrapped lines stay aligned.
-- App shortcuts are `Ctrl+Shift+<letter>` and are swallowed in the terminal (`SHORTCUT_LETTERS` in app.rs).
+- App shortcuts are `Ctrl+Shift+<letter>` and are swallowed in the terminal (`SHORTCUT_LETTERS` in app/terminal.rs).
   Never take `C`/`V` (terminal copy/paste) or plain `Ctrl+B` (herdr's prefix).
 - Code, comments and docs in English; talk to the owner in Spanish.
 

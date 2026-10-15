@@ -9,7 +9,7 @@ keywords = ["editor", "git", "diff", "terminal", "ide"]
 categories = ["development-tools", "text-editors"]
 
 [dependencies]
-iced = { version = "0.14.0", features = ["highlighter", "tokio", "advanced"] }
+iced = { version = "0.14.0", features = ["highlighter", "tokio", "advanced", "lazy"] }
 iced_term = "0.8.0"
 # Same version iced_term uses; only for its event and grid types.
 alacritty_terminal = "=0.25.1"
@@ -18,7 +18,8 @@ regex = "1.13.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 similar = { version = "3.2.0", features = ["std", "text", "inline"] }
-tokio = { version = "1", features = ["rt"] }
+# `time`: the search debounce (iced's tokio executor already enables timers).
+tokio = { version = "1", features = ["rt", "time"] }
 
 [lints.rust]
 # One documented exception: setting the renderer env var at the top of main.
@@ -30,6 +31,15 @@ unwrap_used = "warn"
 expect_used = "warn"
 dbg_macro = "warn"
 todo = "warn"
+
+# Dev builds: line tables are enough for backtraces, and optimized
+# dependencies (iced, wgpu, cosmic-text) keep the UI usable for latency checks.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
 
 [profile.release]
 opt-level = 3

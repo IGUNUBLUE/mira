@@ -113,10 +113,10 @@ impl Icon {
             PanelRight => ('\u{EBF4}', "▥"),
             PanelRightOff => ('\u{EC00}', "▢"),
             ColorMode => ('\u{EAC6}', "◐"),
-            Bell => ('\u{EAA2}', "◐"),
+            Bell => ('\u{EAA2}', "◆"),
             Branch => ('\u{E725}', "⑂"),
-            Folder => ('\u{EA83}', ""),
-            FolderOpen => ('\u{EAF7}', ""),
+            Folder => ('\u{EA83}', "□"),
+            FolderOpen => ('\u{EAF7}', "■"),
             DotFilled => ('\u{EA71}', "●"),
             Account => ('\u{EB99}', "@"),
         }

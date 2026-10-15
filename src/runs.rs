@@ -69,11 +69,6 @@ impl Run {
         self.files.as_ref().is_some_and(|f| f.iter().any(|c| c.path == path))
     }
 
-    /// Changed by this run and not opened since.
-    pub fn is_new(&self, path: &str) -> bool {
-        !self.running() && self.touches(path) && !self.seen.iter().any(|p| p == path)
-    }
-
     pub fn all_seen(&self) -> bool {
         self.files.as_ref().is_none_or(|f| f.iter().all(|c| self.seen.contains(&c.path)))
     }
@@ -112,9 +107,16 @@ struct PaneTrack {
 
 #[derive(Debug, Default)]
 pub struct Tracker {
-    pub runs: Vec<Run>,
+    runs: Vec<Run>,
     panes: HashMap<PaneId, PaneTrack>,
     next: u64,
+    /// Derived from `runs` (rebuilt by [`Tracker::reindex`] after every change
+    /// that can move it): per changed path, the position in `runs` of its
+    /// latest finished run and whether it is new there. The view asks per
+    /// row and per frame, so these lookups must not scan the runs.
+    origins: HashMap<String, (usize, bool)>,
+    /// Paths in `origins` that are new.
+    new_count: usize,
 }
 
 impl Tracker {
@@ -128,39 +130,63 @@ impl Tracker {
             .filter(|r| r.running())
             .map(|r| (r.pane.clone(), PaneTrack { status: AgentStatus::Working, seq: None, open: Some(r.id) }))
             .collect();
-        Self { runs, panes, next }
+        let mut t = Self { runs, panes, next, ..Self::default() };
+        t.reindex();
+        t
+    }
+
+    /// The runs, oldest first.
+    pub fn runs(&self) -> &[Run] {
+        &self.runs
     }
 
     pub fn get(&self, id: RunId) -> Option<&Run> {
         self.runs.iter().find(|r| r.id == id)
     }
 
-    pub fn get_mut(&mut self, id: RunId) -> Option<&mut Run> {
+    fn get_mut(&mut self, id: RunId) -> Option<&mut Run> {
         self.runs.iter_mut().find(|r| r.id == id)
+    }
+
+    /// Change run `id` through `f` (its files, trees or prompt); the derived
+    /// index follows.
+    pub fn edit<R>(&mut self, id: RunId, f: impl FnOnce(&mut Run) -> R) -> Option<R> {
+        let out = f(self.get_mut(id)?);
+        self.reindex();
+        Some(out)
+    }
+
+    /// Rebuild `origins` and `new_count` from `runs`.
+    fn reindex(&mut self) {
+        self.origins.clear();
+        for (i, r) in self.runs.iter().enumerate().filter(|(_, r)| !r.running()) {
+            for c in r.files.iter().flatten() {
+                // Later runs come later in `runs`, so the last insert wins.
+                let new = !r.seen.contains(&c.path);
+                match self.origins.get_mut(c.path.as_str()) {
+                    Some(slot) => *slot = (i, new),
+                    None => {
+                        self.origins.insert(c.path.clone(), (i, new));
+                    }
+                }
+            }
+        }
+        self.new_count = self.origins.values().filter(|(_, new)| *new).count();
     }
 
     /// The latest finished run that changed `path`.
     pub fn origin(&self, path: &str) -> Option<&Run> {
-        self.runs.iter().rev().find(|r| !r.running() && r.touches(path))
+        self.origins.get(path).and_then(|(i, _)| self.runs.get(*i))
     }
 
     /// Whether `path` changed since the user last opened it (per its latest run).
     pub fn is_new(&self, path: &str) -> bool {
-        self.origin(path).is_some_and(|r| r.is_new(path))
+        self.origins.get(path).is_some_and(|(_, new)| *new)
     }
 
     /// Distinct files changed by agents and not opened since.
     pub fn new_files(&self) -> usize {
-        let mut paths: Vec<&str> = self
-            .runs
-            .iter()
-            .filter(|r| !r.running())
-            .flat_map(|r| r.files.iter().flatten().map(|c| c.path.as_str()))
-            .filter(|p| self.is_new(p))
-            .collect();
-        paths.sort_unstable();
-        paths.dedup();
-        paths.len()
+        self.new_count
     }
 
     /// The user opened `path`: it is no longer new in any run.
@@ -170,6 +196,9 @@ impl Tracker {
             r.seen.push(path.to_string());
             changed = true;
         }
+        if changed {
+            self.reindex();
+        }
         changed
     }
 
@@ -177,12 +206,14 @@ impl Tracker {
         for r in self.runs.iter_mut().filter(|r| !r.running()) {
             r.seen = r.files.iter().flatten().map(|c| c.path.clone()).collect();
         }
+        self.reindex();
     }
 
     /// Feed one poll of herdr's agents (only those in this folder). `now` is
     /// unix seconds.
     pub fn observe(&mut self, seen: &[Seen], now: u64) -> Vec<Effect> {
         let mut effects = Vec::new();
+        let mut reopened = false;
         for s in seen {
             let track = *self.panes.entry(s.pane.clone()).or_insert(PaneTrack {
                 status: AgentStatus::Unknown,
@@ -213,6 +244,7 @@ impl Tracker {
                     // Reopen: its "before" still holds, a new "after" comes at the end.
                     Some(id) => {
                         self.reopen(id);
+                        reopened = true;
                         id
                     }
                     None => {
@@ -233,7 +265,12 @@ impl Tracker {
                 effects.push(Effect::After(id));
             }
         }
-        self.trim();
+        let trimmed = self.trim();
+        // Opening a run doesn't move the index (it has no files yet), but
+        // closing, reopening and trimming can.
+        if effects.iter().any(|e| matches!(e, Effect::After(_))) || reopened || trimmed {
+            self.reindex();
+        }
         effects
     }
 
@@ -278,7 +315,9 @@ impl Tracker {
         }
     }
 
-    fn trim(&mut self) {
+    /// Drop runs past [`MAX_RUNS`]; whether any was dropped.
+    fn trim(&mut self) -> bool {
+        let before = self.runs.len();
         while self.runs.len() > MAX_RUNS {
             let finished = |r: &Run| !r.running();
             let victim = self
@@ -294,6 +333,7 @@ impl Tracker {
                 None => break,
             }
         }
+        self.runs.len() != before
     }
 }
 
@@ -357,9 +397,7 @@ mod tests {
         t.observe(&[seen("w1:p1", Working, None)], 1);
         t.observe(&[seen("w1:p1", Idle, None)], 2);
         let change = |p: &str| Change { path: p.into(), code: 'M' };
-        if let Some(r) = t.get_mut(RunId(0)) {
-            r.files = Some(vec![change("a.rs"), change("b.rs")]);
-        }
+        t.edit(RunId(0), |r| r.files = Some(vec![change("a.rs"), change("b.rs")]));
         assert_eq!(t.new_files(), 2);
         assert!(t.is_new("a.rs") && !t.is_new("c.rs"));
         assert!(t.mark_seen("a.rs"));
@@ -368,6 +406,36 @@ mod tests {
         assert_eq!(t.origin("b.rs").map(|r| r.id), Some(RunId(0)));
         t.mark_all_seen();
         assert_eq!(t.new_files(), 0);
+    }
+
+    #[test]
+    fn the_index_follows_the_latest_run_of_each_file() {
+        let mut t = Tracker::default();
+        let change = |p: &str| Change { path: p.into(), code: 'M' };
+        for (i, start) in [(0, 1), (1, 100)] {
+            t.observe(&[seen("w1:p1", Working, None)], start);
+            t.observe(&[seen("w1:p1", Idle, None)], start + 1);
+            let files = if i == 0 { vec![change("a.rs"), change("b.rs")] } else { vec![change("b.rs")] };
+            t.edit(RunId(i), |r| r.files = Some(files));
+        }
+        assert_eq!(t.origin("a.rs").map(|r| r.id), Some(RunId(0)));
+        assert_eq!(t.origin("b.rs").map(|r| r.id), Some(RunId(1)));
+        assert_eq!(t.new_files(), 2);
+        // Opening b.rs clears it in both runs; a later run changing it makes it new again.
+        assert!(t.mark_seen("b.rs"));
+        assert_eq!((t.new_files(), t.is_new("b.rs")), (1, false));
+        t.observe(&[seen("w1:p1", Working, None)], 200);
+        // A run still working doesn't count, and doesn't take over the file yet.
+        t.edit(RunId(2), |r| r.files = Some(vec![change("b.rs")]));
+        assert_eq!((t.new_files(), t.origin("b.rs").map(|r| r.id)), (1, Some(RunId(1))));
+        t.observe(&[seen("w1:p1", Idle, None)], 201);
+        assert_eq!((t.new_files(), t.origin("b.rs").map(|r| r.id)), (2, Some(RunId(2))));
+        // Restored from disk, the index is rebuilt.
+        let back = Tracker::from_runs(t.runs.clone());
+        assert_eq!((back.new_files(), back.is_new("a.rs")), (2, true));
+        // Reopening the run (a quick follow-up) clears its files: b.rs falls back to run 1.
+        t.observe(&[seen("w1:p1", Working, None)], 205);
+        assert_eq!((t.new_files(), t.origin("b.rs").map(|r| r.id)), (1, Some(RunId(1))));
     }
 
     #[test]
@@ -410,10 +478,8 @@ mod tests {
         for i in 0..(MAX_RUNS as u64 + 5) {
             t.observe(&[seen("w1:p1", Working, None)], i * 100);
             t.observe(&[seen("w1:p1", Idle, None)], i * 100 + 1);
-            if let Some(r) = t.get_mut(RunId(i)) {
-                // Only run 3 never changed anything.
-                r.files = Some(if i == 3 { vec![] } else { vec![change("a.rs")] });
-            }
+            // Only run 3 never changed anything.
+            t.edit(RunId(i), |r| r.files = Some(if i == 3 { vec![] } else { vec![change("a.rs")] }));
         }
         assert_eq!(t.runs.len(), MAX_RUNS);
         assert!(t.get(RunId(3)).is_none(), "run without changes dropped first");

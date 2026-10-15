@@ -9,12 +9,19 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct State {
     pub root: PathBuf,
     /// Older state files (agent sessions) have no runs; they load empty.
     #[serde(default)]
     pub runs: Vec<Run>,
+}
+
+/// [`State`] as written: borrowed, so saving never copies the runs.
+#[derive(Serialize)]
+struct StateRef<'a> {
+    root: &'a Path,
+    runs: &'a [Run],
 }
 
 pub fn unix(t: SystemTime) -> u64 {
@@ -67,34 +74,56 @@ fn load_from(path: &Path, root: &Path) -> Option<State> {
     }
 }
 
-pub fn save(state: &State) -> Result<(), String> {
-    save_to(&state_path(&state.root).ok_or("no state directory")?, state)
+/// Save the runs of folder `root`.
+pub fn save(root: &Path, runs: &[Run]) -> Result<(), String> {
+    save_to(&state_path(root).ok_or("no state directory")?, &StateRef { root, runs })
 }
 
-fn save_to(path: &Path, state: &State) -> Result<(), String> {
+fn save_to(path: &Path, state: &StateRef<'_>) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
     write_private(path, &json)
 }
 
 /// Write `bytes` to `path` readable only by the user (0600), atomically.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_atomic(path, bytes, 0o600)
+}
+
+/// Write `bytes` to `path` with permissions `mode`, atomically: through a
+/// temporary file in the same directory, then a rename, so a crash never
+/// leaves half a file.
+fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let json = bytes;
-    // Write then rename, so a crash never leaves half a file.
-    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| e.to_string())?;
-    f.write_all(json).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
+    let write = || -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(&tmp)?;
+        // `mode` above is reduced by the umask; set it exactly.
+        f.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        f.write_all(bytes)?;
+        std::fs::rename(&tmp, path)
+    };
+    write().map_err(|e| {
+        // Nothing to clean up if the temporary file was never created.
+        let _ = std::fs::remove_file(&tmp);
+        e.to_string()
+    })
+}
+
+/// `$XDG_STATE_HOME/mira/<name>`, created if needed and kept 0700, for
+/// scratch files other users must not read.
+pub fn private_dir(name: &str) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = state_dir().ok_or("no state directory")?.join(name);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
 }
 
 /// The folder mira showed last, for a start without a folder or herdr.
@@ -118,14 +147,16 @@ pub fn config_get(key: &str) -> Option<String> {
     get_in(&std::fs::read_to_string(config_path()?).ok()?, key)
 }
 
-/// Set `key`, keeping every other line (and comments) as they are.
+/// Set `key`, keeping every other line (and comments) as they are. The file
+/// is replaced atomically; its mode is kept (0644 for a new one), and a
+/// symlinked config (dotfiles managers) stays a symlink.
 pub fn config_set(key: &str, value: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
     let path = config_path().ok_or("no config directory")?;
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, set_in(&text, key, value)).map_err(|e| e.to_string())
+    let mode = std::fs::metadata(&path).map_or(0o644, |m| m.permissions().mode() & 0o7777);
+    write_atomic(&path, set_in(&text, key, value)?.as_bytes(), mode)
 }
 
 fn get_in(text: &str, key: &str) -> Option<String> {
@@ -135,7 +166,12 @@ fn get_in(text: &str, key: &str) -> Option<String> {
     })
 }
 
-fn set_in(text: &str, key: &str, value: &str) -> String {
+/// `text` with `key = "value"`. Values are written in quotes with no escaping
+/// (and read back by stripping them), so a quote or line break is refused.
+fn set_in(text: &str, key: &str, value: &str) -> Result<String, String> {
+    if value.contains(['"', '\n', '\r']) {
+        return Err(format!("{key}: the value can't contain quotes or line breaks"));
+    }
     let line = format!("{key} = \"{value}\"");
     let mut found = false;
     let mut lines: Vec<String> = text
@@ -151,7 +187,7 @@ fn set_in(text: &str, key: &str, value: &str) -> String {
     if !found {
         lines.push(line);
     }
-    lines.join("\n") + "\n"
+    Ok(lines.join("\n") + "\n")
 }
 
 #[cfg(test)]
@@ -162,16 +198,32 @@ mod tests {
 
     #[test]
     fn config_set_keeps_other_lines() {
-        let text = set_in("# mine\nfont = x\ntheme = auto\n", "theme", "LAGC Calm Dark");
+        let text = set_in("# mine\nfont = x\ntheme = auto\n", "theme", "LAGC Calm Dark").unwrap();
         assert_eq!(text, "# mine\nfont = x\ntheme = \"LAGC Calm Dark\"\n");
         assert_eq!(get_in(&text, "theme").as_deref(), Some("LAGC Calm Dark"));
         assert_eq!(get_in("# theme = x\n", "theme"), None);
-        assert_eq!(set_in("", "a", "1"), "a = \"1\"\n");
+        assert_eq!(set_in("", "a", "1").unwrap(), "a = \"1\"\n");
+        assert!(set_in("", "a", "say \"hi\"").is_err());
+        assert!(set_in("", "a", "x\ny = 1").is_err());
+    }
+
+    #[test]
+    fn atomic_writes_set_the_mode_and_leave_no_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::files::test_dir("persist-write");
+        let path = dir.join("config");
+        write_atomic(&path, b"a = \"1\"\n", 0o644).unwrap();
+        write_private(&dir.join("secret"), b"x").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&path), mode(&dir.join("secret"))), (0o644, 0o600));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = \"1\"\n");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "no temporary file left");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn state_round_trips_is_keyed_by_folder_and_reads_old_files() {
-        let dir = std::env::temp_dir().join(format!("mira-state-{}", std::process::id()));
+        let dir = crate::files::test_dir("persist-state");
         let path = dir.join("s.json");
         let run = Run {
             id: RunId(3),
@@ -187,8 +239,8 @@ mod tests {
             seen: Vec::new(),
             files: None,
         };
-        let state = State { root: PathBuf::from("/tmp/p"), runs: vec![run] };
-        save_to(&path, &state).expect("save");
+        let runs = [run];
+        save_to(&path, &StateRef { root: Path::new("/tmp/p"), runs: &runs }).expect("save");
         let back = load_from(&path, Path::new("/tmp/p")).expect("load");
         assert_eq!(back.runs[0].id, RunId(3));
         assert_eq!(back.runs[0].prompt.as_deref(), Some("hola"));

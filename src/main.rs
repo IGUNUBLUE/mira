@@ -6,12 +6,14 @@ mod app;
 mod commitgen;
 mod diff;
 mod explorer;
+mod files;
 mod git;
 mod herdr;
 mod history;
 mod icons;
 mod openai;
 mod persist;
+mod proc;
 mod runs;
 mod search;
 mod termio;
@@ -22,11 +24,11 @@ use std::path::PathBuf;
 
 /// Default to iced's GPU renderer on the OpenGL backend.
 ///
-/// - wgpu on Vulkan gamma-encoded colors twice on the owner's machine
-///   (`#3B6ADF` showed as `#84ACF0`): washed out, low contrast. GL is exact.
-/// - The CPU renderer (tiny-skia) uses far less memory (32 MB vs 112 MB idle)
-///   but typing and resizing panels lag visibly at this window size, so it is
-///   opt-in: `ICED_BACKEND=tiny-skia`.
+/// - On some Vulkan drivers colors were gamma-encoded twice (`#3B6ADF` showed
+///   as `#84ACF0`): washed out, low contrast. GL is exact.
+/// - The CPU renderer (tiny-skia) uses less memory, but typing and resizing
+///   panels lag visibly in a large window, so it is opt-in:
+///   `ICED_BACKEND=tiny-skia`.
 ///
 /// An explicit `ICED_BACKEND` or `WGPU_BACKEND` from the user wins.
 fn pick_renderer() {

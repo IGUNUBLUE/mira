@@ -1,6 +1,7 @@
 //! Side-by-side diff model with intra-line emphasis.
 
 use similar::{Algorithm, ChangeTag, TextDiff};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,14 +16,21 @@ pub enum Kind {
 #[derive(Debug, Clone)]
 pub struct Side {
     pub number: Option<usize>,
+    /// `number` as text, formatted once (empty without a number).
+    pub label: String,
     pub kind: Kind,
     /// `(emphasized, text)` segments.
     pub segments: Vec<(bool, String)>,
 }
 
 impl Side {
+    fn new(index: Option<usize>, kind: Kind, segments: Vec<(bool, String)>) -> Self {
+        let number = index.map(|i| i + 1);
+        Self { number, label: number.map(|n| n.to_string()).unwrap_or_default(), kind, segments }
+    }
+
     fn empty() -> Self {
-        Self { number: None, kind: Kind::Empty, segments: Vec::new() }
+        Self::new(None, Kind::Empty, Vec::new())
     }
 }
 
@@ -38,16 +46,43 @@ pub enum Item {
 
 #[derive(Debug, Clone, Default)]
 pub struct FileDiff {
+    /// Unique per computed diff (never reused), so views can cache by it.
+    pub id: u64,
     pub items: Vec<Item>,
     pub added: usize,
     pub removed: usize,
     pub binary: bool,
+    /// One side is over the size mira opens; not loaded.
+    pub too_large: bool,
+    /// Asked for the full file, but it has over [`MAX_FULL_ROWS`] rows: these are hunks.
+    pub full_capped: bool,
+}
+
+/// Rows a full-file diff may have; past it the diff falls back to hunks.
+pub const MAX_FULL_ROWS: usize = 5_000;
+
+/// A fresh [`FileDiff::id`].
+pub fn next_id() -> u64 {
+    static N: AtomicU64 = AtomicU64::new(1);
+    N.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Lines in a file larger than this are diffed without inline emphasis.
 const MAX_INLINE_BYTES: usize = 512 * 1024;
 
+/// Side-by-side diff of `old` and `new`: hunks with `context` lines, or the
+/// whole file (`None`) unless it has over [`MAX_FULL_ROWS`] rows.
 pub fn compute(old: &str, new: &str, context: Option<usize>) -> FileDiff {
+    let mut d = compute_rows(old, new, context);
+    if context.is_none() && d.items.len() > MAX_FULL_ROWS {
+        d = compute_rows(old, new, Some(3));
+        d.full_capped = true;
+    }
+    d.id = next_id();
+    d
+}
+
+fn compute_rows(old: &str, new: &str, context: Option<usize>) -> FileDiff {
     if old.contains('\0') || new.contains('\0') {
         return FileDiff { binary: true, ..Default::default() };
     }
@@ -79,15 +114,11 @@ pub fn compute(old: &str, new: &str, context: Option<usize>) -> FileDiff {
             let mut push =
                 |tag: ChangeTag, old_i: Option<usize>, new_i: Option<usize>, segs: Vec<(bool, String)>| match tag {
                     ChangeTag::Equal => out.items.push(Item::Row {
-                        left: Side { number: old_i.map(|i| i + 1), kind: Kind::Equal, segments: segs.clone() },
-                        right: Side { number: new_i.map(|i| i + 1), kind: Kind::Equal, segments: segs },
+                        left: Side::new(old_i, Kind::Equal, segs.clone()),
+                        right: Side::new(new_i, Kind::Equal, segs),
                     }),
-                    ChangeTag::Delete => {
-                        dels.push(Side { number: old_i.map(|i| i + 1), kind: Kind::Delete, segments: segs })
-                    }
-                    ChangeTag::Insert => {
-                        ins.push(Side { number: new_i.map(|i| i + 1), kind: Kind::Insert, segments: segs })
-                    }
+                    ChangeTag::Delete => dels.push(Side::new(old_i, Kind::Delete, segs)),
+                    ChangeTag::Insert => ins.push(Side::new(new_i, Kind::Insert, segs)),
                 };
 
             if inline {
@@ -179,5 +210,19 @@ mod tests {
         let d = compute(&old, &new, Some(2));
         assert!(matches!(d.items.first(), Some(Item::Gap(23))));
         assert!(matches!(d.items.last(), Some(Item::Gap(22))));
+    }
+
+    #[test]
+    fn huge_full_diffs_fall_back_to_hunks_with_labels() {
+        let old: String = (0..MAX_FULL_ROWS + 10).map(|i| format!("{i}\n")).collect();
+        let new = old.replacen("7\n", "seven\n", 1);
+        let d = compute(&old, &new, None);
+        assert!(d.full_capped && d.items.len() < 20, "{} rows", d.items.len());
+        let small = compute("a\n", "b\n", None);
+        assert!(!small.full_capped && small.id != d.id);
+        let Some(Item::Row { left, right }) = small.items.first() else { panic!("row") };
+        assert_eq!((left.label.as_str(), right.label.as_str()), ("1", "1"));
+        let Some(Item::Row { left, .. }) = compute("", "x\n", None).items.first().cloned() else { panic!("row") };
+        assert_eq!((left.kind, left.label.as_str()), (Kind::Empty, ""));
     }
 }

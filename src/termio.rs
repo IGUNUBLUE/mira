@@ -60,8 +60,9 @@ pub struct TermInput<'a, Message> {
     enabled: bool,
     /// Cell size in pixels, as the terminal measured it.
     cell: Option<Size>,
-    /// Bumped by the app whenever it focuses the terminal programmatically.
-    focus_epoch: u64,
+    /// `(epoch, terminal)`: the epoch moves whenever the app moves focus
+    /// itself, to the terminal or (`false`) to another widget.
+    focus: (u64, bool),
     on_input: Box<dyn Fn(Input) -> Message + 'a>,
 }
 
@@ -70,10 +71,10 @@ impl<'a, Message> TermInput<'a, Message> {
         content: impl Into<Element<'a, Message>>,
         enabled: bool,
         cell: Option<Size>,
-        focus_epoch: u64,
+        focus: (u64, bool),
         on_input: impl Fn(Input) -> Message + 'a,
     ) -> Self {
-        Self { content: content.into(), enabled, cell, focus_epoch, on_input: Box::new(on_input) }
+        Self { content: content.into(), enabled, cell, focus, on_input: Box::new(on_input) }
     }
 }
 
@@ -166,9 +167,9 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for TermInput<'_, Mes
     ) {
         let bounds = layout.bounds();
         let state: &mut State = tree.state.downcast_mut();
-        if state.seen_epoch != self.focus_epoch {
-            state.seen_epoch = self.focus_epoch;
-            state.focused = true;
+        if state.seen_epoch != self.focus.0 {
+            state.seen_epoch = self.focus.0;
+            state.focused = self.focus.1;
         }
         if let Event::Keyboard(keyboard::Event::ModifiersChanged(m)) = event {
             state.modifiers = *m;

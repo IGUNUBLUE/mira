@@ -26,7 +26,10 @@ around that loop: ask → the agent acts → you review, correct, accept.
   through a turn's files. Click a line, write a comment, and it is typed into the pane of the
   agent that changed that file, through herdr (not whatever pane has focus), ready for you to
   press Enter.
-- **Source control**: stage / unstage, commit, push, pull, recent history.
+- **Source control**: stage / unstage, commit, push, pull, recent history. With nothing
+  staged, Commit All stages every listed change (the button shows how many). Merge conflicts
+  get their own section and block the commit until you fix and stage them. A folder without
+  a repository offers `git init`.
 - **Commit message generation** (the sparkle button next to the commit box, which grows with
   the message): Conventional Commits from the
   staged diff (or all changes when nothing is staged), with lockfiles excluded and the diff
@@ -34,7 +37,7 @@ around that loop: ask → the agent acts → you review, correct, accept.
   into the box as it is written; while generating, the button spins and clicking it stops and
   restores what you had. Providers (`commit_provider` in `~/.config/mira/config`):
   - `chatgpt` — your ChatGPT subscription. The first click opens the browser to sign in (same
-    OAuth flow as `codex login`); the account icon next to Pull/Push signs out.
+    OAuth flow as `codex login`); the account icon next to Pull/Push signs out (click it twice).
   - `openai` — an API key from `OPENAI_API_KEY` or `~/.config/mira/openai_key` (chmod 600).
   - `command` — `commit_command = "…"`, any command that reads the prompt on stdin and prints
     the message (e.g. a local model via ollama), streamed as it prints.
@@ -44,7 +47,7 @@ around that loop: ask → the agent acts → you review, correct, accept.
   `commit_model = "gpt-6-luna"` picks the model. Only the diff and its `--stat` are sent, and
   only when you click; this is the one network request mira makes (through `curl`). The
   subscription endpoint is undocumented and OpenAI may change it.
-- **Search & replace** (respects `.gitignore`), **explorer** and a syntax-highlighted editor
+- **Search & replace** (respects `.gitignore`; Replace all asks for a second click), **explorer** and a syntax-highlighted editor
   whose clean tabs reload when an agent changes the file.
 - **Undo / redo** (`Ctrl+Z`, `Ctrl+Shift+Z` / `Ctrl+Y`) in the editor and the commit box, one
   step per word like VSCodium. Reloads caused by an agent are undoable too.
@@ -101,14 +104,16 @@ the CPU instead: about a quarter of the memory, but typing and panel resizing fe
 | ``Ctrl+` `` | Focus the terminal |
 | `Ctrl+B` … | herdr's prefix (`Ctrl+B ?` lists its keys) |
 | `Ctrl+Shift+M` | Focus mode (hide the inspector) |
-| `Ctrl+Shift+G` / `F` / `E` | Inspector: Changes / Search / Files (again to hide) |
+| `Ctrl+Shift+G` / `F` / `E` | Inspector: Changes / Search (focuses the query) / Files |
 | `Ctrl+Shift+B` | Toggle inspector |
+| `Escape` | Cancel, one at a time: a pending confirmation (revert, replace all, sign out, discard tab), commit-message generation, the diff's anchored line, its comment, the status message |
 | `Ctrl+Shift+T` | Cycle theme |
 | `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | Undo / redo (editor, commit box) |
 | `Ctrl+Shift+V` | Paste in the terminal (bracketed) |
-| `Ctrl+S` / `Ctrl+W` | Save / close tab |
+| `Ctrl+S` / `Ctrl+W`, middle click | Save / close tab |
 
-`Ctrl+Shift+…` and `` Ctrl+` `` work even while the terminal has focus. Inside herdr, text
+`Ctrl+Shift+…` and `` Ctrl+` `` work even while the terminal has focus; `Escape` stays with the
+terminal (and with a focused input) and only reaches mira when nothing else takes it. Inside herdr, text
 is copied on selection; the mouse wheel, right/middle clicks and Alt+key reach herdr.
 
 ## Roadmap

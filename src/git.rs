@@ -2,9 +2,10 @@
 //! behavior identical to what the user and their agents see in the terminal,
 //! and respects hooks, config, credentials helpers and signing.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Change {
@@ -20,7 +21,10 @@ pub struct Commit {
     pub subject: String,
     pub author: String,
     pub when: String,
+    /// Refs pointing here, without the `HEAD -> ` marker.
     pub refs: String,
+    /// `hash  author · when`, for the tooltip.
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -42,58 +46,216 @@ pub struct Snapshot {
 pub const MAX_CHANGES: usize = 2_000;
 
 impl Snapshot {
-    /// Status letter per relative path, for explorer decorations.
-    pub fn decorations(&self) -> HashMap<String, char> {
-        let mut map = HashMap::new();
-        for c in self.staged.iter().chain(self.unstaged.iter()) {
-            map.insert(c.path.clone(), c.code);
-        }
-        map
+    /// Unmerged paths (code `!`); they are listed with the unstaged changes.
+    pub fn conflicts(&self) -> usize {
+        self.unstaged.iter().filter(|c| c.code == '!').count()
     }
 }
 
-fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+/// What a refresh reuses from the previous one of the same folder (see [`snapshot`]).
+#[derive(Debug, Clone, Default)]
+pub struct Cache {
+    repo: Option<Repo>,
+    /// HEAD and refs as they were when `log` was read, and when that was.
+    log_stamp: Option<(Stamp, Instant)>,
+    log: Vec<Commit>,
+}
+
+/// The repository of the opened folder.
+#[derive(Debug, Clone)]
+struct Repo {
+    root: PathBuf,
+    /// `$GIT_DIR` and `$GIT_COMMON_DIR` (they differ in a linked worktree);
+    /// unknown with a git too old for `--path-format`.
+    dirs: Option<(PathBuf, PathBuf)>,
+}
+
+/// mtimes of HEAD and of everything a ref update rewrites.
+type Stamp = Vec<(PathBuf, SystemTime)>;
+
+/// `git log` runs again at least this often anyway: it shows relative dates.
+const LOG_MAX_AGE: Duration = Duration::from_secs(60);
+
+/// A stamp with an mtime this recent isn't trusted: two updates within the
+/// filesystem's timestamp granularity would look like one.
+const STAMP_SETTLE: Duration = Duration::from_secs(2);
+
+/// Past this many refs directories, `log` just runs every time.
+const MAX_STAMP_DIRS: usize = 256;
+
+pub(crate) fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     git_env(cwd, args, &[])
 }
 
-fn git_env(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
-    let mut cmd = Command::new("git");
-    cmd.args(args).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0");
+/// `program` (git, or `timeout` running git) for scripted use: no prompts, no
+/// stdin, no optional locks (a refresh never blocks the user's git).
+fn command(program: &str, cwd: &Path, env: &[(&str, &str)]) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.current_dir(cwd).stdin(Stdio::null()).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0");
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().map_err(|e| format!("git: {e}"))?;
+    cmd
+}
+
+/// stdout on success, else stderr (or which command failed when it is empty).
+fn to_result(out: &Output, args: &[&str]) -> Result<String, String> {
     if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if err.is_empty() { format!("git {} failed", args.join(" ")) } else { err })
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if err.is_empty() { format!("git {} failed", args.join(" ")) } else { err })
+}
+
+fn git_env(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
+    let out = command("git", cwd, env).args(args).output().map_err(|e| format!("git: {e}"))?;
+    to_result(&out, args)
 }
 
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
     git(dir, &["rev-parse", "--show-toplevel"]).ok().map(|s| PathBuf::from(s.trim()))
 }
 
-pub fn snapshot(dir: &Path) -> Result<Snapshot, String> {
-    let Some(root) = repo_root(dir) else {
-        return Ok(Snapshot::default());
+/// The git state of folder `dir`. `cache` carries what the previous refresh
+/// of the same folder learned: the repository (not looked up again) and the
+/// log (read again only when HEAD or a ref moved, or after [`LOG_MAX_AGE`]).
+/// Ignored files are listed only `with_ignored` (they are shown in Files only).
+pub fn snapshot(dir: &Path, cache: &mut Cache, with_ignored: bool) -> Result<Snapshot, String> {
+    let repo = match cache.repo.take() {
+        // A repository created inside the opened folder (`git init` by an
+        // agent) takes over from the outer one: look it up again.
+        Some(repo) if repo.root == dir || !dir.join(".git").exists() => repo,
+        _ => match probe(dir) {
+            Some(repo) => repo,
+            None => {
+                *cache = Cache::default();
+                return Ok(Snapshot::default());
+            }
+        },
     };
-    let mut snap = Snapshot { root: Some(root.clone()), ..Default::default() };
+    let mut snap = Snapshot { root: Some(repo.root.clone()), ..Default::default() };
 
     // Scoped to the opened folder: opening a subfolder of a large repo stays fast.
-    let status = git(dir, &["status", "--porcelain=v1", "-z", "-uall", "--branch", "--", "."])?;
+    let status = match git(dir, &["status", "--porcelain=v1", "-z", "-uall", "--branch", "--", "."]) {
+        Ok(status) => status,
+        Err(e) => {
+            // The repository may be gone (or moved): find it again next time.
+            *cache = Cache::default();
+            return if probe(dir).is_some() { Err(e) } else { Ok(Snapshot::default()) };
+        }
+    };
+    parse_status(&status, &mut snap);
+
+    // Taken before `log` runs, so a commit made meanwhile shows next time.
+    let stamp = repo.dirs.as_ref().and_then(|(git_dir, common)| refs_stamp(git_dir, common));
+    let fresh = match (&stamp, &cache.log_stamp) {
+        (Some(now), Some((then, at))) => now == then && at.elapsed() < LOG_MAX_AGE,
+        _ => false,
+    };
+    if fresh {
+        snap.log = cache.log.clone();
+    } else {
+        if let Ok(log) = git(&repo.root, &["log", "-n", "40", "--pretty=format:%h%x1f%s%x1f%an%x1f%ar%x1f%D"]) {
+            snap.log = parse_log(&log);
+        }
+        cache.log = snap.log.clone();
+        cache.log_stamp = stamp.map(|s| (s, Instant::now()));
+    }
+    cache.repo = Some(repo);
+
+    if with_ignored
+        && let Ok(ignored) = git(
+            dir,
+            &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--full-name", "-z", "--", "."],
+        )
+    {
+        snap.ignored = ignored.split('\0').filter(|s| !s.is_empty()).map(String::from).take(MAX_CHANGES).collect();
+    }
+
+    Ok(snap)
+}
+
+/// The repository containing `dir`, if any.
+fn probe(dir: &Path) -> Option<Repo> {
+    let args = ["rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"];
+    if let Ok(out) = git(dir, &args) {
+        let mut lines = out.lines().map(|l| PathBuf::from(l.trim()));
+        if let (Some(root), Some(git_dir), Some(common)) = (lines.next(), lines.next(), lines.next()) {
+            return Some(Repo { root, dirs: Some((git_dir, common)) });
+        }
+    }
+    // An older git without `--path-format`: no stamp, so `log` always runs.
+    repo_root(dir).map(|root| Repo { root, dirs: None })
+}
+
+/// mtimes of HEAD, `packed-refs`, reftable's table list and every directory
+/// under `refs/`: git updates a ref by renaming a lock file into its
+/// directory (or rewriting one of those files), so any ref change moves one.
+/// `None` when it can't be trusted (too many directories, a very recent change).
+fn refs_stamp(git_dir: &Path, common: &Path) -> Option<Stamp> {
+    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let mut stamp = Stamp::new();
+    for f in [git_dir.join("HEAD"), common.join("packed-refs"), common.join("reftable/tables.list")] {
+        if let Some(t) = mtime(&f) {
+            stamp.push((f, t));
+        }
+    }
+    let mut dirs = vec![common.join("refs")];
+    if git_dir != common {
+        // Per-worktree refs (bisect, worktree/…).
+        dirs.push(git_dir.join("refs"));
+    }
+    let mut seen = 0;
+    while let Some(dir) = dirs.pop() {
+        let Some(t) = mtime(&dir) else { continue };
+        seen += 1;
+        if seen > MAX_STAMP_DIRS {
+            return None;
+        }
+        stamp.push((dir.clone(), t));
+        for entry in std::fs::read_dir(&dir).ok()?.filter_map(Result::ok) {
+            if entry.file_type().is_ok_and(|k| k.is_dir()) {
+                dirs.push(entry.path());
+            }
+        }
+    }
+    let now = SystemTime::now();
+    if stamp.iter().any(|(_, t)| now.duration_since(*t).map_or(true, |age| age < STAMP_SETTLE)) {
+        return None;
+    }
+    stamp.sort();
+    Some(stamp)
+}
+
+fn parse_log(log: &str) -> Vec<Commit> {
+    log.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\x1f').collect();
+            (f.len() == 5).then(|| Commit {
+                hash: f[0].into(),
+                subject: f[1].into(),
+                author: f[2].into(),
+                when: f[3].into(),
+                refs: f[4].replace("HEAD -> ", ""),
+                detail: format!("{}  {} · {}", f[0], f[2], f[3]),
+            })
+        })
+        .collect()
+}
+
+/// Fill `snap` from `git status --porcelain=v1 -z --branch` output.
+fn parse_status(status: &str, snap: &mut Snapshot) {
     let mut parts = status.split('\0').filter(|s| !s.is_empty());
     while let Some(entry) = parts.next() {
         if let Some(branch) = entry.strip_prefix("## ") {
-            parse_branch(branch, &mut snap);
+            parse_branch(branch, snap);
             continue;
         }
-        if entry.len() < 4 {
+        let (Some(&[x, y]), Some(path)) = (entry.as_bytes().get(..2), entry.get(3..)) else { continue };
+        let (x, y, path) = (x as char, y as char, path.to_string());
+        if path.is_empty() {
             continue;
         }
-        let (x, y) = (entry.as_bytes()[0] as char, entry.as_bytes()[1] as char);
-        let path = entry[3..].to_string();
         if x == 'R' || x == 'C' {
             parts.next(); // original path of a rename/copy
         }
@@ -113,38 +275,12 @@ pub fn snapshot(dir: &Path) -> Result<Snapshot, String> {
             snap.unstaged.push(Change { path, code: y });
         }
     }
-
     for list in [&mut snap.staged, &mut snap.unstaged] {
         if list.len() > MAX_CHANGES {
             list.truncate(MAX_CHANGES);
             snap.truncated = true;
         }
     }
-
-    if let Ok(log) = git(&root, &["log", "-n", "40", "--pretty=format:%h%x1f%s%x1f%an%x1f%ar%x1f%D"]) {
-        snap.log = log
-            .lines()
-            .filter_map(|l| {
-                let f: Vec<&str> = l.split('\x1f').collect();
-                (f.len() == 5).then(|| Commit {
-                    hash: f[0].into(),
-                    subject: f[1].into(),
-                    author: f[2].into(),
-                    when: f[3].into(),
-                    refs: f[4].into(),
-                })
-            })
-            .collect();
-    }
-
-    if let Ok(ignored) = git(
-        dir,
-        &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--full-name", "-z", "--", "."],
-    ) {
-        snap.ignored = ignored.split('\0').filter(|s| !s.is_empty()).map(String::from).take(MAX_CHANGES).collect();
-    }
-
-    Ok(snap)
 }
 
 fn parse_branch(line: &str, snap: &mut Snapshot) {
@@ -171,6 +307,22 @@ pub fn show(root: &Path, rev: &str, path: &str) -> String {
     git(root, &["show", &format!("{rev}:{path}")]).unwrap_or_default()
 }
 
+/// Size in bytes of `path` at `rev` (as in [`show`]); `None` if absent.
+pub fn blob_size(root: &Path, rev: &str, path: &str) -> Option<u64> {
+    git(root, &["cat-file", "-s", &format!("{rev}:{path}")]).ok()?.trim().parse().ok()
+}
+
+/// Staged paths outside `prefix` (the opened folder; `""` is the whole
+/// repository, so nothing is outside). `root` is the repository root.
+pub fn staged_outside(root: &Path, prefix: &str) -> Result<Vec<String>, String> {
+    if prefix.is_empty() {
+        return Ok(Vec::new());
+    }
+    // No renames: a file moved in from outside also deletes something outside.
+    let out = git(root, &["diff", "--cached", "--name-only", "--no-renames", "-z"])?;
+    Ok(out.split('\0').filter(|p| !p.is_empty() && !p.starts_with(prefix)).map(String::from).collect())
+}
+
 pub fn stage(root: &Path, paths: &[String]) -> Result<String, String> {
     let mut args = vec!["add", "-A", "--"];
     args.extend(paths.iter().map(String::as_str));
@@ -192,10 +344,56 @@ pub fn commit(root: &Path, message: &str) -> Result<String, String> {
     git(root, &["commit", "-m", message])
 }
 
+/// Make `root` a git repository.
+pub fn init(root: &Path) -> Result<String, String> {
+    git(root, &["init", "-q"]).map(|_| "Initialized a git repository".into())
+}
+
+/// The line of a git error that says what went wrong (git prints progress
+/// and remote chatter first), plus the next step when it is a known case.
+pub fn error_summary(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let pick = ["error:", "fatal:", "! [", "hint:"]
+        .iter()
+        .find_map(|p| lines.iter().find(|l| l.starts_with(p)))
+        .or(lines.first())
+        .copied()
+        .unwrap_or("git failed");
+    let next = if stderr.contains("[rejected]") || stderr.contains("fetch first") || stderr.contains("non-fast-forward")
+    {
+        Some("Pull first")
+    } else if stderr.contains("Not possible to fast-forward") || stderr.contains("divergent branches") {
+        Some("the branches diverged: merge or rebase in the terminal")
+    } else if stderr.contains("Please tell me who you are") {
+        Some("set user.name and user.email in the terminal")
+    } else {
+        None
+    };
+    match next {
+        Some(n) => format!("{pick} — {n}"),
+        None => pick.to_string(),
+    }
+}
+
+/// Longest a push or pull may run: an ssh passphrase or host-key prompt
+/// mira can't answer would otherwise block every other git action.
+const NETWORK_TIMEOUT_SECS: u32 = 120;
+
+/// `git` for commands that talk to a remote, under [`NETWORK_TIMEOUT_SECS`].
+fn git_remote(root: &Path, args: &[&str]) -> Result<String, String> {
+    git_timed(root, args, &[], NETWORK_TIMEOUT_SECS).map_err(|e| match e {
+        TimedError::TimedOut => format!(
+            "git {} timed out after {NETWORK_TIMEOUT_SECS} s (waiting for a password? try it in the terminal)",
+            args.first().copied().unwrap_or_default()
+        ),
+        TimedError::Failed(e) => e,
+    })
+}
+
 pub fn push(root: &Path) -> Result<String, String> {
-    git(root, &["push"]).or_else(|e| {
+    git_remote(root, &["push"]).or_else(|e| {
         if e.contains("no upstream") || e.contains("set-upstream") {
-            git(root, &["push", "-u", "origin", "HEAD"])
+            git_remote(root, &["push", "-u", "origin", "HEAD"])
         } else {
             Err(e)
         }
@@ -203,7 +401,7 @@ pub fn push(root: &Path) -> Result<String, String> {
 }
 
 pub fn pull(root: &Path) -> Result<String, String> {
-    git(root, &["pull", "--ff-only"])
+    git_remote(root, &["pull", "--ff-only"])
 }
 
 // ------------------------------------------------------------------ snapshots
@@ -213,7 +411,6 @@ pub fn pull(root: &Path) -> Result<String, String> {
 // user's index, branches and history are never touched. Trees are cheap and
 // content-addressed: unchanged files reuse existing blobs.
 
-/// Snapshot the working tree of `root` and return the tree id.
 /// Longest a snapshot step may run. A huge working tree (e.g. a whole home
 /// directory under git) would otherwise keep `git add -A` busy for minutes.
 pub const SNAPSHOT_TIMEOUT_SECS: u32 = 20;
@@ -221,49 +418,65 @@ pub const SNAPSHOT_TIMEOUT_SECS: u32 = 20;
 /// Message prefix of a snapshot that hit [`SNAPSHOT_TIMEOUT_SECS`].
 pub const SNAPSHOT_TIMED_OUT: &str = "snapshot timed out";
 
+/// Why [`git_timed`] failed.
+#[derive(Debug, PartialEq)]
+enum TimedError {
+    TimedOut,
+    Failed(String),
+}
+
 /// `git` under coreutils `timeout`, so the limit holds even if mira exits
 /// while git runs (a plain child would be orphaned and keep going).
-fn git_timed(cwd: &Path, args: &[&str], env: &[(&str, &str)], secs: u32) -> Result<String, String> {
+fn git_timed(cwd: &Path, args: &[&str], env: &[(&str, &str)], secs: u32) -> Result<String, TimedError> {
     let limit = secs.to_string();
     let mut full = vec!["-k", "2", limit.as_str(), "git"];
     full.extend_from_slice(args);
-    let mut cmd = Command::new("timeout");
-    cmd.args(&full).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0").env("GIT_OPTIONAL_LOCKS", "0");
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    let out = match cmd.output() {
+    let out = match command("timeout", cwd, env).args(&full).output() {
         Ok(out) => out,
         // No coreutils `timeout`: run git directly.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return git_env(cwd, args, env),
-        Err(e) => return Err(format!("git: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return git_env(cwd, args, env).map_err(TimedError::Failed);
+        }
+        Err(e) => return Err(TimedError::Failed(format!("git: {e}"))),
     };
     match out.status.code() {
-        Some(0) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
         // 124: timed out; 137: killed after the grace period.
-        Some(124 | 137) | None => Err(format!("{SNAPSHOT_TIMED_OUT} after {secs} s (working tree too large)")),
-        Some(_) => {
-            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            Err(if err.is_empty() { format!("git {} failed", args.join(" ")) } else { err })
-        }
+        Some(124 | 137) | None => Err(TimedError::TimedOut),
+        _ => to_result(&out, args).map_err(TimedError::Failed),
     }
 }
 
+/// A snapshot step under [`SNAPSHOT_TIMEOUT_SECS`].
+fn git_snapshot(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
+    git_timed(cwd, args, env, SNAPSHOT_TIMEOUT_SECS).map_err(|e| match e {
+        TimedError::TimedOut => {
+            format!("{SNAPSHOT_TIMED_OUT} after {SNAPSHOT_TIMEOUT_SECS} s (working tree too large)")
+        }
+        TimedError::Failed(e) => e,
+    })
+}
+
+/// Snapshot the working tree of `root` and return the tree id. The throwaway
+/// index lives in mira's state directory (private to the user), not in /tmp.
 pub fn snapshot_tree(root: &Path) -> Result<String, String> {
+    snapshot_tree_in(root, &crate::persist::private_dir("index")?)
+}
+
+fn snapshot_tree_in(root: &Path, scratch: &Path) -> Result<String, String> {
+    static N: AtomicU64 = AtomicU64::new(0);
     let git_dir = git(root, &["rev-parse", "--absolute-git-dir"])?;
-    let index = std::env::temp_dir().join(format!(
-        "mira-index-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
-    ));
+    let index = scratch.join(format!("index-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
     // Seeding from the real index lets git reuse cached stat info (fast).
+    // Without one (a new repository) git starts from an empty index.
     let _ = std::fs::copy(PathBuf::from(git_dir.trim()).join("index"), &index);
     let index_str = index.to_string_lossy().into_owned();
     let env = [("GIT_INDEX_FILE", index_str.as_str())];
-    let result = git_timed(root, &["add", "-A", "--", "."], &env, SNAPSHOT_TIMEOUT_SECS)
-        .and_then(|_| git_timed(root, &["write-tree"], &env, SNAPSHOT_TIMEOUT_SECS))
+    let result = git_snapshot(root, &["add", "-A", "--", "."], &env)
+        .and_then(|_| git_snapshot(root, &["write-tree"], &env))
         .map(|s| s.trim().to_string());
+    // Missing files are fine; the lock is left behind when `timeout` kills git.
     let _ = std::fs::remove_file(&index);
+    let _ = std::fs::remove_file(format!("{index_str}.lock"));
     result
 }
 
@@ -283,8 +496,13 @@ pub fn diff_trees(root: &Path, from: &str, to: &str) -> Result<Vec<Change>, Stri
 }
 
 /// Restore `paths` in the working tree to their state in `tree`; paths that do
-/// not exist in `tree` are deleted (they were added afterwards).
+/// not exist in `tree` are deleted (they were added afterwards). Nothing is
+/// touched when `tree` itself is missing (e.g. pruned by `git gc`): every path
+/// would otherwise look added afterwards and be deleted.
 pub fn restore_from_tree(root: &Path, tree: &str, paths: &[String]) -> Result<String, String> {
+    if git(root, &["cat-file", "-e", &format!("{tree}^{{tree}}")]).is_err() {
+        return Err(format!("the snapshot {tree} is no longer in the repository: nothing was reverted"));
+    }
     for path in paths {
         if git(root, &["cat-file", "-e", &format!("{tree}:{path}")]).is_ok() {
             git(root, &["restore", &format!("--source={tree}"), "--worktree", "--", path])?;
@@ -303,6 +521,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn error_summary_picks_the_reason_and_the_next_step() {
+        let rejected = "To github.com:o/r.git\n ! [rejected]        main -> main (fetch first)\n\
+                        error: failed to push some refs to 'github.com:o/r.git'\nhint: Updates were rejected";
+        assert_eq!(error_summary(rejected), "error: failed to push some refs to 'github.com:o/r.git' — Pull first");
+        let hook = "running checks…\nlint failed\nfatal: cannot do that";
+        assert_eq!(error_summary(hook), "fatal: cannot do that");
+        assert_eq!(error_summary("\n  just one line \n"), "just one line");
+        assert_eq!(error_summary(""), "git failed");
+    }
+
+    #[test]
     fn parses_branch_line() {
         let mut s = Snapshot::default();
         parse_branch("main...origin/main [ahead 2, behind 1]", &mut s);
@@ -312,33 +541,121 @@ mod tests {
         parse_branch("No commits yet on dev", &mut s);
         assert_eq!(s.branch, "dev");
     }
+
+    #[test]
+    fn parses_porcelain_status() {
+        let mut s = Snapshot::default();
+        let status = "## main...origin/main [ahead 1]\0R  new.txt\0old.txt\0UU both.txt\0AA added.txt\0\
+                      ?? dir/u.txt\0MM m.txt\0 D gone.txt\0A  staged.txt\0x\0";
+        parse_status(status, &mut s);
+        assert_eq!((s.branch.as_str(), s.ahead), ("main", 1));
+        let list = |l: &[Change]| l.iter().map(|c| (c.code, c.path.clone())).collect::<Vec<_>>();
+        assert_eq!(list(&s.staged), [('R', "new.txt".into()), ('M', "m.txt".into()), ('A', "staged.txt".into())]);
+        assert_eq!(
+            list(&s.unstaged),
+            [
+                ('!', "both.txt".into()),
+                ('!', "added.txt".into()),
+                ('U', "dir/u.txt".into()),
+                ('M', "m.txt".into()),
+                ('D', "gone.txt".into())
+            ]
+        );
+        assert!(!s.truncated);
+    }
 }
 
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+    use crate::files::test_dir;
+
+    fn repo() -> PathBuf {
+        let dir = test_dir("git");
+        git(&dir, &["init", "-q"]).unwrap();
+        dir
+    }
+
+    #[test]
+    fn snapshot_reuses_the_log_until_a_ref_moves() {
+        let dir = repo();
+        let commit = |msg: &str| {
+            std::fs::write(dir.join("f"), msg).unwrap();
+            git(&dir, &["add", "f"]).unwrap();
+            let id = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
+            git(&dir, &[&id[..], &["commit", "-qm", msg]].concat()).unwrap();
+        };
+        // Back-date HEAD and the refs tree, as if the last ref change were long ago.
+        let age = || {
+            let old = SystemTime::now() - Duration::from_secs(3600);
+            let git_dir = dir.join(".git");
+            let mut paths = vec![git_dir.join("HEAD")];
+            let mut dirs = vec![git_dir.join("refs")];
+            while let Some(d) = dirs.pop() {
+                for e in std::fs::read_dir(&d).unwrap().filter_map(Result::ok) {
+                    if e.file_type().unwrap().is_dir() {
+                        dirs.push(e.path());
+                    }
+                }
+                paths.push(d);
+            }
+            for p in paths {
+                std::fs::File::open(p).unwrap().set_modified(old).unwrap();
+            }
+        };
+        commit("one");
+        age();
+        let mut cache = Cache::default();
+        assert_eq!(snapshot(&dir, &mut cache, false).unwrap().log[0].subject, "one");
+        assert!(cache.log_stamp.is_some(), "settled refs are trusted");
+        // Nothing moved: the cached log is reused (marked to tell it apart).
+        cache.log[0].subject = "cached".into();
+        let s = snapshot(&dir, &mut cache, false).unwrap();
+        assert_eq!((s.log[0].subject.as_str(), s.ignored.len()), ("cached", 0));
+        // A commit moves a ref: the log is read again.
+        commit("two");
+        assert_eq!(snapshot(&dir, &mut cache, true).unwrap().log[0].subject, "two");
+        // A branch in a new refs subdirectory changes the stamp too.
+        age();
+        let (git_dir, common) = probe(&dir).and_then(|r| r.dirs).unwrap();
+        let before = refs_stamp(&git_dir, &common).unwrap();
+        git(&dir, &["branch", "feature/x"]).unwrap();
+        age();
+        assert_ne!(refs_stamp(&git_dir, &common).unwrap(), before);
+        // A linked worktree has its own git dir and shares the common one.
+        let wt = test_dir("git-wt");
+        let _ = std::fs::remove_dir(&wt);
+        git(&dir, &["worktree", "add", "-q", &wt.to_string_lossy(), "-b", "wt"]).unwrap();
+        let (wt_git, wt_common) = probe(&wt).and_then(|r| r.dirs).unwrap();
+        assert_ne!(wt_git, wt_common);
+        assert_eq!(wt_common.canonicalize().unwrap(), common.canonicalize().unwrap());
+        // The repository goes away: the cache resets and the folder reads as plain.
+        let _ = std::fs::remove_dir_all(&wt);
+        std::fs::remove_dir_all(dir.join(".git")).unwrap();
+        assert_eq!(snapshot(&dir, &mut cache, false), Ok(Snapshot::default()));
+        assert!(cache.repo.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn timed_git_reports_a_timeout() {
         let dir = std::env::temp_dir();
         // `git -c alias.zz='!sleep 5' zz` runs a shell command through git.
-        let err = git_timed(&dir, &["-c", "alias.zz=!sleep 5", "zz"], &[], 1).unwrap_err();
-        assert!(err.starts_with(SNAPSHOT_TIMED_OUT), "{err}");
+        assert_eq!(git_timed(&dir, &["-c", "alias.zz=!sleep 5", "zz"], &[], 1), Err(TimedError::TimedOut));
         assert_eq!(git_timed(&dir, &["--version"], &[], 5).map(|v| v.starts_with("git version")), Ok(true));
     }
 
     #[test]
     fn snapshot_diff_and_restore_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("mira-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        git(&dir, &["init", "-q"]).unwrap();
+        let dir = repo();
+        let scratch = test_dir("git-index");
         std::fs::write(dir.join("a.txt"), "one\n").unwrap();
-        let t1 = snapshot_tree(&dir).unwrap();
+        let t1 = snapshot_tree_in(&dir, &scratch).unwrap();
 
         std::fs::write(dir.join("a.txt"), "two\n").unwrap();
         std::fs::write(dir.join("b.txt"), "new\n").unwrap();
-        let t2 = snapshot_tree(&dir).unwrap();
+        let t2 = snapshot_tree_in(&dir, &scratch).unwrap();
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0, "temp index and lock removed");
 
         let changes = diff_trees(&dir, &t1, &t2).unwrap();
         let summary: Vec<(char, &str)> = changes.iter().map(|c| (c.code, c.path.as_str())).collect();
@@ -349,6 +666,34 @@ mod snapshot_tests {
         restore_from_tree(&dir, &t1, &["a.txt".into(), "b.txt".into()]).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
         assert!(!dir.join("b.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn restore_from_a_missing_tree_deletes_nothing() {
+        let dir = repo();
+        std::fs::write(dir.join("a.txt"), "keep\n").unwrap();
+        let gone = "0123456789abcdef0123456789abcdef01234567";
+        let err = restore_from_tree(&dir, gone, &["a.txt".into()]).unwrap_err();
+        assert!(err.contains("nothing was reverted"), "{err}");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "keep\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn finds_staged_files_outside_the_folder() {
+        let dir = repo();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/in.txt"), "in\n").unwrap();
+        std::fs::write(dir.join("out.txt"), "out\n").unwrap();
+        stage(&dir, &["sub/in.txt".into()]).unwrap();
+        assert!(staged_outside(&dir, "sub/").unwrap().is_empty());
+        stage(&dir, &["out.txt".into()]).unwrap();
+        assert_eq!(staged_outside(&dir, "sub/").unwrap(), ["out.txt"]);
+        assert!(staged_outside(&dir, "").unwrap().is_empty());
+        assert_eq!(blob_size(&dir, "", "out.txt"), Some(4));
+        assert_eq!(blob_size(&dir, "", "missing.txt"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

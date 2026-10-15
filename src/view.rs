@@ -8,7 +8,6 @@
 
 use crate::app::*;
 use crate::diff::{self, Item, Kind};
-use crate::explorer;
 use crate::git::Change;
 use crate::herdr::AgentStatus;
 use crate::icons::{self, Icon};
@@ -21,10 +20,12 @@ use iced::widget::pane_grid;
 use iced::widget::text::Span;
 use iced::widget::text_editor::{self, Binding};
 use iced::widget::{
-    Column, Stack, button, column, container, mouse_area, pane_grid as grid, rich_text, row, scrollable, space, span,
-    text, text_input, tooltip,
+    Column, Stack, button, column, container, lazy, mouse_area, pane_grid as grid, rich_text, row, scrollable, space,
+    span, text, text_input, tooltip,
 };
 use iced::{Alignment, Color, Element, Font, Length, Padding};
+use std::borrow::Cow;
+use std::sync::Arc;
 
 const UI: u32 = 14;
 const SMALL: u32 = 12;
@@ -48,7 +49,12 @@ fn ico<'a>(i: Icon, size: u32) -> text::Text<'a> {
 }
 
 fn icon_button<'a>(i: Icon, msg: Msg) -> Element<'a, Msg> {
-    button(ico(i, 15)).padding([3, 5]).style(theme::flat(false)).on_press(msg).into()
+    icon_button_maybe(i, Some(msg))
+}
+
+/// Icon button, disabled (dimmed) without a message.
+fn icon_button_maybe<'a>(i: Icon, msg: Option<Msg>) -> Element<'a, Msg> {
+    button(ico(i, 15)).padding([3, 5]).style(theme::flat(false)).on_press_maybe(msg).into()
 }
 
 /// Small button with a leading icon.
@@ -94,12 +100,24 @@ fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Ele
     button(text(label).size(12)).padding([2, 8]).style(theme::flat(false)).on_press_maybe(msg).into()
 }
 
-fn tip<'a>(content: impl Into<Element<'a, Msg>>, label: &'a str) -> Element<'a, Msg> {
+fn tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
     tooltip(
         content,
-        container(text(label).size(12)).padding(6).style(theme::bordered(p().bg)),
+        container(text(label).size(12)).padding(6).max_width(420).style(theme::bordered(p().bg)),
         tooltip::Position::Bottom,
     )
+    .into()
+}
+
+/// Tooltip with the full text of a list row that may be clipped; it waits a
+/// moment, so moving over the list doesn't flash one per row.
+fn row_tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
+    tooltip(
+        content,
+        container(text(label).size(12)).padding(6).max_width(420).style(theme::bordered(p().bg)),
+        tooltip::Position::Bottom,
+    )
+    .delay(std::time::Duration::from_millis(700))
     .into()
 }
 
@@ -135,7 +153,7 @@ fn agent_style(status: AgentStatus) -> (Color, &'static str) {
         AgentStatus::Blocked => (p().modified, "needs you"),
         AgentStatus::Done => (p().added, "done"),
         AgentStatus::Idle => (p().line_no, "idle"),
-        AgentStatus::Unknown => (p().border, "unknown"),
+        AgentStatus::Unknown => (p().muted, "unknown"),
     }
 }
 
@@ -183,28 +201,60 @@ impl App {
             row![ico(Icon::Terminal, 13).color(p().accent), text(if herdr { "herdr" } else { "shell" }).size(UI),]
                 .spacing(8)
                 .align_y(Alignment::Center);
+        // Something in the header already takes the free width (clipped or scrolled).
+        let mut filled = false;
         if herdr {
             if let Some(e) = &self.herdr_error {
-                header = header.push(text(e.clone()).size(SMALL).color(p().deleted).wrapping(text::Wrapping::None));
+                header = header.push(tip(
+                    container(text(e.as_str()).size(SMALL).color(p().error_text).wrapping(text::Wrapping::None))
+                        .width(Length::Fill)
+                        .clip(true),
+                    e.as_str(),
+                ));
+                filled = true;
             } else if self.agents.is_empty() {
-                header = header.push(text("Ctrl+B ? for herdr keys").size(SMALL).color(p().line_no));
+                header = header.push(text("Ctrl+B ? for herdr keys").size(SMALL).color(p().muted));
             }
-            // Agents working in this folder; click to jump to their pane.
-            for a in &self.agents {
-                let (color, label) = agent_style(a.agent_status);
-                let chip = row![ico(Icon::DotFilled, 9).color(color), text(a.label()).size(SMALL)]
+            // Agents working in this folder; click to jump to their pane. Many
+            // agents scroll sideways instead of pushing the buttons out.
+            if !self.agents.is_empty() {
+                let mut chips = row![].spacing(2).align_y(Alignment::Center);
+                for a in &self.agents {
+                    let (color, label) = agent_style(a.agent_status);
+                    let chip = row![
+                        ico(Icon::DotFilled, 9).color(color),
+                        text(a.label()).size(SMALL).wrapping(text::Wrapping::None)
+                    ]
                     .spacing(4)
                     .align_y(Alignment::Center);
-                header = header.push(tooltip(
-                    button(chip).padding([1, 6]).style(theme::flat(false)).on_press(Msg::FocusAgent(a.pane_id.clone())),
-                    container(text(format!("{label} · {} — click to show its pane", a.pane_id)).size(12))
-                        .padding(6)
-                        .style(theme::bordered(p().bg)),
-                    tooltip::Position::Bottom,
-                ));
+                    chips = chips.push(tip(
+                        button(chip)
+                            .padding([1, 6])
+                            .style(theme::flat(false))
+                            .on_press(Msg::FocusAgent(a.pane_id.clone())),
+                        format!("{label} · {} — click to show its pane", a.pane_id),
+                    ));
+                }
+                header = header.push(
+                    scrollable(chips)
+                        .direction(scrollable::Direction::Horizontal(
+                            scrollable::Scrollbar::new().width(3).scroller_width(3),
+                        ))
+                        .width(Length::Fill),
+                );
+                filled = true;
             }
+        } else if self.herdr_missing {
+            header = header.push(tip(
+                text("herdr not found: agent tracking off").size(SMALL).color(p().muted),
+                "Install herdr (herdr.dev) for agents, runs and review, \
+                 or set terminal = \"shell\" in ~/.config/mira/config to hide this",
+            ));
         }
-        header = header.push(space::horizontal()).push(tip(
+        if !filled {
+            header = header.push(space::horizontal());
+        }
+        header = header.push(tip(
             icon_button(if self.focus_mode { Icon::ScreenNormal } else { Icon::ScreenFull }, Msg::FocusMode),
             if self.focus_mode { "Exit focus (Ctrl+Shift+M)" } else { "Focus (Ctrl+Shift+M)" },
         ));
@@ -222,7 +272,7 @@ impl App {
                 iced_term::TerminalView::show(t).map(Msg::Term),
                 herdr,
                 self.term_cell,
-                self.focus_epoch,
+                (self.focus_epoch, self.term_focus),
                 Msg::TermInput,
             ))
             .padding(Padding { left: 8.0, ..Padding::ZERO })
@@ -262,7 +312,7 @@ impl App {
             let color = if active { p().accent } else { p().muted };
             let mut r = row![ico(i, 14).color(color), text(label).size(UI)].spacing(6).align_y(Alignment::Center);
             if let Some(n) = count {
-                r = r.push(text(n.to_string()).size(10).color(if alert { p().modified } else { p().accent }));
+                r = r.push(text(n.to_string()).size(10).color(if alert { p().warn_text } else { p().accent }));
             }
             if alert {
                 r = r.push(ico(Icon::DotFilled, 8).color(p().modified));
@@ -270,9 +320,9 @@ impl App {
             button(r).padding([6, 9]).style(theme::tab(active)).on_press(Msg::InspectorTab(which))
         };
         let tabs = row![
-            tab(Icon::SourceControl, "Changes", Inspector::Changes, changes, fresh),
-            tab(Icon::Search, "Search", Inspector::Search, None, false),
-            tab(Icon::Files, "Files", Inspector::Files, None, false),
+            tip(tab(Icon::SourceControl, "Changes", Inspector::Changes, changes, fresh), "Changes (Ctrl+Shift+G)"),
+            tip(tab(Icon::Search, "Search", Inspector::Search, None, false), "Search (Ctrl+Shift+F)"),
+            tip(tab(Icon::Files, "Files", Inspector::Files, None, false), "Files (Ctrl+Shift+E)"),
         ];
         let body = match self.inspector {
             Inspector::Changes => self.view_git(),
@@ -288,7 +338,7 @@ impl App {
 
     /// One changed file. `origin`: show which agent run last changed it.
     fn change_button<'a>(
-        &self,
+        &'a self,
         c: &'a Change,
         active: bool,
         msg: Msg,
@@ -315,13 +365,16 @@ impl App {
         .spacing(4);
         if origin && let Some(run) = self.runs.origin(&c.path) {
             let label = format!("{} · {}", run.agent, ago(run.finished.unwrap_or(run.started)));
-            let tip_text = run.prompt.clone().unwrap_or_else(|| format!("Changed by {}", run.agent));
+            let tip_text = match &run.prompt {
+                Some(prompt) => text(prompt.as_str()),
+                None => text(format!("Changed by {}", run.agent)),
+            };
             content = content.push(tooltip(
                 text(label)
                     .size(SMALL)
-                    .color(if new { p().modified } else { p().line_no })
+                    .color(if new { p().warn_text } else { p().muted })
                     .wrapping(text::Wrapping::None),
-                container(text(tip_text).size(12)).padding(6).max_width(320).style(theme::bordered(p().bg)),
+                container(tip_text.size(12)).padding(6).max_width(320).style(theme::bordered(p().bg)),
                 tooltip::Position::Left,
             ));
         }
@@ -337,56 +390,126 @@ impl App {
     }
 
     fn view_git(&self) -> Element<'_, Msg> {
-        if self.git.root.is_none() {
-            return container(text("This folder is not a git repository.").size(UI).color(p().muted))
-                .padding(12)
-                .into();
+        // Until the folder's first snapshot, `git.root` says nothing yet.
+        if !self.git_loaded {
+            return self.hint("Loading changes…");
         }
+        if self.git.root.is_none() {
+            return container(
+                column![
+                    text("This folder is not a git repository.").size(UI).color(p().muted),
+                    button(
+                        row![ico(Icon::SourceControl, 14), text("Initialize repository").size(UI)]
+                            .spacing(6)
+                            .align_y(Alignment::Center),
+                    )
+                    .style(theme::primary)
+                    .padding([5, 12])
+                    .on_press_maybe((!self.git_busy).then_some(Msg::GitInit)),
+                    text("Search and Files still work.").size(SMALL).color(p().muted),
+                ]
+                .spacing(10)
+                .align_x(Alignment::Center),
+            )
+            .center_x(Length::Fill)
+            .padding(24)
+            .into();
+        }
+        let busy = self.git_busy;
         let staged = &self.git.staged;
         let unstaged = &self.git.unstaged;
+        // Unmerged paths get their own section and never ride along in Commit All.
+        let (conflicts, changes): (Vec<&Change>, Vec<&Change>) = unstaged.iter().partition(|c| c.code == '!');
         let has_changes = !staged.is_empty() || !unstaged.is_empty();
-        let can_commit = !self.git_busy && !self.commit_msg.text().trim().is_empty() && has_changes;
+        let can_commit = !busy && conflicts.is_empty() && has_changes && !self.commit_msg.text().trim().is_empty();
         let generating = self.commit_gen.is_some();
         let can_generate = generating || has_changes;
-        let commit_label = if staged.is_empty() && !unstaged.is_empty() { "Commit All" } else { "Commit" };
+        let commit_all = staged.is_empty() && !changes.is_empty();
+        let commit_label: Cow<'_, str> =
+            if commit_all { format!("Commit All ({})", changes.len()).into() } else { "Commit".into() };
+        let commit_tip: Cow<'_, str> = if !conflicts.is_empty() {
+            "Resolve the merge conflicts first".into()
+        } else if commit_all {
+            let untracked = changes.iter().filter(|c| c.code == 'U').count();
+            let n = changes.len();
+            match untracked {
+                0 => format!("Nothing staged: stages and commits all {n} changes in this folder").into(),
+                u => format!(
+                    "Nothing staged: stages and commits all {n} changes in this folder, \
+                     including {u} untracked {}",
+                    if u == 1 { "file" } else { "files" }
+                )
+                .into(),
+            }
+        } else {
+            "Commit the staged changes (Ctrl+Enter)".into()
+        };
         let open = match self.active_tab.and_then(|i| self.tabs.get(i)) {
             Some(Tab::Diff(DiffTab { rel, source: DiffSource::Index { staged }, .. })) => Some((rel.as_str(), *staged)),
             _ => None,
         };
+        let when_idle = |m: Msg| (!busy).then_some(m);
 
         let mut list = Column::new().spacing(1);
         if !staged.is_empty() {
             let all: Vec<String> = staged.iter().map(|c| c.path.clone()).collect();
-            list = list
-                .push(section(format!("STAGED  {}", staged.len()), vec![icon_button(Icon::Remove, Msg::Unstage(all))]));
+            list = list.push(section(
+                format!("STAGED  {}", staged.len()),
+                vec![tip(icon_button_maybe(Icon::Remove, when_idle(Msg::Unstage(all))), "Unstage all")],
+            ));
             for c in staged {
                 list = list.push(self.change_button(
                     c,
                     open == Some((c.path.as_str(), true)),
                     Msg::OpenDiff(c.path.clone(), true),
-                    Some(icon_button(Icon::Remove, Msg::Unstage(vec![c.path.clone()]))),
+                    Some(tip(
+                        icon_button_maybe(Icon::Remove, when_idle(Msg::Unstage(vec![c.path.clone()]))),
+                        "Unstage changes",
+                    )),
                     true,
                 ));
             }
         }
-        let all: Vec<String> = unstaged.iter().map(|c| c.path.clone()).collect();
+        if !conflicts.is_empty() {
+            list = list.push(section(format!("MERGE CHANGES  {}", conflicts.len()), vec![]));
+            for c in &conflicts {
+                list = list.push(self.change_button(
+                    c,
+                    open == Some((c.path.as_str(), false)),
+                    Msg::OpenDiff(c.path.clone(), false),
+                    Some(tip(
+                        icon_button_maybe(Icon::Add, when_idle(Msg::Stage(vec![c.path.clone()]))),
+                        "Mark as resolved (stage it once the conflict markers are gone)",
+                    )),
+                    true,
+                ));
+            }
+        }
+        let all: Vec<String> = changes.iter().map(|c| c.path.clone()).collect();
         list = list.push(section(
-            format!("CHANGES  {}", unstaged.len()),
-            if all.is_empty() { vec![] } else { vec![icon_button(Icon::Add, Msg::Stage(all))] },
+            format!("CHANGES  {}", changes.len()),
+            if all.is_empty() {
+                vec![]
+            } else {
+                vec![tip(icon_button_maybe(Icon::Add, when_idle(Msg::Stage(all))), "Stage all changes")]
+            },
         ));
-        for c in unstaged {
+        for c in &changes {
             list = list.push(self.change_button(
                 c,
                 open == Some((c.path.as_str(), false)),
                 Msg::OpenDiff(c.path.clone(), false),
-                Some(icon_button(Icon::Add, Msg::Stage(vec![c.path.clone()]))),
+                Some(tip(icon_button_maybe(Icon::Add, when_idle(Msg::Stage(vec![c.path.clone()]))), "Stage changes")),
                 true,
             ));
+        }
+        if !has_changes {
+            list = list.push(self.hint("No changes — agent edits show up here"));
         }
         if self.git.truncated {
             list = list.push(
                 container(
-                    text(format!("Showing first {} changes", crate::git::MAX_CHANGES)).size(SMALL).color(p().modified),
+                    text(format!("Showing first {} changes", crate::git::MAX_CHANGES)).size(SMALL).color(p().warn_text),
                 )
                 .padding([4, 10]),
             );
@@ -396,53 +519,64 @@ impl App {
         for (i, c) in self.git.log.iter().enumerate() {
             let mut r = row![
                 text(if i == 0 { "○" } else { "●" }).size(SMALL).color(p().accent),
-                text(c.subject.clone()).size(UI).wrapping(text::Wrapping::None),
+                text(c.subject.as_str()).size(UI).wrapping(text::Wrapping::None),
             ]
             .spacing(6)
             .align_y(Alignment::Center);
             if !c.refs.is_empty() {
-                r = r.push(badge(c.refs.replace("HEAD -> ", ""), p().accent));
+                r = r.push(badge(c.refs.as_str(), p().accent));
             }
             history = history.push(tooltip(
                 container(r).padding([2, 10]).width(Length::Fill).clip(true),
-                container(text(format!("{}  {} · {}", c.hash, c.author, c.when)).size(12))
-                    .padding(6)
-                    .style(theme::bordered(p().bg)),
+                container(
+                    column![text(c.subject.as_str()).size(12), text(c.detail.as_str()).size(12).color(p().muted),]
+                        .spacing(2),
+                )
+                .padding(6)
+                .max_width(420)
+                .style(theme::bordered(p().bg)),
                 tooltip::Position::Bottom,
             ));
         }
+        if self.git.log.is_empty() {
+            history = history.push(self.hint("No commits yet"));
+        }
 
-        let mut branch = self.git.branch.clone();
+        let mut branch = row![text(self.git.branch.as_str()).size(UI)].spacing(8);
         if self.git.ahead > 0 {
-            branch.push_str(&format!("  ↑{}", self.git.ahead));
+            branch = branch.push(text(format!("↑{}", self.git.ahead)).size(UI));
         }
         if self.git.behind > 0 {
-            branch.push_str(&format!("  ↓{}", self.git.behind));
+            branch = branch.push(text(format!("↓{}", self.git.behind)).size(UI));
         }
         column![
             container(
                 column![
                     row![
                         ico(Icon::Branch, 14).color(p().accent),
-                        text(branch).size(UI),
+                        branch,
                         space::horizontal(),
-                        self.chatgpt_account.as_ref().map(|email| tooltip(
-                            icon_button(Icon::Account, Msg::ChatGptSignOut),
-                            container(
-                                text(if email.is_empty() {
+                        self.chatgpt_account.as_ref().map(|email| if self.confirm_signout {
+                            tip(
+                                button(text("Sign out?").size(12))
+                                    .padding([3, 6])
+                                    .style(theme::danger)
+                                    .on_press(Msg::ChatGptSignOut),
+                                "Click again to sign out of ChatGPT · Esc cancels",
+                            )
+                        } else {
+                            tip(
+                                icon_button(Icon::Account, Msg::ChatGptSignOut),
+                                if email.is_empty() {
                                     "Signed in to ChatGPT — click to sign out".to_string()
                                 } else {
                                     format!("ChatGPT: {email} — click to sign out")
-                                })
-                                .size(12)
+                                },
                             )
-                            .padding(6)
-                            .style(theme::bordered(p().bg)),
-                            tooltip::Position::Bottom,
-                        )),
-                        tip(icon_button(Icon::ArrowDown, Msg::Pull), "Pull (fast-forward)"),
-                        tip(icon_button(Icon::ArrowUp, Msg::Push), "Push"),
-                        tip(icon_button(Icon::Refresh, Msg::Tick), "Refresh"),
+                        }),
+                        tip(icon_button_maybe(Icon::ArrowDown, when_idle(Msg::Pull)), "Pull (fast-forward)"),
+                        tip(icon_button_maybe(Icon::ArrowUp, when_idle(Msg::Push)), "Push"),
+                        tip(icon_button_maybe(Icon::Refresh, when_idle(Msg::Tick)), "Refresh"),
                     ]
                     .align_y(Alignment::Center),
                     row![
@@ -519,18 +653,26 @@ impl App {
                     ]
                     .spacing(4)
                     .align_y(Alignment::Start),
-                    button(
-                        container(
-                            row![ico(Icon::Check, 14), text(commit_label).size(UI)]
-                                .spacing(6)
-                                .align_y(Alignment::Center)
+                    tip(
+                        button(
+                            container(
+                                row![ico(Icon::Check, 14), text(commit_label).size(UI)]
+                                    .spacing(6)
+                                    .align_y(Alignment::Center)
+                            )
+                            .center_x(Length::Fill),
                         )
-                        .center_x(Length::Fill),
-                    )
-                    .width(Length::Fill)
-                    .padding(5)
-                    .style(theme::primary)
-                    .on_press_maybe(can_commit.then_some(Msg::Commit)),
+                        .width(Length::Fill)
+                        .padding(5)
+                        .style(theme::primary)
+                        .on_press_maybe(can_commit.then_some(Msg::Commit)),
+                        commit_tip,
+                    ),
+                    (!conflicts.is_empty()).then(|| {
+                        text("Merge conflicts: fix each file, then stage it (+) before committing.")
+                            .size(SMALL)
+                            .color(p().warn_text)
+                    }),
                 ]
                 .spacing(6)
             )
@@ -563,7 +705,7 @@ impl App {
         let fresh = self.runs.new_files();
         if fresh > 0 {
             bar = bar
-                .push(text(format!("{fresh} new")).size(SMALL).color(p().modified))
+                .push(text(format!("{fresh} new")).size(SMALL).color(p().warn_text))
                 .push(tip(icon_button(Icon::Check, Msg::MarkAllSeen), "Mark all as seen"));
         }
         container(bar.spacing(6)).padding([4, 10]).width(Length::Fill).into()
@@ -577,7 +719,7 @@ impl App {
             _ => None,
         };
         let mut any = false;
-        for r in self.runs.runs.iter().rev() {
+        for r in self.runs.runs().iter().rev() {
             let working = r.running();
             if !working && !r.has_changes() {
                 continue;
@@ -595,10 +737,13 @@ impl App {
                     if n == 1 { "file" } else { "files" }
                 )
             };
-            let title = r.prompt.clone().unwrap_or_else(|| format!("{} run", r.agent));
+            let title = match &r.prompt {
+                Some(prompt) => text(prompt.as_str()),
+                None => text(format!("{} run", r.agent)),
+            };
             let mut header = row![
                 column![
-                    text(title).size(UI).wrapping(text::Wrapping::WordOrGlyph),
+                    title.size(UI).wrapping(text::Wrapping::WordOrGlyph),
                     text(meta).size(SMALL).color(if working { p().accent } else { p().muted }),
                 ]
                 .spacing(1)
@@ -612,13 +757,26 @@ impl App {
             }
             if selected && !working {
                 let confirming = self.confirm_revert == Some(r.id);
-                header =
-                    header.push(tip(icon_button(Icon::Add, Msg::StageRun(r.id)), "Stage this run's files")).push(tip(
-                        button(if confirming { text("revert?").size(12) } else { ico(Icon::Discard, 14) })
-                            .padding([3, 5])
-                            .style(if confirming { theme::danger } else { theme::flat_fn })
-                            .on_press(Msg::RevertRun(r.id)),
-                        "Revert this run",
+                let idle = !self.git_busy;
+                header = header
+                    .push(tip(
+                        icon_button_maybe(Icon::Add, idle.then_some(Msg::StageRun(r.id))),
+                        "Stage this run's files",
+                    ))
+                    .push(tip(
+                        button(if confirming {
+                            text(format!("Revert {n} {}?", if n == 1 { "file" } else { "files" })).size(12)
+                        } else {
+                            ico(Icon::Discard, 14)
+                        })
+                        .padding([3, 5])
+                        .style(if confirming { theme::danger } else { theme::flat_fn })
+                        .on_press_maybe(idle.then_some(Msg::RevertRun(r.id))),
+                        if confirming {
+                            "Click again to restore these files · Esc cancels"
+                        } else {
+                            "Revert this run"
+                        },
                     ));
             }
             list = list.push(
@@ -653,34 +811,47 @@ impl App {
 
     fn view_search(&self) -> Element<'_, Msg> {
         let s = &self.search;
-        let toggle = |label: &'static str, on: bool, which: u8| {
-            button(text(label).size(12).font(theme::mono_font()))
-                .padding([2, 5])
-                .style(theme::flat(on))
-                .on_press(Msg::SearchToggle(which))
+        let toggle = |label: &'static str, on: bool, which: u8, name: &'static str| {
+            tip(
+                button(text(label).size(12).font(theme::mono_font()))
+                    .padding([2, 5])
+                    .style(theme::flat(on))
+                    .on_press(Msg::SearchToggle(which)),
+                name,
+            )
+        };
+        let capped = if s.total >= search::MAX_MATCHES { "+" } else { "" };
+        // Two steps, like Revert: files not open in a tab can't be undone.
+        let replace: Element<'_, Msg> = if self.confirm_replace {
+            tip(
+                button(text(format!("Replace {}{capped} in {} files?", s.total, s.results.len())).size(12))
+                    .padding([2, 8])
+                    .style(theme::danger)
+                    .on_press(Msg::ReplaceAll),
+                "Click again to rewrite these files on disk · Esc cancels",
+            )
+        } else {
+            small_button("Replace all", (!s.results.is_empty() && !s.running).then_some(Msg::ReplaceAll))
         };
         let inputs = column![
             row![
                 text_input("Search", &s.query)
+                    .id(SEARCH_INPUT)
                     .on_input(Msg::SearchQuery)
                     .on_submit(Msg::SearchRun)
                     .size(UI)
                     .padding(6)
                     .style(theme::input),
-                toggle("Aa", s.opts.case_sensitive, 0),
-                toggle("ab", s.opts.whole_word, 1),
-                toggle(".*", s.opts.regex, 2),
+                toggle("Aa", s.opts.case_sensitive, 0, "Match Case"),
+                toggle("ab", s.opts.whole_word, 1, "Match Whole Word"),
+                toggle(".*", s.opts.regex, 2, "Use Regular Expression"),
             ]
             .spacing(2)
             .align_y(Alignment::Center),
             row![
-                text_input("Replace", &s.replace)
-                    .on_input(Msg::SearchReplace)
-                    .on_submit(Msg::ReplaceAll)
-                    .size(UI)
-                    .padding(6)
-                    .style(theme::input),
-                small_button("Replace all", (!s.results.is_empty()).then_some(Msg::ReplaceAll)),
+                // No on_submit: Enter must never rewrite files.
+                text_input("Replace", &s.replace).on_input(Msg::SearchReplace).size(UI).padding(6).style(theme::input),
+                replace,
             ]
             .spacing(4)
             .align_y(Alignment::Center),
@@ -688,27 +859,41 @@ impl App {
         .spacing(6);
 
         let summary: Element<'_, Msg> = if let Some(e) = &s.error {
-            text(e.clone()).size(12).color(p().deleted).into()
+            text(e.as_str()).size(12).color(p().error_text).into()
         } else if s.query.is_empty() {
-            space().into()
+            text("Type to search · respects .gitignore").size(12).color(p().muted).into()
         } else if s.running && s.results.is_empty() {
             text("Searching…").size(12).color(p().muted).into()
+        } else if s.results.is_empty() {
+            text("No results").size(12).color(p().muted).into()
         } else {
-            let capped = if s.total >= search::MAX_MATCHES { "+" } else { "" };
-            text(format!("{}{capped} results in {} files", s.total, s.results.len())).size(12).color(p().muted).into()
+            // Results of the previous query stay while the new one runs.
+            row![
+                text(format!("{}{capped} results in {} files", s.total, s.results.len())).size(12).color(p().muted),
+                s.running.then(|| text("· Searching…").size(12).color(p().muted)),
+            ]
+            .spacing(6)
+            .into()
         };
 
         let mut list = Column::new();
         let mut shown = 0;
-        'files: for f in &s.results {
+        'files: for (fi, f) in s.results.iter().enumerate() {
             let (name, dir) = split_path(&f.rel);
-            list = list.push(
+            list = list.push(row_tip(
                 button(
                     row![
-                        text(name).size(UI),
-                        text(dir).size(SMALL).color(p().muted).wrapping(text::Wrapping::None),
-                        space::horizontal(),
-                        text(f.lines.len().to_string()).size(SMALL).color(p().accent),
+                        container(
+                            row![
+                                text(name).size(UI).wrapping(text::Wrapping::None),
+                                text(dir).size(SMALL).color(p().muted).wrapping(text::Wrapping::None),
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center),
+                        )
+                        .width(Length::Fill)
+                        .clip(true),
+                        text(f.lines.len()).size(SMALL).color(p().accent),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center),
@@ -716,9 +901,10 @@ impl App {
                 .width(Length::Fill)
                 .padding([3, 10])
                 .style(theme::flat(false))
-                .on_press(Msg::OpenFile(f.path.clone(), None)),
-            );
-            for m in &f.lines {
+                .on_press(Msg::SearchOpen(s.shown, fi, None)),
+                f.rel.as_str(),
+            ));
+            for (li, m) in f.lines.iter().enumerate() {
                 if shown >= MAX_RESULT_LINES {
                     list = list.push(
                         container(text("Too many results to display").size(SMALL).color(p().muted)).padding([4, 10]),
@@ -726,31 +912,28 @@ impl App {
                     break 'files;
                 }
                 shown += 1;
-                let (preview, ranges) = search::preview(m);
-                let mut spans: Vec<Span<'static, (), Font>> = Vec::new();
+                // Preview and ranges come from search.rs; spans only borrow them.
+                let preview = m.preview.as_str();
+                let mut spans: Vec<Span<'_, (), Font>> = Vec::with_capacity(m.ranges.len() * 2 + 1);
                 let mut at = 0;
-                for (a, b) in ranges {
+                for &(a, b) in &m.ranges {
                     if a > at {
-                        spans.push(span(preview[at..a].to_string()));
+                        spans.push(span(&preview[at..a]));
                     }
-                    spans.push(span(preview[a..b].to_string()).background(p().selection).color(p().fg));
+                    spans.push(span(&preview[a..b]).background(p().selection).color(p().fg));
                     at = b;
                 }
                 if at < preview.len() {
-                    spans.push(span(preview[at..].to_string()));
+                    spans.push(span(&preview[at..]));
                 }
-                let reference = format!("{}:{}", f.rel, m.line + 1);
                 list = list.push(
                     row![
                         button(rich_text(spans).size(12).wrapping(text::Wrapping::None))
                             .width(Length::Fill)
                             .padding(Padding { top: 1.0, right: 4.0, bottom: 1.0, left: 26.0 })
                             .style(theme::flat(false))
-                            .on_press(Msg::OpenFile(f.path.clone(), Some(m.line))),
-                        tip(
-                            icon_button(Icon::Send, Msg::SendToAgent(format!("{reference} "))),
-                            "Send reference to agent"
-                        ),
+                            .on_press(Msg::SearchOpen(s.shown, fi, Some(li))),
+                        tip(icon_button(Icon::Send, Msg::SearchSend(s.shown, fi, li)), "Send reference to agent"),
                     ]
                     .align_y(Alignment::Center),
                 );
@@ -762,58 +945,62 @@ impl App {
     }
 
     fn view_explorer(&self) -> Element<'_, Msg> {
-        let decorations = self.git.decorations();
+        let open = match self.active_tab.and_then(|i| self.tabs.get(i)) {
+            Some(Tab::File(t)) => Some(t.path.as_path()),
+            _ => None,
+        };
         let mut list = Column::new();
+        // Status and ignored flags are computed in update (see `Explorer::set_marks`).
         for e in &self.explorer.entries {
-            let repo_rel = format!("{}{}", self.repo_prefix, e.rel);
-            let ignored = explorer::is_ignored(&repo_rel, &self.git.ignored);
-            let status = if e.is_dir {
-                explorer::dir_status(&repo_rel, &decorations)
-            } else {
-                decorations.get(&repo_rel).copied()
-            };
-            let color = match (ignored, status) {
+            let color = match (e.ignored, e.status) {
                 (true, _) => p().line_no.scale_alpha(0.75),
                 (_, Some(c)) => theme::status_color(c),
                 _ => p().fg,
             };
-            let expanded = self.explorer.expanded.contains(&e.path);
             let chevron: Element<'_, Msg> = if e.is_dir {
-                ico(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }, 13).color(p().muted).width(14).into()
+                ico(if e.expanded { Icon::ChevronDown } else { Icon::ChevronRight }, 13)
+                    .color(p().muted)
+                    .width(14)
+                    .into()
             } else {
                 space().width(14).into()
             };
             let kind: Element<'_, Msg> = match (e.is_dir, icons::font()) {
                 (true, _) => {
-                    ico(if expanded { Icon::FolderOpen } else { Icon::Folder }, 15).color(p().accent).width(18).into()
+                    ico(if e.expanded { Icon::FolderOpen } else { Icon::Folder }, 15).color(p().accent).width(18).into()
                 }
                 (false, Some(f)) => {
                     let (glyph, c) = icons::file_icon(&e.name);
-                    let c = if ignored { c.scale_alpha(0.55) } else { c };
-                    text(glyph.to_string()).font(f).size(15).line_height(1.0).color(c).width(18).into()
+                    let c = if e.ignored { c.scale_alpha(0.55) } else { c };
+                    text(glyph).font(f).size(15).line_height(1.0).color(c).width(18).into()
                 }
                 (false, None) => space().width(0).into(),
             };
-            let open = matches!(self.active_tab.and_then(|i| self.tabs.get(i)), Some(Tab::File(t)) if t.path == e.path);
             let mut line = row![
                 space::horizontal().width(e.depth as f32 * 12.0),
                 chevron,
                 kind,
-                text(e.name.clone()).size(UI).color(color).wrapping(text::Wrapping::None),
-                space::horizontal(),
+                // Clipped, so a deep or long name never pushes the status letter out.
+                container(text(e.name.as_str()).size(UI).color(color).wrapping(text::Wrapping::None))
+                    .width(Length::Fill)
+                    .clip(true),
             ]
             .align_y(Alignment::Center)
             .spacing(4);
-            if let Some(code) = status.filter(|_| !e.is_dir) {
-                line = line.push(text(code.to_string()).size(SMALL).color(theme::status_color(code)));
+            if let Some(code) = e.status.filter(|_| !e.is_dir) {
+                line = line.push(text(code).size(SMALL).color(theme::status_color(code)));
             }
-            list = list.push(
+            list = list.push(row_tip(
                 button(line)
                     .width(Length::Fill)
                     .padding([2, 8])
-                    .style(theme::flat(open))
+                    .style(theme::flat(open == Some(e.path.as_path())))
                     .on_press(Msg::ExplorerClick(e.path.clone(), e.is_dir)),
-            );
+                e.name.as_str(),
+            ));
+        }
+        if self.explorer.entries.is_empty() {
+            list = list.push(self.hint("Empty folder"));
         }
         column![
             container(text(file_name(&self.root).to_uppercase()).size(SMALL).color(p().muted)).padding([6, 10]),
@@ -843,27 +1030,40 @@ impl App {
                     format!("⇄ {name} ({side})")
                 }
             };
-            tabs = tabs.push(
-                container(
-                    row![
-                        button(text(title).size(UI).wrapping(text::Wrapping::None))
-                            .padding(Padding { top: 6.0, right: 4.0, bottom: 6.0, left: 12.0 })
-                            .style(theme::tab(active))
-                            .on_press(Msg::SelectTab(i)),
-                        button(text("×").size(14)).padding([4, 6]).style(theme::tab(active)).on_press(Msg::CloseTab(i)),
-                    ]
-                    .align_y(Alignment::Center),
+            // A first Ctrl+W / × on unsaved edits arms this; the next one discards.
+            let discarding = matches!(t, Tab::File(f) if self.pending_close.as_ref() == Some(&f.path));
+            let close = if discarding {
+                tip(
+                    button(text("Discard?").size(12)).padding([3, 6]).style(theme::danger).on_press(Msg::CloseTab(i)),
+                    "Click again to close without saving · Ctrl+S saves · Esc cancels",
                 )
-                .style(move |_| container::Style {
-                    background: Some(if active { p().bg } else { p().sidebar }.into()),
-                    border: iced::Border {
-                        color: if active { p().accent } else { Color::TRANSPARENT },
-                        width: if active { 1.0 } else { 0.0 },
-                        radius: 0.0.into(),
-                    },
-                    ..Default::default()
-                }),
-            );
+            } else {
+                tip(
+                    button(text("×").size(14)).padding([4, 6]).style(theme::tab(active)).on_press(Msg::CloseTab(i)),
+                    "Close (Ctrl+W)",
+                )
+            };
+            let tab = container(
+                row![
+                    button(text(title).size(UI).wrapping(text::Wrapping::None))
+                        .padding(Padding { top: 6.0, right: 4.0, bottom: 6.0, left: 12.0 })
+                        .style(theme::tab(active))
+                        .on_press(Msg::SelectTab(i)),
+                    close,
+                ]
+                .align_y(Alignment::Center),
+            )
+            .style(move |_| container::Style {
+                background: Some(if active { p().bg } else { p().sidebar }.into()),
+                border: iced::Border {
+                    color: if active { p().accent } else { Color::TRANSPARENT },
+                    width: if active { 1.0 } else { 0.0 },
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            });
+            // Middle click closes, as in VSCodium.
+            tabs = tabs.push(mouse_area(tab).on_middle_press(Msg::CloseTab(i)));
         }
         let tab_bar = container(
             scrollable(tabs)
@@ -881,7 +1081,6 @@ impl App {
     }
 
     fn view_editor<'a>(&'a self, t: &'a FileTab) -> Element<'a, Msg> {
-        let rel = t.path.strip_prefix(&self.root).unwrap_or(&t.path).to_string_lossy().replace('/', " › ");
         let editor = iced::widget::text_editor(&t.content)
             .on_action(Msg::Edit)
             .font(theme::mono_font())
@@ -910,14 +1109,12 @@ impl App {
                 }
             })
             .highlight(&t.syntax, p().syntax);
-        let rel_ref = t.path.strip_prefix(&self.root).unwrap_or(&t.path).to_string_lossy().into_owned();
-        let line = t.content.cursor().position.line + 1;
         column![
             container(
                 row![
-                    text(rel).size(12).color(p().muted),
+                    text(t.crumbs.as_str()).size(12).color(p().muted),
                     space::horizontal(),
-                    icon_label(Icon::Send, "Send line to agent", Some(Msg::SendToAgent(format!("{rel_ref}:{line} ")))),
+                    icon_label(Icon::Send, "Send line to agent", Some(Msg::SendLine)),
                 ]
                 .align_y(Alignment::Center)
             )
@@ -928,22 +1125,26 @@ impl App {
     }
 
     fn view_diff<'a>(&'a self, d: &'a DiffTab) -> Element<'a, Msg> {
-        let root = self.repo_root();
-        let side_label = match &d.source {
-            DiffSource::Index { staged: true } => "HEAD ⇄ Index".to_string(),
-            DiffSource::Index { staged: false } => "Index ⇄ Working Tree".to_string(),
-            DiffSource::Trees { label, .. } => format!("{label} · before ⇄ after"),
+        let side_label: Cow<'_, str> = match &d.source {
+            DiffSource::Index { staged: true } => "HEAD ⇄ Index".into(),
+            DiffSource::Index { staged: false } => "Index ⇄ Working Tree".into(),
+            DiffSource::Trees { label, .. } => format!("{label} · before ⇄ after").into(),
         };
-        let mut header = row![text(d.rel.clone()).size(UI), text(side_label).size(SMALL).color(p().muted)]
+        // The path and counts take what the buttons leave, clipped (full path in the tooltip).
+        let mut info = row![
+            text(d.rel.as_str()).size(UI).wrapping(text::Wrapping::None),
+            text(side_label).size(SMALL).color(p().muted).wrapping(text::Wrapping::None),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+        if let Some(diff) = &d.diff {
+            info = info
+                .push(text(format!("+{}", diff.added)).size(12).color(p().added_text))
+                .push(text(format!("−{}", diff.removed)).size(12).color(p().error_text));
+        }
+        let mut header = row![row_tip(container(info).width(Length::Fill).clip(true), d.rel.as_str())]
             .spacing(10)
             .align_y(Alignment::Center);
-        if let Some(diff) = &d.diff {
-            header = header
-                .push(text(format!("+{}", diff.added)).size(12).color(p().added))
-                .push(text(format!("−{}", diff.removed)).size(12).color(p().deleted));
-        }
-        let path = root.join(&d.rel);
-        header = header.push(space::horizontal());
         if let DiffSource::Trees { run, .. } = d.source
             && let Some(files) = self.runs.get(run).and_then(|r| r.files.as_ref())
             && let Some(i) = files.iter().position(|c| c.path == d.rel)
@@ -960,48 +1161,34 @@ impl App {
                 if d.full { "Hunks" } else { "Full file" },
                 Some(Msg::DiffFull(!d.full)),
             ))
-            .push(icon_label(
-                Icon::GoToFile,
-                "Open file",
-                path.is_file().then(|| Msg::OpenFile(path.clone(), d.anchor.map(|l| l.saturating_sub(1)))),
-            ));
+            .push(if d.on_disk {
+                icon_label(Icon::GoToFile, "Open file", Some(Msg::DiffOpenFile))
+            } else {
+                tip(icon_label(Icon::GoToFile, "Open file", None), "File no longer exists")
+            });
         if let DiffSource::Index { staged } = d.source {
+            let msg = if staged { Msg::Unstage(vec![d.rel.clone()]) } else { Msg::Stage(vec![d.rel.clone()]) };
             header = header.push(
                 button(text(if staged { "Unstage" } else { "Stage" }).size(12))
                     .padding([2, 8])
                     .style(theme::primary)
-                    .on_press(if staged { Msg::Unstage(vec![d.rel.clone()]) } else { Msg::Stage(vec![d.rel.clone()]) }),
+                    .on_press_maybe((!self.git_busy).then_some(msg)),
             );
         }
 
         let body: Element<'a, Msg> = match &d.diff {
             None => container(text("Loading…").color(p().muted)).padding(16).into(),
             Some(diff) if diff.binary => container(text("Binary file").color(p().muted)).padding(16).into(),
+            Some(diff) if diff.too_large => {
+                container(text("File too large to diff (over 8 MB)").color(p().muted)).padding(16).into()
+            }
             Some(diff) if diff.items.is_empty() => container(text("No changes").color(p().muted)).padding(16).into(),
             Some(diff) => {
-                let mut rows = Column::new();
-                for item in &diff.items {
-                    rows = rows.push(match item {
-                        Item::Gap(n) => Element::from(
-                            button(
-                                container(text(format!("⋯ {n} unchanged lines")).size(12).color(p().muted))
-                                    .center_x(Length::Fill),
-                            )
-                            .width(Length::Fill)
-                            .padding(2)
-                            .style(|_, s| button::Style {
-                                background: Some(
-                                    if matches!(s, button::Status::Hovered) { p().section } else { p().sidebar }.into(),
-                                ),
-                                text_color: p().muted,
-                                ..Default::default()
-                            })
-                            .on_press(Msg::DiffFull(true)),
-                        ),
-                        Item::Row { left, right } => diff_row(left, right, d.anchor),
-                    });
-                }
-                scrollable(container(rows).padding(Padding { right: 12.0, ..Padding::ZERO }))
+                // Built once per diff, anchor and palette, not on every frame:
+                // the terminal streams many messages per second while agents work.
+                let (rows, anchor) = (Arc::clone(diff), d.anchor);
+                let cached = lazy((diff.id, anchor, theme::current()), move |_| diff_rows(&rows, anchor));
+                scrollable(container(cached).padding(Padding { right: 12.0, ..Padding::ZERO }))
                     .height(Length::Fill)
                     .into()
             }
@@ -1041,7 +1228,7 @@ impl App {
         if !self.git.branch.is_empty() {
             left = left.push(
                 button(
-                    row![ico(Icon::Branch, 12), text(self.git.branch.clone()).size(12)]
+                    row![ico(Icon::Branch, 12), text(self.git.branch.as_str()).size(12)]
                         .spacing(4)
                         .align_y(Alignment::Center),
                 )
@@ -1067,7 +1254,7 @@ impl App {
                 button(
                     row![
                         ico(Icon::Bell, 12).color(p().modified),
-                        text(format!("{blocked} need you")).size(12).color(p().modified)
+                        text(format!("{blocked} need you")).size(12).color(p().warn_text)
                     ]
                     .spacing(4)
                     .align_y(Alignment::Center),
@@ -1094,21 +1281,42 @@ impl App {
             );
         }
         if let Some((msg, err)) = &self.status {
-            left = left.push(text(msg.clone()).size(12).color(if *err { p().deleted } else { p().muted }));
+            // Click (or Escape) dismisses; a shortened error shows git's whole text on hover.
+            let message = button(
+                text(msg.as_str())
+                    .size(12)
+                    .color(if *err { p().error_text } else { p().muted })
+                    .wrapping(text::Wrapping::None),
+            )
+            .padding([1, 4])
+            .style(theme::flat(false))
+            .on_press(Msg::DismissStatus);
+            left = left.push(match &self.status_detail {
+                Some(detail) => tooltip(
+                    message,
+                    container(text(detail.as_str()).size(12).font(theme::mono_font()))
+                        .padding(6)
+                        .max_width(640)
+                        .style(theme::bordered(p().bg)),
+                    tooltip::Position::Top,
+                )
+                .into(),
+                None => tip(message, "Click to dismiss"),
+            });
         }
         let mut right = row![].spacing(16).align_y(Alignment::Center);
         if let Some(Tab::File(t)) = self.active_tab.and_then(|i| self.tabs.get(i)) {
             let p = t.content.cursor().position;
             right = right
                 .push(text(format!("Ln {}, Col {}", p.line + 1, p.column + 1)).size(12))
-                .push(text(t.syntax.clone()).size(12));
+                .push(text(t.syntax.as_str()).size(12));
         }
         if self.git_busy || self.search.running {
             right = right.push(text("working…").size(12).color(p().muted));
         }
-        let theme_label = match self.theme {
-            theme::Choice::Auto => format!("{} (auto)", p().name),
-            theme::Choice::Fixed(_) => p().name.to_string(),
+        let theme_label: Cow<'_, str> = match self.theme {
+            theme::Choice::Auto => format!("{} (auto)", p().name).into(),
+            theme::Choice::Fixed(_) => p().name.into(),
         };
         right = right.push(tooltip(
             button(row![ico(Icon::ColorMode, 12), text(theme_label).size(12)].spacing(4).align_y(Alignment::Center))
@@ -1118,12 +1326,17 @@ impl App {
             container(text("Switch theme (Ctrl+Shift+T)").size(12)).padding(6).style(theme::bordered(p().bg)),
             tooltip::Position::Top,
         ));
-        right = right.push(
-            text("Ctrl+Shift+ G changes · F search · E files · B panel · T theme · M focus")
-                .size(SMALL)
-                .color(p().line_no),
-        );
-        container(row![left, space::horizontal(), right].align_y(Alignment::Center))
+        // First run (nothing open, no agents): the shortcuts; later they live in tooltips.
+        if self.tabs.is_empty() && self.agents.is_empty() && self.status.is_none() {
+            right = right.push(
+                text("Ctrl+Shift+ G changes · F search · E files · B panel · T theme · M focus")
+                    .size(SMALL)
+                    .color(p().muted)
+                    .wrapping(text::Wrapping::None),
+            );
+        }
+        // The left side gives way (clipped) so the right side always fits.
+        container(row![container(left).width(Length::Fill).clip(true), right].spacing(16).align_y(Alignment::Center))
             .padding([2, 10])
             .width(Length::Fill)
             .style(|_| container::Style {
@@ -1137,6 +1350,44 @@ impl App {
 }
 
 // ------------------------------------------------------------------ diff rows
+
+/// The rows of a diff, owning their text (for `lazy`), at most [`diff::MAX_FULL_ROWS`].
+fn diff_rows(diff: &diff::FileDiff, anchor: Option<usize>) -> Element<'static, Msg> {
+    let note = |s: String| container(text(s).size(12).color(p().warn_text)).padding([4, 12]);
+    let mut rows = Column::new();
+    if diff.full_capped {
+        rows = rows.push(note(format!(
+            "Over {} rows: showing the changes only. Open the file to see all of it.",
+            diff::MAX_FULL_ROWS
+        )));
+    }
+    let capped = diff.full_capped;
+    for item in diff.items.iter().take(diff::MAX_FULL_ROWS) {
+        rows = rows.push(match item {
+            Item::Gap(n) => Element::from(
+                button(
+                    container(text(format!("⋯ {n} unchanged lines")).size(12).color(p().muted)).center_x(Length::Fill),
+                )
+                .width(Length::Fill)
+                .padding(2)
+                .style(|_, s| button::Style {
+                    background: Some(
+                        if matches!(s, button::Status::Hovered) { p().section } else { p().sidebar }.into(),
+                    ),
+                    text_color: p().muted,
+                    ..Default::default()
+                })
+                // Already capped: asking for the full file again gives the same hunks.
+                .on_press_maybe((!capped).then_some(Msg::DiffFull(true))),
+            ),
+            Item::Row { left, right } => diff_row(left, right, anchor),
+        });
+    }
+    if let Some(more) = diff.items.len().checked_sub(diff::MAX_FULL_ROWS).filter(|n| *n > 0) {
+        rows = rows.push(note(format!("{more} more rows not shown. Open the file to see the rest.")));
+    }
+    rows.into()
+}
 
 fn diff_bg(kind: Kind, anchored: bool) -> Element<'static, Msg> {
     let bg = match (kind, anchored) {
@@ -1155,7 +1406,7 @@ fn diff_bg(kind: Kind, anchored: bool) -> Element<'static, Msg> {
 
 /// One aligned row. Line text decides the height (wrapped lines grow the row);
 /// backgrounds are a layer underneath that stretches to it.
-fn diff_row<'a>(left: &'a diff::Side, right: &'a diff::Side, anchor: Option<usize>) -> Element<'a, Msg> {
+fn diff_row(left: &diff::Side, right: &diff::Side, anchor: Option<usize>) -> Element<'static, Msg> {
     let line = right.number.or(left.number);
     let anchored = anchor.is_some() && line == anchor;
     let backgrounds = row![diff_bg(left.kind, anchored), vrule(), diff_bg(right.kind, anchored)];
@@ -1169,7 +1420,7 @@ fn diff_row<'a>(left: &'a diff::Side, right: &'a diff::Side, anchor: Option<usiz
     }
 }
 
-fn diff_side(side: &diff::Side) -> Element<'_, Msg> {
+fn diff_side(side: &diff::Side) -> Element<'static, Msg> {
     let text_bg = match side.kind {
         Kind::Insert => p().insert_text,
         Kind::Delete => p().delete_text,
@@ -1190,7 +1441,7 @@ fn diff_side(side: &diff::Side) -> Element<'_, Msg> {
     };
     container(
         row![
-            text(side.number.map(|n| n.to_string()).unwrap_or_default())
+            text(side.label.clone())
                 .size(12)
                 .font(theme::mono_font())
                 .color(p().line_no)
@@ -1199,7 +1450,11 @@ fn diff_side(side: &diff::Side) -> Element<'_, Msg> {
             text(marker)
                 .size(12)
                 .font(theme::mono_font())
-                .color(p().line_no)
+                .color(match side.kind {
+                    Kind::Insert => p().added_text,
+                    Kind::Delete => p().error_text,
+                    _ => p().line_no,
+                })
                 .width(14)
                 .align_x(iced::alignment::Horizontal::Center),
             rich_text(spans).size(13).font(theme::mono_font()).color(p().fg).width(Length::Fill),

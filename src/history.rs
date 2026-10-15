@@ -199,8 +199,20 @@ fn changed_span(before: &str, after: &str) -> Option<(usize, String, String)> {
     Some((start, before[start..eb].to_string(), after[start..ea].to_string()))
 }
 
+/// `offset` clamped into `text` and moved back to a char boundary. Offsets
+/// come from the history; if it ever disagrees with the editor's text, an
+/// off-boundary slice would panic (and the release build aborts on panic).
+fn floor_boundary(text: &str, offset: usize) -> usize {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
+}
+
 /// Editor position (line, byte column) of a byte offset into `text`.
 fn position(text: &str, offset: usize) -> Position {
+    let offset = floor_boundary(text, offset);
     let head = &text[..offset];
     let line = head.matches('\n').count();
     let line_start = head.rfind('\n').map_or(0, |i| i + 1);
@@ -211,7 +223,8 @@ fn position(text: &str, offset: usize) -> Position {
 /// its scroll and highlighting survive.
 fn replace(content: &mut Content, start: usize, old: &str, new: &str) {
     let text = content.text();
-    let end = (start + old.len()).min(text.len());
+    let start = floor_boundary(&text, start);
+    let end = floor_boundary(&text, start + old.len());
     let (from, to) = (position(&text, start), position(&text, end));
     content.move_to(Cursor { position: to, selection: (from != to).then_some(from) });
     content.perform(Action::Edit(Edit::Paste(std::sync::Arc::new(new.to_string()))));
@@ -242,6 +255,28 @@ mod tests {
         // Never split a CRLF.
         assert_eq!(changed_span("a\r\nb", "a\r\r\nb"), Some((1, "".into(), "\r".into())));
         assert_eq!(position("ab\ncd\r\nef", 8), Position { line: 2, column: 1 });
+    }
+
+    #[test]
+    fn spans_keep_crlf_and_multibyte_whole() {
+        // Inserting a line before a CRLF line ending.
+        assert_eq!(changed_span("a\r\nb", "a\r\nx\r\nb"), Some((3, "".into(), "x\r\n".into())));
+        // Changing an ending (\n ⇄ \r\n) replaces the whole ending, never half of it.
+        assert_eq!(changed_span("a\nb", "a\r\nb"), Some((1, "\n".into(), "\r\n".into())));
+        assert_eq!(changed_span("a\r\nb", "a\nb"), Some((1, "\r\n".into(), "\n".into())));
+        // Characters that share leading or trailing bytes stay whole.
+        assert_eq!(changed_span("日本", "日木"), Some((3, "本".into(), "木".into())));
+        assert_eq!(changed_span("é", "è"), Some((0, "é".into(), "è".into())));
+        assert_eq!(changed_span("👍x", "x"), Some((0, "👍".into(), "".into())));
+    }
+
+    #[test]
+    fn offsets_off_a_char_boundary_or_past_the_end_are_clamped() {
+        assert_eq!(position("aé", 2), Position { line: 0, column: 1 });
+        assert_eq!(position("ab", 99), Position { line: 0, column: 2 });
+        let mut c = Content::with_text("aéb");
+        replace(&mut c, 2, "éb", "z");
+        assert_eq!(c.text(), "az");
     }
 
     #[test]

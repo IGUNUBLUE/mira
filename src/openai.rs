@@ -8,12 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const ISSUER: &str = "https://auth.openai.com";
@@ -538,7 +537,7 @@ fn post_in(
 ) -> Result<Reply, String> {
     let body_file = dir.join("body");
     crate::persist::write_private(&body_file, body)?;
-    let mut child = Command::new("curl")
+    let child = Command::new("curl")
         .args(["-sS", "-N", "--connect-timeout", "15", "--max-time", &max_secs.to_string()])
         .args(["-w", "%{stderr}\n%{http_code}", "--config", "-"])
         .stdin(Stdio::piped())
@@ -546,53 +545,38 @@ fn post_in(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not run curl ({e}); mira needs it for network requests"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(curl_config(url, headers, &body_file).as_bytes()).map_err(|e| e.to_string())?;
-    }
-    let stderr = child.stderr.take().map(|mut r| {
-        std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = r.read_to_string(&mut s);
-            s
-        })
-    });
-    let (tx, rx) = mpsc::channel::<String>();
-    if let Some(out) = child.stdout.take() {
-        std::thread::spawn(move || {
-            for line in BufReader::new(out).lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-    }
+    let config = curl_config(url, headers, &body_file).into_bytes();
+    // curl's own --max-time ends the request; this limit only guards against a hung curl.
+    let limit = Duration::from_secs(u64::from(max_secs) + 15);
     let mut text = String::new();
-    loop {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(line) => {
-                on_line(&line);
-                text.push_str(&line);
-                text.push('\n');
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+    let mut pending = Vec::new();
+    let mut line_out = |line: &[u8]| {
+        let line = String::from_utf8_lossy(line);
+        on_line(&line);
+        text.push_str(&line);
+        text.push('\n');
+    };
+    let done = crate::proc::stream(child, config, cancel, limit, &mut |bytes| {
+        pending.extend_from_slice(bytes);
+        while let Some(i) = pending.iter().position(|&b| b == b'\n') {
+            line_out(&pending[..i]);
+            pending.drain(..=i);
         }
-        if cancel.load(Ordering::Relaxed) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("Cancelled".into());
-        }
+    })?;
+    if !pending.is_empty() {
+        line_out(&pending);
     }
-    let _ = child.wait();
-    let err = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-    let err = err.trim_end();
+    let err = done.stderr.trim_end();
     let (message, code) = err.rsplit_once('\n').unwrap_or(("", err));
     match code.trim().parse::<u16>() {
         Ok(status) if status > 0 => Ok(Reply { status, body: text }),
         _ => {
             let message = message.trim().trim_start_matches("curl: ");
-            Err(if message.is_empty() { "the request failed (no network?)".into() } else { message.to_string() })
+            Err(match done.stdin_error {
+                _ if !message.is_empty() => message.to_string(),
+                Some(e) => format!("could not pass the request to curl: {e}"),
+                None => "the request failed (no network?)".into(),
+            })
         }
     }
 }

@@ -1,5 +1,5 @@
-//! Colors and widget styles. Palettes: the four LAGC themes (from the
-//! My-HyDE-dots VSCodium/kitty themes). `auto` follows the active HyDE theme.
+//! Colors and widget styles. Palettes: the four LAGC themes (the author's
+//! LAGC themes for VSCodium and kitty). `auto` follows the active HyDE theme.
 //!
 //! The current palette is a process-wide setting read through [`p`], so style
 //! closures always draw with the palette active at draw time.
@@ -7,8 +7,10 @@
 use iced::font::{Family, Weight};
 use iced::widget::{button, container, text_input};
 use iced::{Background, Border, Color, Font, Theme, color};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
+use std::time::SystemTime;
 
 pub struct Palette {
     pub name: &'static str,
@@ -29,6 +31,11 @@ pub struct Palette {
     pub modified: Color,
     pub deleted: Color,
     pub added: Color,
+    /// `modified` / `deleted` / `added` for text: the same hues, darkened on
+    /// light palettes so small text reaches 4.5:1 on `bg` and `sidebar`.
+    pub warn_text: Color,
+    pub error_text: Color,
+    pub added_text: Color,
     pub insert_line: Color,
     pub insert_text: Color,
     pub delete_line: Color,
@@ -61,6 +68,9 @@ pub const PALETTES: [Palette; 4] = [
         modified: color!(0xB0662E),
         deleted: color!(0xC9614B),
         added: color!(0x12717C),
+        warn_text: color!(0x9A5928),
+        error_text: color!(0xAF4A35),
+        added_text: color!(0x12717C),
         insert_line: a(color!(0x12717C), 0.13),
         insert_text: a(color!(0x12717C), 0.28),
         delete_line: a(color!(0xC9614B), 0.13),
@@ -89,6 +99,9 @@ pub const PALETTES: [Palette; 4] = [
         modified: color!(0xE0A35E),
         deleted: color!(0xE48458),
         added: color!(0x34BFCB),
+        warn_text: color!(0xE0A35E),
+        error_text: color!(0xE48458),
+        added_text: color!(0x34BFCB),
         insert_line: a(color!(0x34BFCB), 0.13),
         insert_text: a(color!(0x34BFCB), 0.27),
         delete_line: a(color!(0xE48458), 0.13),
@@ -117,6 +130,9 @@ pub const PALETTES: [Palette; 4] = [
         modified: color!(0xA06830),
         deleted: color!(0xB05A4E),
         added: color!(0x5C7040),
+        warn_text: color!(0x885929),
+        error_text: color!(0x994E44),
+        added_text: color!(0x576A3C),
         insert_line: a(color!(0x5C7040), 0.13),
         insert_text: a(color!(0x5C7040), 0.28),
         delete_line: a(color!(0xB05A4E), 0.13),
@@ -145,6 +161,9 @@ pub const PALETTES: [Palette; 4] = [
         modified: color!(0xD4A55C),
         deleted: color!(0xD67A6E),
         added: color!(0xA9C080),
+        warn_text: color!(0xD4A55C),
+        error_text: color!(0xD88176),
+        added_text: color!(0xA9C080),
         insert_line: a(color!(0xA9C080), 0.13),
         insert_text: a(color!(0xA9C080), 0.27),
         delete_line: a(color!(0xD67A6E), 0.13),
@@ -163,6 +182,12 @@ static CURRENT: AtomicUsize = AtomicUsize::new(0);
 /// The active palette.
 pub fn p() -> &'static Palette {
     &PALETTES[CURRENT.load(Ordering::Relaxed).min(PALETTES.len() - 1)]
+}
+
+/// Index of the active palette (part of cached views' dependencies: their
+/// colors are read when they are built).
+pub fn current() -> usize {
+    CURRENT.load(Ordering::Relaxed)
 }
 
 /// Make palette `i` active. Returns whether it changed.
@@ -220,10 +245,27 @@ fn hyde_theme() -> Option<String> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?
         .join("hyde/staterc");
-    let from_file = std::fs::read_to_string(state).ok().and_then(|text| {
+    staterc_theme(&state).or_else(|| std::env::var("HYDE_THEME").ok()).filter(|t| !t.is_empty())
+}
+
+/// `HYDE_THEME` from HyDE's staterc. Asked every tick, so the file is only
+/// read again when its mtime changes.
+fn staterc_theme(path: &Path) -> Option<String> {
+    type Cached = Option<(PathBuf, Option<SystemTime>, Option<String>)>;
+    static CACHE: Mutex<Cached> = Mutex::new(None);
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((p, m, theme)) = cache.as_ref()
+        && p == path
+        && *m == mtime
+    {
+        return theme.clone();
+    }
+    let theme = std::fs::read_to_string(path).ok().and_then(|text| {
         text.lines().find_map(|l| l.strip_prefix("HYDE_THEME=")).map(|v| v.trim().trim_matches('"').to_string())
     });
-    from_file.or_else(|| std::env::var("HYDE_THEME").ok()).filter(|t| !t.is_empty())
+    *cache = Some((path.to_path_buf(), mtime, theme.clone()));
+    theme
 }
 
 // ------------------------------------------------------------------- fonts
@@ -264,13 +306,13 @@ pub fn theme() -> Theme {
     )
 }
 
-/// Color for a git status letter.
+/// Text color for a git status letter (`!`: merge conflict).
 pub fn status_color(code: char) -> Color {
     let c = p();
     match code {
-        'M' | 'R' | 'C' | 'T' => c.modified,
-        'D' => c.deleted,
-        'A' | 'U' | '?' => c.added,
+        'M' | 'R' | 'C' | 'T' => c.warn_text,
+        'D' | '!' => c.error_text,
+        'A' | 'U' | '?' => c.added_text,
         _ => c.muted,
     }
 }
@@ -301,7 +343,9 @@ pub fn flat(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             (false, button::Status::Hovered | button::Status::Pressed) => Some(c.section.into()),
             _ => None,
         };
-        button::Style { background, text_color: c.fg, border: Border::default().rounded(3), ..Default::default() }
+        // Disabled (e.g. while git is busy): dimmed, so it doesn't read as clickable.
+        let text_color = if status == button::Status::Disabled { c.muted.scale_alpha(0.55) } else { c.fg };
+        button::Style { background, text_color, border: Border::default().rounded(3), ..Default::default() }
     }
 }
 
@@ -452,5 +496,35 @@ mod tests {
             c = c.next();
         }
         assert_eq!(c, Choice::Auto);
+    }
+
+    /// WCAG relative luminance.
+    fn luminance(c: Color) -> f32 {
+        let f = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
+    }
+
+    fn contrast(a: Color, b: Color) -> f32 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    #[test]
+    fn text_colors_reach_aa_contrast_in_every_palette() {
+        for c in &PALETTES {
+            let texts = [
+                ("fg", c.fg),
+                ("muted", c.muted),
+                ("warn_text", c.warn_text),
+                ("error_text", c.error_text),
+                ("added_text", c.added_text),
+            ];
+            for (name, fg) in texts {
+                for (surface, bg) in [("bg", c.bg), ("sidebar", c.sidebar)] {
+                    let ratio = contrast(fg, bg);
+                    assert!(ratio >= 4.5, "{}: {name} on {surface} is {ratio:.2}:1", c.name);
+                }
+            }
+        }
     }
 }

@@ -24,10 +24,10 @@ For the iced 0.14 API itself (widgets, Task, Subscription, pane_grid, theming, c
 ## Terminal (iced_term 0.8 over alacritty_terminal 0.25)
 - mira sees every `iced_term::Event::BackendCall` before forwarding it (`Msg::Term`), so it can intercept writes and alacritty events.
 - Known gaps in iced_term 0.8, covered from mira without patching: wheel/right/middle/Alt/bracketed paste in `termio::TermInput` (only while herdr runs), focus in/out written on `Msg::WindowFocus`, `ColorRequest`/`ClipboardStore` answered in `App::on_term_event`. Still missing: kitty keyboard protocol. Never fork or patch dependencies; contribute upstream instead.
-- App shortcuts that must work while the terminal has focus are swallowed with `AddBindings` (`SHORTCUT_LETTERS` in app.rs).
+- App shortcuts that must work while the terminal has focus are swallowed with `AddBindings` (`SHORTCUT_LETTERS` in app/terminal.rs).
 
 ## Shortcuts
-- App shortcuts are `Ctrl+Shift+<letter>`; check app.rs `on_key` and the swallow list first.
+- App shortcuts are `Ctrl+Shift+<letter>`; check app/keys.rs `on_key` and the swallow list first.
 - Never take `C`/`V` (terminal copy/paste). `Ctrl+B` is herdr's prefix: don't bind it while the terminal has focus.
 
 ## Memory

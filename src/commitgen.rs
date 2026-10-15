@@ -11,16 +11,17 @@
 //! `commit_command`, else asks you to sign in with ChatGPT.
 //! Only the diff of the next commit and its `--stat` leave the machine.
 
+use crate::git::git;
 use crate::openai::{self, Auth, StreamError};
-use std::io::{Read, Write};
+use std::borrow::Cow;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 pub const DEFAULT_MODEL: &str = "gpt-6-luna";
 const MAX_DIFF_CHARS: usize = 12_000;
+const MAX_STAT_CHARS: usize = 4_000;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(180);
 
 const EXCLUDES: &[&str] = &[
@@ -72,23 +73,12 @@ pub enum Event {
     Done(Result<String, String>),
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("git: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
-}
-
 /// `(stat, diff)` of what the next commit will contain: the index, or — when
 /// nothing is staged, as "Commit All" does — every change in the working tree.
-pub fn changes(root: &Path, staged: bool) -> Result<(String, String), String> {
+/// `root` is the repository root; only paths under `prefix` (the opened
+/// folder, `""` for the whole repository) count, as "Commit All" stages only those.
+pub fn changes(root: &Path, staged: bool, prefix: &str) -> Result<(String, String), String> {
+    let scope = if prefix.is_empty() { "." } else { prefix };
     let mut common = vec!["diff", "--no-ext-diff", "--no-color"];
     if staged {
         common.push("--cached");
@@ -97,14 +87,14 @@ pub fn changes(root: &Path, staged: bool) -> Result<(String, String), String> {
     }
     let excludes: Vec<String> = EXCLUDES.iter().map(|g| format!(":(exclude,glob){g}")).collect();
     let mut stat_args = common.clone();
-    stat_args.push("--stat=120");
+    stat_args.extend(["--stat=120", "--", scope]);
     let mut stat = git(root, &stat_args)?;
     let mut diff_args = common.clone();
-    diff_args.extend(["--", "."]);
+    diff_args.extend(["--", scope]);
     diff_args.extend(excludes.iter().map(String::as_str));
     let diff = git(root, &diff_args)?;
     if !staged {
-        let untracked = git(root, &["ls-files", "--others", "--exclude-standard"])?;
+        let untracked = git(root, &["ls-files", "--others", "--exclude-standard", "--", scope])?;
         for f in untracked.lines().filter(|l| !l.is_empty()) {
             stat.push_str(&format!(" {f} (new, untracked)\n"));
         }
@@ -115,8 +105,36 @@ pub fn changes(root: &Path, staged: bool) -> Result<(String, String), String> {
     Ok((stat, diff))
 }
 
+/// `stat` cut to about [`MAX_STAT_CHARS`] on a line boundary, ending with how
+/// many files were left out. A repo with thousands of new files would otherwise
+/// send every name.
+fn cap_stat(stat: &str) -> Cow<'_, str> {
+    if stat.len() <= MAX_STAT_CHARS {
+        return Cow::Borrowed(stat);
+    }
+    let mut kept = String::new();
+    let mut lines = stat.lines();
+    for line in lines.by_ref() {
+        if kept.len() + line.len() + 1 > MAX_STAT_CHARS {
+            // This line and the rest are left out (the summary line is not a file).
+            let rest = std::iter::once(line).chain(lines).filter(|l| !is_stat_summary(l)).count();
+            kept.push_str(&format!("… {rest} more files\n"));
+            return Cow::Owned(kept);
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    Cow::Owned(kept)
+}
+
+/// `git diff --stat`'s last line, " 3 files changed, 10 insertions(+)".
+fn is_stat_summary(line: &str) -> bool {
+    line.contains(" file changed") || line.contains(" files changed")
+}
+
 /// The user turn: stat plus the (capped) diff. Instructions go separately.
 pub fn user_text(stat: &str, diff: &str) -> String {
+    let stat = cap_stat(stat);
     let body = if diff.len() > MAX_DIFF_CHARS {
         let mut cut = MAX_DIFF_CHARS;
         while !diff.is_char_boundary(cut) {
@@ -194,10 +212,17 @@ fn config(key: &str) -> Option<String> {
     crate::persist::config_get(key).filter(|v| !v.trim().is_empty())
 }
 
-/// Generate a message for the next commit in `root`, sending progress to
-/// `emit`. Blocking; stops early when `cancel` is set.
-pub fn generate(root: &Path, staged: bool, cancel: &AtomicBool, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
-    let (stat, diff) = changes(root, staged)?;
+/// Generate a message for the next commit in the repository at `root`
+/// (limited to `prefix`, see [`changes`]), sending progress to `emit`.
+/// Blocking; stops early when `cancel` is set.
+pub fn generate(
+    root: &Path,
+    staged: bool,
+    prefix: &str,
+    cancel: &AtomicBool,
+    emit: &mut dyn FnMut(Event),
+) -> Result<String, String> {
+    let (stat, diff) = changes(root, staged, prefix)?;
     let model = config("commit_model").unwrap_or_else(|| DEFAULT_MODEL.into());
     let provider = choose(
         &config("commit_provider").unwrap_or_default(),
@@ -259,7 +284,7 @@ fn chatgpt(model: &str, input: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(E
 
 /// Run `commit_command` with the prompt on stdin, streaming its stdout.
 fn run_command(line: &str, prompt: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
-    let mut child = Command::new("sh")
+    let child = Command::new("sh")
         .args(["-c", line])
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
@@ -267,62 +292,27 @@ fn run_command(line: &str, prompt: &str, cancel: &AtomicBool, emit: &mut dyn FnM
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not start commit_command: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        // A command that ignores stdin closes it early; that is fine.
-        let _ = stdin.write_all(prompt.as_bytes());
-    }
-    let stderr = child.stderr.take().map(|mut r| {
-        std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = r.read_to_string(&mut s);
-            s
-        })
-    });
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    if let Some(mut out) = child.stdout.take() {
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            while let Ok(n) = out.read(&mut buf) {
-                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
-                    break;
-                }
-            }
-        });
-    }
-    let started = Instant::now();
     let mut pending = Vec::new();
     let mut text = String::new();
-    loop {
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(bytes) => {
-                pending.extend_from_slice(&bytes);
-                // Emit whole UTF-8 characters only; keep a split one for later.
-                let valid = match std::str::from_utf8(&pending) {
-                    Ok(_) => pending.len(),
-                    Err(e) if e.error_len().is_none() => e.valid_up_to(),
-                    Err(_) => pending.len(),
-                };
-                let chunk = String::from_utf8_lossy(&pending[..valid]).into_owned();
-                pending.drain(..valid);
-                if !chunk.is_empty() {
-                    text.push_str(&chunk);
-                    emit(Event::Delta(chunk));
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+    // A command that ignores stdin closes it early; that is fine (`stdin_error` is not checked).
+    let done = crate::proc::stream(child, prompt.as_bytes().to_vec(), cancel, COMMAND_TIMEOUT, &mut |bytes| {
+        pending.extend_from_slice(bytes);
+        // Emit whole UTF-8 characters only; keep a split one for later.
+        let valid = match std::str::from_utf8(&pending) {
+            Ok(_) => pending.len(),
+            Err(e) if e.error_len().is_none() => e.valid_up_to(),
+            Err(_) => pending.len(),
+        };
+        let chunk = String::from_utf8_lossy(&pending[..valid]).into_owned();
+        pending.drain(..valid);
+        if !chunk.is_empty() {
+            text.push_str(&chunk);
+            emit(Event::Delta(chunk));
         }
-        if cancel.load(Ordering::Relaxed) || started.elapsed() > COMMAND_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(if cancel.load(Ordering::Relaxed) { "Cancelled".into() } else { "Timed out".into() });
-        }
-    }
+    })?;
     text.push_str(&String::from_utf8_lossy(&pending));
-    let status = child.wait().map_err(|e| e.to_string())?;
-    if !status.success() {
-        let err = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-        let why = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("commit_command failed");
+    if !done.status.success() {
+        let why = done.stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("commit_command failed");
         return Err(why.trim().to_string());
     }
     Ok(text)
@@ -362,6 +352,31 @@ mod tests {
         assert_eq!(choose("command", true, key, cmd()), Ok(Provider::Command("ollama".into())));
         assert!(choose("openai", true, none, None).unwrap_err().contains("OPENAI_API_KEY"));
         assert!(choose("codex", true, key, None).is_err());
+    }
+
+    #[test]
+    fn caps_the_stat_on_a_line_boundary() {
+        let lines: Vec<String> = (0..1000).map(|i| format!(" src/file{i}.rs | 1 +")).collect();
+        let stat = format!("{}\n 1000 files changed, 1000 insertions(+)\n", lines.join("\n"));
+        let capped = cap_stat(&stat);
+        assert!(capped.len() <= MAX_STAT_CHARS + 40, "{}", capped.len());
+        let kept = capped.lines().filter(|l| l.contains(" | ")).count();
+        assert!(capped.ends_with(&format!("… {} more files\n", 1000 - kept)), "{capped}");
+        assert_eq!(cap_stat(" a | 1 +\n"), " a | 1 +\n");
+    }
+
+    #[test]
+    fn changes_are_limited_to_the_opened_folder() {
+        let dir = crate::files::test_dir("commitgen");
+        git(&dir, &["init", "-q"]).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/in.txt"), "in\n").unwrap();
+        std::fs::write(dir.join("out.txt"), "out\n").unwrap();
+        let (stat, _) = changes(&dir, false, "sub/").unwrap();
+        assert!(stat.contains("sub/in.txt") && !stat.contains("out.txt"), "{stat}");
+        let (stat, _) = changes(&dir, false, "").unwrap();
+        assert!(stat.contains("sub/in.txt") && stat.contains("out.txt"), "{stat}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
