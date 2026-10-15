@@ -184,7 +184,9 @@ impl Tracker {
         self.origins.get(path).is_some_and(|(_, new)| *new)
     }
 
-    /// Distinct files changed by agents and not opened since.
+    /// Distinct files changed by agents and not opened since (the app counts
+    /// only those still in Changes: `App::fresh_changes`).
+    #[cfg(test)]
     pub fn new_files(&self) -> usize {
         self.new_count
     }

@@ -1,6 +1,6 @@
 //! Source control: git status, stage/unstage, commit, push/pull and commit-message generation.
 
-use super::{App, DiffSource, Msg, blocking, first_line};
+use super::{App, DiffSource, Msg, Tab, blocking, first_line};
 use crate::git;
 
 use iced::Task;
@@ -26,6 +26,8 @@ pub enum GitOutcome {
     Committed(String),
     /// Output to show in the status bar (may be empty).
     Info(String),
+    /// Files were discarded; `tree` is the snapshot taken just before (Undo).
+    Discarded { tree: String, paths: Vec<String> },
 }
 
 /// Spinner frames for the generate button.
@@ -114,6 +116,79 @@ impl App {
                 return self.open_diff(rel, DiffSource::Index { staged });
             }
             Msg::Stage(paths) => return self.git_op(move |r| git::stage(r, &paths)),
+            Msg::Discard(paths) if !self.git_busy => {
+                // Only unstaged, non-conflicted changes; the status letter says how.
+                let files: Vec<(String, char)> = paths
+                    .iter()
+                    .filter_map(|p| self.git.unstaged.iter().find(|c| &c.path == p && c.code != '!'))
+                    .map(|c| (c.path.clone(), c.code))
+                    .collect();
+                if files.is_empty() {
+                    return Task::none();
+                }
+                self.confirm_discard_all = false;
+                return self.git_task(move |r| {
+                    // The snapshot is the Undo: without it, nothing is discarded.
+                    let tree = git::snapshot_tree(r)
+                        .map_err(|e| format!("couldn't back the files up, nothing was discarded: {e}"))?;
+                    git::discard(r, &files)?;
+                    Ok(GitOutcome::Discarded { tree, paths: files.into_iter().map(|(p, _)| p).collect() })
+                });
+            }
+            Msg::DiscardAll if !self.git_busy => {
+                let paths: Vec<String> =
+                    self.git.unstaged.iter().filter(|c| c.code != '!').map(|c| c.path.clone()).collect();
+                if paths.is_empty() {
+                    return Task::none();
+                }
+                if self.git.truncated {
+                    self.set_status(
+                        format!("Over {} changes, not all listed: discard them in a terminal", git::MAX_CHANGES),
+                        true,
+                    );
+                    return Task::none();
+                }
+                if !self.confirm_discard_all {
+                    let untracked = self.git.unstaged.iter().filter(|c| c.code == 'U').count();
+                    let deleted =
+                        if untracked > 0 { format!(" ({untracked} untracked deleted)") } else { String::new() };
+                    self.clear_confirms();
+                    self.confirm_discard_all = true;
+                    self.set_confirm(&format!(
+                        "Click again to discard {} changes{deleted} · Undo stays available · Esc cancels",
+                        paths.len()
+                    ));
+                    return Task::none();
+                }
+                return self.update(Msg::Discard(paths));
+            }
+            Msg::Discard(_) | Msg::DiscardAll => {}
+            Msg::UndoDiscard if !self.git_busy => {
+                let Some((tree, paths)) = self.undo_discard.take() else { return Task::none() };
+                self.clear_status();
+                return self.git_op(move |r| {
+                    git::restore_from_tree(r, &tree, &paths)
+                        .map(|_| format!("Restored {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" }))
+                });
+            }
+            Msg::UndoDiscard => {}
+            Msg::OpenChanges(staged) => {
+                let list = if staged { &self.git.staged } else { &self.git.unstaged };
+                if let Some(first) = list.first() {
+                    let rel = first.path.clone();
+                    self.mark_seen(&rel);
+                    return self.open_diff(rel, DiffSource::Index { staged });
+                }
+            }
+            Msg::OpenChangedFile(rel) => {
+                let path = self.repo_root().join(&rel);
+                self.mark_seen(&rel);
+                return self.update(Msg::OpenFile(path, None));
+            }
+            // A late "left" from the previous row must not hide the new one's buttons.
+            Msg::HoverChange(key, true) => self.hovered_change = Some(key),
+            Msg::HoverChange(key, false) if self.hovered_change == Some(key) => self.hovered_change = None,
+            Msg::HoverChange(..) => {}
             Msg::Unstage(paths) => return self.git_op(move |r| git::unstage(r, &paths)),
             // The box is the stream's output while generating: allow selecting, not editing.
             Msg::CommitEdit(action) if self.commit_gen.is_some() && action.is_edit() => {}
@@ -369,6 +444,23 @@ impl App {
                         if let Some(line) = first_line(&out) {
                             self.set_status(line.to_string(), false);
                         }
+                    }
+                    Ok(GitOutcome::Discarded { tree, paths }) => {
+                        let n = paths.len();
+                        let what = if n == 1 {
+                            paths[0].rsplit('/').next().unwrap_or("").to_string()
+                        } else {
+                            format!("{n} files")
+                        };
+                        // Their diffs would only say "No changes" now.
+                        for i in (0..self.tabs.len()).rev() {
+                            if matches!(&self.tabs[i], Tab::Diff(d) if matches!(d.source, DiffSource::Index { staged: false }) && paths.contains(&d.rel))
+                            {
+                                self.close_tab(i);
+                            }
+                        }
+                        self.undo_discard = Some((tree, paths));
+                        self.set_status_action(format!("Discarded {what}"), "Undo", Msg::UndoDiscard);
                     }
                     Err(e) => self.set_error_detail(git::error_summary(&e), e),
                 }

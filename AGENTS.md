@@ -97,6 +97,9 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - Blocking work (git, search, diff, sockets) runs via `blocking()` (`spawn_blocking`) and returns a `Msg`.
 - Colors only through `theme::p().<field>`; never literal colors in views (themes switch at runtime). Text uses
   `fg`, `muted` or the `warn_text`/`error_text`/`added_text` variants (4.5:1, tested); `line_no` only for gutters.
+- Changes rows: `change_button` with a `hover` key reports the mouse (`Msg::HoverChange`); build row buttons with
+  `row_actions` (only for the hovered/open row). Discard always snapshots first (`git::snapshot_tree`) and offers
+  Undo via `status_action` (`restore_from_tree`); without a snapshot nothing is discarded.
 - Destructive actions are two-step (`set_confirm`, `theme::danger` label, cleared with the status or Escape:
   `clear_confirms`); icon-only buttons get a `tip`; git buttons are disabled while `git_busy`.
 - Diff rows: content row is the stack base layer, backgrounds go `push_under` so wrapped lines stay aligned.

@@ -9,6 +9,14 @@ All notable changes to mira are listed here. The format follows
 ### Added
 
 - Line numbers in the editor, with the cursor's line highlighted. Long lines no longer wrap.
+- Changes: per-file and per-section buttons like VSCodium (open file, discard, stage/unstage),
+  shown on hover; Review (⇄) walks through a section's diffs with `‹ ›`; Discard from the diff.
+- Discard with Undo: a snapshot is taken first, so a discard (even of new files) can be undone
+  from the status bar.
+
+### Fixed
+
+- "N new" counted files of older agent turns that were already committed.
 
 ## [0.1.1]
 

@@ -97,6 +97,15 @@ ready for you to review and press Enter.
 Stage, unstage, commit, push and pull. History is under the Changes list; drag the divider to
 resize it.
 
+- **Row buttons** appear on hover (or on the open file), as in VSCodium: open the file, discard
+  its changes, stage or unstage it. Section headers have the same for every file, plus
+  **Review** (⇄), which opens the first diff; `‹ ›` in the diff then walks through the section.
+- **Discard is undoable.** mira snapshots the working tree first (the same snapshots it takes
+  around agent turns), so one file discards with one click and the status bar offers **Undo**.
+  Discard all asks for a second click. New (untracked) files are deleted, and come back with Undo.
+- The "N new" count only counts files that are still in Changes and you haven't opened since an
+  agent changed them.
+
 - With nothing staged, **Commit All** stages every listed change of this folder (the button
   shows how many; untracked files are counted in its tooltip).
 - Merge conflicts get their own section and block the commit until you fix and stage them.

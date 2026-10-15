@@ -152,6 +152,9 @@ impl App {
         self.snapshot_running = false;
         self.snapshots_off = false;
         self.selected_run = None;
+        // Undo of a discard belongs to the old folder's files.
+        self.undo_discard = None;
+        self.hovered_change = None;
         self.clear_confirms();
         self.state_dirty = false;
         self.agents.clear();

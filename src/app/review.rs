@@ -97,6 +97,24 @@ impl App {
                 let Some(d) = self.active_diff() else {
                     return Task::none();
                 };
+                // Working-tree diffs step through their section of Changes.
+                if let DiffSource::Index { staged } = d.source {
+                    let list = if staged { &self.git.staged } else { &self.git.unstaged };
+                    let Some(i) = list.iter().position(|c| c.path == d.rel) else { return Task::none() };
+                    match step_index(i, step, list.len()).and_then(|j| list.get(j)) {
+                        Some(c) => {
+                            let rel = c.path.clone();
+                            self.mark_seen(&rel);
+                            return self.open_diff(rel, DiffSource::Index { staged });
+                        }
+                        None => {
+                            let n = list.len();
+                            let edge = if step < 0 { "First change" } else { "Last change" };
+                            self.set_status(format!("{edge} · {n} {}", if n == 1 { "file" } else { "files" }), false);
+                            return Task::none();
+                        }
+                    }
+                }
                 let DiffSource::Trees { run: id, .. } = d.source else { return Task::none() };
                 let files = self.runs.get(id).and_then(|r| r.files.as_ref());
                 let Some((i, files)) = files.and_then(|f| f.iter().position(|c| c.path == d.rel).map(|i| (i, f)))

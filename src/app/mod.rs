@@ -100,6 +100,14 @@ pub struct App {
     pub confirm_replace: bool,
     /// The account button was pressed once; the next press signs out.
     pub confirm_signout: bool,
+    /// "Discard all" waits for its second click.
+    pub confirm_discard_all: bool,
+    /// The last discard: the snapshot taken just before it and the files, for Undo.
+    undo_discard: Option<(String, Vec<String>)>,
+    /// The Changes row under the mouse (section, index): its buttons show.
+    pub hovered_change: Option<(u8, usize)>,
+    /// A button next to the status message (e.g. Undo after a discard).
+    pub status_action: Option<(&'static str, Msg)>,
     pub comment: String,
     state_dirty: bool,
 
@@ -251,6 +259,16 @@ pub enum Msg {
     OpenDiff(String, bool),
     Stage(Vec<String>),
     Unstage(Vec<String>),
+    /// Throw away the unstaged changes of these files (a snapshot keeps an Undo).
+    Discard(Vec<String>),
+    /// Discard every listed change (asks for a second click).
+    DiscardAll,
+    UndoDiscard,
+    /// Review a section's changes file by file: open the first diff (`true` = staged).
+    OpenChanges(bool),
+    OpenChangedFile(String),
+    /// The mouse entered (`true`) or left a Changes row (section, index).
+    HoverChange((u8, usize), bool),
     CommitEdit(text_editor::Action),
     CommitUndo,
     CommitRedo,
@@ -381,6 +399,10 @@ impl App {
             confirm_revert: None,
             confirm_replace: false,
             confirm_signout: false,
+            confirm_discard_all: false,
+            undo_discard: None,
+            hovered_change: None,
+            status_action: None,
             comment: String::new(),
             state_dirty: false,
             tabs: Vec::new(),
@@ -476,6 +498,19 @@ impl App {
         self.git.root.is_some()
     }
 
+    /// Files in Changes that an agent changed and you haven't opened since.
+    /// (Files of older turns that were committed since don't count.)
+    pub fn fresh_changes(&self) -> usize {
+        let unstaged = self.git.unstaged.iter().filter(|c| self.runs.is_new(&c.path)).count();
+        let staged_only = self
+            .git
+            .staged
+            .iter()
+            .filter(|c| self.runs.is_new(&c.path) && !self.git.unstaged.iter().any(|u| u.path == c.path))
+            .count();
+        unstaged + staged_only
+    }
+
     /// Show `msg` in the status bar: 6 s, errors 30 s (or until clicked or Escape).
     fn set_status(&mut self, msg: impl Into<String>, error: bool) {
         self.show_status(msg.into(), error, if error { 30 } else { 6 });
@@ -493,9 +528,16 @@ impl App {
         self.status_detail = (detail.trim() != self.status.as_ref().map_or("", |(s, _)| s.as_str())).then_some(detail);
     }
 
+    /// Show `msg` with a button that sends `action`, for 20 s.
+    fn set_status_action(&mut self, msg: impl Into<String>, label: &'static str, action: Msg) {
+        self.show_status(msg.into(), false, 20);
+        self.status_action = Some((label, action));
+    }
+
     fn show_status(&mut self, msg: String, error: bool, secs: u64) {
         self.status = Some((msg, error));
         self.status_detail = None;
+        self.status_action = None;
         self.status_at = Instant::now();
         self.status_ttl = Duration::from_secs(secs);
     }
@@ -503,6 +545,7 @@ impl App {
     pub(super) fn clear_status(&mut self) {
         self.status = None;
         self.status_detail = None;
+        self.status_action = None;
         self.clear_confirms();
     }
 
@@ -512,10 +555,12 @@ impl App {
         let any = self.confirm_revert.is_some()
             || self.confirm_replace
             || self.confirm_signout
+            || self.confirm_discard_all
             || self.pending_close.is_some();
         self.confirm_revert = None;
         self.confirm_replace = false;
         self.confirm_signout = false;
+        self.confirm_discard_all = false;
         self.pending_close = None;
         any
     }
@@ -595,6 +640,12 @@ impl App {
             | Msg::OpenDiff(..)
             | Msg::Stage(_)
             | Msg::Unstage(_)
+            | Msg::Discard(_)
+            | Msg::DiscardAll
+            | Msg::UndoDiscard
+            | Msg::OpenChanges(_)
+            | Msg::OpenChangedFile(_)
+            | Msg::HoverChange(..)
             | Msg::CommitEdit(_)
             | Msg::CommitUndo
             | Msg::CommitRedo

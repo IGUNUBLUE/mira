@@ -129,6 +129,12 @@ fn section<'a>(title: String, actions: Vec<Element<'a, Msg>>) -> Element<'a, Msg
     container(r).padding([4, 10]).width(Length::Fill).style(theme::panel(p().section)).into()
 }
 
+/// A Changes row's buttons, built only when they show (hovered or open row):
+/// the list can hold thousands of files and `view` runs very often.
+fn row_actions<'a>(show: bool, build: impl FnOnce() -> Vec<Element<'a, Msg>>) -> Vec<Element<'a, Msg>> {
+    if show { build() } else { Vec::new() }
+}
+
 fn badge<'a>(label: impl text::IntoFragment<'a>, color: Color) -> Element<'a, Msg> {
     container(text(label).size(10).color(p().bg).wrapping(text::Wrapping::None))
         .padding([0, 5])
@@ -394,7 +400,7 @@ impl App {
 
     fn view_inspector(&self) -> Element<'_, Msg> {
         let changes = Some(self.git.staged.len() + self.git.unstaged.len()).filter(|n| *n > 0);
-        let fresh = self.runs.new_files() > 0;
+        let fresh = self.fresh_changes() > 0;
         let tab = |i: Icon, label: &'static str, which: Inspector, count: Option<usize>, alert: bool| {
             let active = self.inspector == which;
             let color = if active { p().accent } else { p().muted };
@@ -425,12 +431,16 @@ impl App {
     }
 
     /// One changed file. `origin`: show which agent run last changed it.
+    /// One changed file. `hover` (section, index) makes it a Changes row that
+    /// reports the mouse; `actions` (given while it is hovered or open, as in
+    /// VSCodium) take the place of the agent label.
     fn change_button<'a>(
         &'a self,
         c: &'a Change,
         active: bool,
         msg: Msg,
-        action: Option<Element<'a, Msg>>,
+        hover: Option<(u8, usize)>,
+        actions: Vec<Element<'a, Msg>>,
         origin: bool,
     ) -> Element<'a, Msg> {
         let (name, dir) = split_path(&c.path);
@@ -451,7 +461,12 @@ impl App {
         ]
         .align_y(Alignment::Center)
         .spacing(4);
-        if origin && let Some(run) = self.runs.origin(&c.path) {
+        // The caller builds `actions` only for the hovered or open row (see `row_actions`).
+        if !actions.is_empty() {
+            for a in actions {
+                content = content.push(a);
+            }
+        } else if origin && let Some(run) = self.runs.origin(&c.path) {
             let label = format!("{} · {}", run.agent, ago(run.finished.unwrap_or(run.started)));
             let tip_text = match &run.prompt {
                 Some(prompt) => text(prompt.as_str()),
@@ -466,11 +481,19 @@ impl App {
                 tooltip::Position::Left,
             ));
         }
-        if let Some(a) = action {
-            content = content.push(a);
-        }
         content = content.push(text(c.code.to_string()).size(SMALL).color(color).width(12));
-        button(content).width(Length::Fill).padding([2, 6]).style(theme::flat(active)).on_press(msg).into()
+        // Same height with or without the row's buttons.
+        let row = button(container(content).height(22).align_y(Alignment::Center))
+            .width(Length::Fill)
+            .padding([1, 6])
+            .style(theme::flat(active))
+            .on_press(msg);
+        match hover {
+            Some(key) => {
+                mouse_area(row).on_enter(Msg::HoverChange(key, true)).on_exit(Msg::HoverChange(key, false)).into()
+            }
+            None => row.into(),
+        }
     }
 
     fn hint<'a>(&self, msg: &'a str) -> Element<'a, Msg> {
@@ -539,36 +562,59 @@ impl App {
         let when_idle = |m: Msg| (!busy).then_some(m);
 
         let mut list = Column::new().spacing(1);
+        // Row buttons, VSCodium's order: open the file, discard, stage / unstage.
+        let open_file = |c: &Change| -> Element<'_, Msg> {
+            if c.code == 'D' {
+                tip(icon_button_maybe(Icon::GoToFile, None), "Deleted: nothing to open")
+            } else {
+                tip(icon_button(Icon::GoToFile, Msg::OpenChangedFile(c.path.clone())), "Open file")
+            }
+        };
         if !staged.is_empty() {
             let all: Vec<String> = staged.iter().map(|c| c.path.clone()).collect();
             list = list.push(section(
                 format!("STAGED  {}", staged.len()),
-                vec![tip(icon_button_maybe(Icon::Remove, when_idle(Msg::Unstage(all))), "Unstage all")],
+                vec![
+                    tip(icon_button(Icon::Diff, Msg::OpenChanges(true)), "Review staged changes file by file"),
+                    tip(icon_button_maybe(Icon::Remove, when_idle(Msg::Unstage(all))), "Unstage all"),
+                ],
             ));
-            for c in staged {
+            for (i, c) in staged.iter().enumerate() {
                 list = list.push(self.change_button(
                     c,
                     open == Some((c.path.as_str(), true)),
                     Msg::OpenDiff(c.path.clone(), true),
-                    Some(tip(
-                        icon_button_maybe(Icon::Remove, when_idle(Msg::Unstage(vec![c.path.clone()]))),
-                        "Unstage changes",
-                    )),
+                    Some((0, i)),
+                    row_actions(self.hovered_change == Some((0, i)) || open == Some((c.path.as_str(), true)), || {
+                        vec![
+                            open_file(c),
+                            tip(
+                                icon_button_maybe(Icon::Remove, when_idle(Msg::Unstage(vec![c.path.clone()]))),
+                                "Unstage changes",
+                            ),
+                        ]
+                    }),
                     true,
                 ));
             }
         }
         if !conflicts.is_empty() {
             list = list.push(section(format!("MERGE CHANGES  {}", conflicts.len()), vec![]));
-            for c in &conflicts {
+            for (i, c) in conflicts.iter().enumerate() {
                 list = list.push(self.change_button(
                     c,
                     open == Some((c.path.as_str(), false)),
                     Msg::OpenDiff(c.path.clone(), false),
-                    Some(tip(
-                        icon_button_maybe(Icon::Add, when_idle(Msg::Stage(vec![c.path.clone()]))),
-                        "Mark as resolved (stage it once the conflict markers are gone)",
-                    )),
+                    Some((1, i)),
+                    row_actions(self.hovered_change == Some((1, i)) || open == Some((c.path.as_str(), false)), || {
+                        vec![
+                            open_file(c),
+                            tip(
+                                icon_button_maybe(Icon::Add, when_idle(Msg::Stage(vec![c.path.clone()]))),
+                                "Mark as resolved (stage it once the conflict markers are gone)",
+                            ),
+                        ]
+                    }),
                     true,
                 ));
             }
@@ -579,15 +625,45 @@ impl App {
             if all.is_empty() {
                 vec![]
             } else {
-                vec![tip(icon_button_maybe(Icon::Add, when_idle(Msg::Stage(all))), "Stage all changes")]
+                let discard_all: Element<'_, Msg> = if self.confirm_discard_all {
+                    tip(
+                        button(text(format!("Discard {}?", changes.len())).size(12))
+                            .padding([2, 6])
+                            .style(theme::danger)
+                            .on_press_maybe(when_idle(Msg::DiscardAll)),
+                        "Click again to discard every change below · Esc cancels",
+                    )
+                } else {
+                    tip(icon_button_maybe(Icon::Discard, when_idle(Msg::DiscardAll)), "Discard all changes")
+                };
+                vec![
+                    tip(icon_button(Icon::Diff, Msg::OpenChanges(false)), "Review changes file by file"),
+                    discard_all,
+                    tip(icon_button_maybe(Icon::Add, when_idle(Msg::Stage(all))), "Stage all changes"),
+                ]
             },
         ));
-        for c in &changes {
+        for (i, c) in changes.iter().enumerate() {
+            let discard_tip = if c.code == 'U' {
+                "Discard: delete this new file (Undo available)"
+            } else {
+                "Discard changes (Undo available)"
+            };
             list = list.push(self.change_button(
                 c,
                 open == Some((c.path.as_str(), false)),
                 Msg::OpenDiff(c.path.clone(), false),
-                Some(tip(icon_button_maybe(Icon::Add, when_idle(Msg::Stage(vec![c.path.clone()]))), "Stage changes")),
+                Some((2, i)),
+                row_actions(self.hovered_change == Some((2, i)) || open == Some((c.path.as_str(), false)), || {
+                    vec![
+                        open_file(c),
+                        tip(
+                            icon_button_maybe(Icon::Discard, when_idle(Msg::Discard(vec![c.path.clone()]))),
+                            discard_tip,
+                        ),
+                        tip(icon_button_maybe(Icon::Add, when_idle(Msg::Stage(vec![c.path.clone()]))), "Stage changes"),
+                    ]
+                }),
                 true,
             ));
         }
@@ -789,7 +865,7 @@ impl App {
         ]
         .spacing(2)
         .align_y(Alignment::Center);
-        let fresh = self.runs.new_files();
+        let fresh = self.fresh_changes();
         if fresh > 0 {
             bar = bar
                 .push(text(format!("{fresh} new")).size(SMALL).color(p().warn_text))
@@ -880,6 +956,7 @@ impl App {
                         open == Some((r.id, c.path.as_str())),
                         Msg::OpenRunDiff(r.id, c.path.clone()),
                         None,
+                        Vec::new(),
                         false,
                     ))
                     .padding(Padding { left: 12.0, ..Padding::ZERO }),
@@ -1275,9 +1352,15 @@ impl App {
         let mut header = row![row_tip(container(info).width(Length::Fill).clip(true), d.rel.as_str())]
             .spacing(10)
             .align_y(Alignment::Center);
-        if let DiffSource::Trees { run, .. } = d.source
-            && let Some(files) = self.runs.get(run).and_then(|r| r.files.as_ref())
+        // ‹ › step through the run's files, or through the diff's section of Changes.
+        let files = match d.source {
+            DiffSource::Trees { run, .. } => self.runs.get(run).and_then(|r| r.files.as_ref()),
+            DiffSource::Index { staged: true } => Some(&self.git.staged),
+            DiffSource::Index { staged: false } => Some(&self.git.unstaged),
+        };
+        if let Some(files) = files
             && let Some(i) = files.iter().position(|c| c.path == d.rel)
+            && (files.len() > 1 || matches!(d.source, DiffSource::Trees { .. }))
         {
             let n = files.len();
             header = header
@@ -1298,6 +1381,13 @@ impl App {
             });
         if let DiffSource::Index { staged } = d.source {
             let msg = if staged { Msg::Unstage(vec![d.rel.clone()]) } else { Msg::Stage(vec![d.rel.clone()]) };
+            let discardable = !staged && self.git.unstaged.iter().any(|c| c.path == d.rel && c.code != '!');
+            if discardable {
+                header = header.push(tip(
+                    icon_label(Icon::Discard, "Discard", (!self.git_busy).then(|| Msg::Discard(vec![d.rel.clone()]))),
+                    "Throw away these changes (Undo available)",
+                ));
+            }
             header = header.push(
                 button(text(if staged { "Unstage" } else { "Stage" }).size(12))
                     .padding([2, 8])
@@ -1394,7 +1484,7 @@ impl App {
                 .on_press(Msg::FocusAgent(first.pane_id.clone())),
             );
         }
-        let fresh = self.runs.new_files();
+        let fresh = self.fresh_changes();
         if fresh > 0 {
             left = left.push(
                 button(
@@ -1433,6 +1523,14 @@ impl App {
                 .into(),
                 None => tip(message, "Click to dismiss"),
             });
+            if let Some((label, action)) = &self.status_action {
+                left = left.push(
+                    button(text(*label).size(12))
+                        .padding([1, 8])
+                        .style(theme::primary)
+                        .on_press_maybe((!self.git_busy).then(|| action.clone())),
+                );
+            }
         }
         let mut right = row![].spacing(16).align_y(Alignment::Center);
         if let Some(Tab::File(t)) = self.active_tab.and_then(|i| self.tabs.get(i)) {

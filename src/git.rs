@@ -329,6 +329,25 @@ pub fn stage(root: &Path, paths: &[String]) -> Result<String, String> {
     git(root, &args)
 }
 
+/// Discard unstaged changes, like VSCodium's Discard: tracked files go back to
+/// the index (`git restore --worktree`), untracked files (`U`) are deleted.
+/// Paths are relative to the repository root, with their status letter.
+pub fn discard(root: &Path, files: &[(String, char)]) -> Result<String, String> {
+    let tracked: Vec<&str> = files.iter().filter(|(_, code)| *code != 'U').map(|(p, _)| p.as_str()).collect();
+    if !tracked.is_empty() {
+        let mut args = vec!["restore", "--worktree", "--"];
+        args.extend(tracked);
+        git(root, &args)?;
+    }
+    for (path, _) in files.iter().filter(|(_, code)| *code == 'U') {
+        match std::fs::remove_file(root.join(path)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{path}: {e}")),
+            _ => {}
+        }
+    }
+    Ok(format!("Discarded {} file{}", files.len(), if files.len() == 1 { "" } else { "s" }))
+}
+
 pub fn unstage(root: &Path, paths: &[String]) -> Result<String, String> {
     let mut args = vec!["restore", "--staged", "--"];
     args.extend(paths.iter().map(String::as_str));
@@ -666,6 +685,41 @@ mod snapshot_tests {
         restore_from_tree(&dir, &t1, &["a.txt".into(), "b.txt".into()]).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
         assert!(!dir.join("b.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn discard_and_undo_with_the_snapshot() {
+        let dir = repo();
+        let scratch = test_dir("git-index");
+        let id = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
+        std::fs::write(dir.join("kept.txt"), "base\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "base\n").unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &[&id[..], &["commit", "-qm", "base"]].concat()).unwrap();
+        std::fs::write(dir.join("kept.txt"), "edited\n").unwrap();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::write(dir.join("new.txt"), "scratch\n").unwrap();
+        let files = vec![('M', "kept.txt"), ('D', "gone.txt"), ('U', "new.txt")]
+            .into_iter()
+            .map(|(c, p)| (p.to_string(), c))
+            .collect::<Vec<_>>();
+
+        // What mira does: back up, then discard.
+        let backup = snapshot_tree_in(&dir, &scratch).unwrap();
+        assert_eq!(discard(&dir, &files), Ok("Discarded 3 files".into()));
+        assert_eq!(std::fs::read_to_string(dir.join("kept.txt")).unwrap(), "base\n");
+        assert_eq!(std::fs::read_to_string(dir.join("gone.txt")).unwrap(), "base\n");
+        assert!(!dir.join("new.txt").exists());
+        assert!(git(&dir, &["status", "--porcelain"]).unwrap().is_empty());
+
+        // Undo: every file is back as it was, deletion included.
+        let paths: Vec<String> = files.iter().map(|(p, _)| p.clone()).collect();
+        restore_from_tree(&dir, &backup, &paths).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("kept.txt")).unwrap(), "edited\n");
+        assert!(!dir.join("gone.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), "scratch\n");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&scratch);
     }

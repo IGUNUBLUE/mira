@@ -65,6 +65,7 @@ impl App {
         }
         if self.clear_confirms() {
             self.status = None;
+            self.status_action = None;
             self.status_detail = None;
             return Task::none();
         }
