@@ -34,7 +34,8 @@ and may change.
 
 - Agent turns, including the prompts you typed, are kept per folder in
   `~/.local/state/mira/` (`0600`), never inside the project.
-- Prompts are read from the agents' own local logs (`~/.codex/sessions`, `~/.kiro/sessions`)
+- Prompts are read from the agents' own local logs (`~/.codex/sessions`, `~/.kiro/sessions`,
+  `~/.claude/projects`)
   to title the turns. They are never sent anywhere.
 - Snapshots are git objects in your repository; they are not committed or pushed.
 - The terminal never answers clipboard read requests (OSC 52) from programs running in it.

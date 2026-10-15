@@ -56,7 +56,7 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - `src/herdr.rs` — blocking client of herdr's socket (NDJSON); `launch_command` strips `HERDR_*`. Facts: `herdr-client` skill.
 - `src/runs.rs` — pure run state machine (`Tracker::observe` → `Effect::Before/After`), tested without IO. A derived
   index makes `origin`/`is_new`/`new_files` O(1); runs change only through `Tracker` methods (`edit`), which reindex.
-- `src/agentlog.rs` — run titles from kiro/codex conversation logs.
+- `src/agentlog.rs` — run titles from kiro/codex/Claude Code conversation logs.
 - `src/termio.rs` — `TermInput` wrapper (wheel, right/middle, Alt, bracketed paste), `Gate`, color-query answers.
 - `src/persist.rs` — per-folder runs (`$XDG_STATE_HOME/mira/<fnv>.json`, 0600) and `~/.config/mira/config`.
 - `src/git.rs` — `git` CLI wrapper (no stdin, no prompts; status scoped to opened folder, capped at `MAX_CHANGES`;

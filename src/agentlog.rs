@@ -1,11 +1,14 @@
 //! Read what the user asked an agent from the agent's own conversation log, to
-//! title a run. Best effort and read-only; only kiro and codex are known.
+//! title a run. Best effort and read-only; kiro, codex and Claude Code are known.
 //!
 //! - kiro: `~/.kiro/sessions/<group>/sess_*/session.json` (`workspacePaths`,
 //!   `lastModifiedAt`) and `messages.jsonl` (`payload.type == "user"`).
 //! - codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; first line is the
 //!   session meta with `cwd`; user turns are `event_msg` / `item_completed`
 //!   with a `UserMessage` item.
+//! - claude (Claude Code): `~/.claude/projects/<cwd, `/` → `-`>/<session>.jsonl`;
+//!   typed prompts are `type == "user"` lines that are not meta, sidechain or
+//!   tool results (format as documented by claude-code-log).
 
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
@@ -23,6 +26,7 @@ pub fn last_prompt(home: &Path, kind: &str, dir: &Path, started: u64, finished: 
     let raw = match kind {
         "kiro" => kiro(home, dir, started, until),
         "codex" => codex(home, dir, started, until),
+        "claude" => claude(home, dir, started, until),
         _ => None,
     }?;
     tidy(&raw)
@@ -139,6 +143,62 @@ fn codex(home: &Path, dir: &Path, started: u64, until: u64) -> Option<String> {
     last
 }
 
+fn claude(home: &Path, dir: &Path, started: u64, until: u64) -> Option<String> {
+    let projects = home.join(".claude/projects");
+    let path = dir.to_string_lossy();
+    // Claude Code names the folder after the cwd with separators as `-`; other
+    // characters may be replaced too, so try both and check `cwd` in the lines.
+    let names = [
+        path.replace(['/', '\\'], "-"),
+        path.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }).collect(),
+    ];
+    let mut best: Option<(u64, PathBuf)> = None;
+    for name in names {
+        let Ok(entries) = std::fs::read_dir(projects.join(name)) else { continue };
+        for e in entries.flatten() {
+            let file = e.path();
+            let when = modified(&file);
+            if file.extension().is_some_and(|x| x == "jsonl")
+                && when + SLACK >= started
+                && best.as_ref().is_none_or(|(t, _)| when > *t)
+            {
+                best = Some((when, file));
+            }
+        }
+    }
+    let (_, log) = best?;
+    let mut last = None;
+    for v in json_lines(&log, "\"user\"") {
+        if v["type"] != "user"
+            || v["isMeta"] == true
+            || v["isSidechain"] == true
+            || v["cwd"].as_str().is_some_and(|c| Path::new(c) != dir)
+            || v["timestamp"].as_str().and_then(parse_iso_utc).is_some_and(|t| t > until)
+        {
+            continue;
+        }
+        let text = match &v["message"]["content"] {
+            Value::String(s) => s.clone(),
+            // Tool results come back as "user" lines too: they aren't prompts.
+            Value::Array(parts) if parts.iter().any(|x| x["type"] == "tool_result") => continue,
+            Value::Array(parts) => parts
+                .iter()
+                .filter(|x| x["type"] == "text")
+                .filter_map(|x| x["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => continue,
+        };
+        // Slash commands, `!` shell input and their output are tagged, not typed prompts.
+        let t = text.trim_start();
+        if t.is_empty() || t.starts_with("<command-") || t.starts_with("<bash-") || t.starts_with("<local-command") {
+            continue;
+        }
+        last = Some(text);
+    }
+    last
+}
+
 /// `2026-10-14T17:13:27.934Z` → unix seconds (UTC only).
 pub fn parse_iso_utc(s: &str) -> Option<u64> {
     let (date, time) = s.split_once('T')?;
@@ -226,6 +286,32 @@ mod tests {
         let prompt = last_prompt(&home, "codex", Path::new("/repo"), now, now + 60);
         assert_eq!(prompt.as_deref(), Some("fix the add function"));
         assert_eq!(last_prompt(&home, "claude", Path::new("/repo"), now, now), None);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn claude_prompt_skips_tool_results_and_commands() {
+        let home = temp_home();
+        let d = home.join(".claude/projects/-repo-my-app");
+        std::fs::create_dir_all(&d).expect("dirs");
+        std::fs::write(
+            d.join("5f0c.jsonl"),
+            concat!(
+                r#"{"type":"user","cwd":"/repo/my-app","timestamp":"2026-10-14T17:10:00.000Z","message":{"role":"user","content":"older prompt"}}"#, "\n",
+                r#"{"type":"user","cwd":"/repo/my-app","timestamp":"2026-10-14T17:13:20.000Z","message":{"role":"user","content":[{"type":"text","text":"add a --bye flag\nwith tests"}]}}"#, "\n",
+                r#"{"type":"assistant","cwd":"/repo/my-app","timestamp":"2026-10-14T17:13:21.000Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}"#, "\n",
+                r#"{"type":"user","cwd":"/repo/my-app","timestamp":"2026-10-14T17:13:22.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"done"}]}}"#, "\n",
+                r#"{"type":"user","isMeta":true,"cwd":"/repo/my-app","timestamp":"2026-10-14T17:13:23.000Z","message":{"role":"user","content":"Caveat: meta"}}"#, "\n",
+                r#"{"type":"user","cwd":"/repo/my-app","timestamp":"2026-10-14T17:13:24.000Z","message":{"role":"user","content":"<command-name>/clear</command-name>"}}"#, "\n",
+                r#"{"type":"user","isSidechain":true,"cwd":"/repo/my-app","timestamp":"2026-10-14T17:13:25.000Z","message":{"role":"user","content":"subagent task"}}"#, "\n",
+            ),
+        )
+        .expect("write");
+        let now = modified(&d.join("5f0c.jsonl"));
+        let end = parse_iso_utc("2026-10-14T17:13:30Z").expect("ts").max(now);
+        let prompt = last_prompt(&home, "claude", Path::new("/repo/my-app"), now, end);
+        assert_eq!(prompt.as_deref(), Some("add a --bye flag"));
+        assert_eq!(last_prompt(&home, "claude", Path::new("/elsewhere"), now, end), None);
         let _ = std::fs::remove_dir_all(home);
     }
 

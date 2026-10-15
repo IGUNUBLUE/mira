@@ -11,6 +11,7 @@ All notable changes to mira are listed here. The format follows
 - Line numbers in the editor, with the cursor's line highlighted. Long lines no longer wrap.
 - Changes: per-file and per-section buttons like VSCodium (open file, discard, stage/unstage),
   shown on hover; Review (⇄) walks through a section's diffs with `‹ ›`; Discard from the diff.
+- Agent turns of Claude Code are titled with the prompt too (from `~/.claude/projects`).
 - Discard with Undo: a snapshot is taken first, so a discard (even of new files) can be undone
   from the status bar.
 

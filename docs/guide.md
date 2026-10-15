@@ -79,7 +79,7 @@ nothing is committed and your index is not touched.
 - Files changed since you last opened them get a dot; the tab and the status bar count them.
   `✓` marks them all as seen.
 - **By agent run** lists each turn with its files, titled with your prompt (read from the
-  agents' own logs; Codex and Kiro are supported). You can stage or revert a whole turn.
+  agents' own logs; Codex, Kiro and Claude Code are supported). You can stage or revert a whole turn.
   Revert asks for a second click.
 - Turns that changed nothing don't show up. A quick follow-up during a turn stays part of it.
 
