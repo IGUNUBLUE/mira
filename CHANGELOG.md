@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Added
 
 - Line numbers in the editor, with the cursor's line highlighted. Long lines no longer wrap.
