@@ -192,7 +192,95 @@ impl App {
             let active = self.dragging == Some(Divider::Inspector) || self.hovered_divider == Some(Divider::Inspector);
             body = body.push(divider(Divider::Inspector, active)).push(self.view_inspector());
         }
-        column![body.height(Length::Fill), self.view_status_bar()].into()
+        let base: Element<'_, Msg> = column![body.height(Length::Fill), self.view_status_bar()].into();
+        match &self.signin {
+            // Modal: `opaque` keeps clicks and the wheel from reaching what is behind.
+            Some(signin) => iced::widget::stack![
+                base,
+                iced::widget::opaque(iced::widget::center(self.view_signin(&signin.stage)).style(|_| {
+                    container::Style { background: Some(p().bg.scale_alpha(0.75).into()), ..Default::default() }
+                }))
+            ]
+            .into(),
+            None => base,
+        }
+    }
+
+    /// The ChatGPT sign-in dialog: what will happen before it happens, then
+    /// the wait for the browser (with the link, in case it didn't open).
+    fn view_signin<'a>(&'a self, stage: &'a SignInStage) -> Element<'a, Msg> {
+        let para = |s: &'a str| text(s).size(UI).color(p().fg).wrapping(text::Wrapping::Word);
+        let note = |s: &'a str| text(s).size(SMALL).color(p().muted).wrapping(text::Wrapping::Word);
+        let step = |n: &'a str, s: &'a str| {
+            row![text(n).size(UI).color(p().accent).width(18), para(s)].spacing(4).align_y(Alignment::Start)
+        };
+        let cancel = button(text("Cancel").size(UI)).padding([6, 14]).style(theme::flat_fn).on_press(Msg::SignInCancel);
+        let (title, body, actions): (Element<'a, Msg>, Column<'a, Msg>, iced::widget::Row<'a, Msg>) = match stage {
+            SignInStage::Ask => (
+                row![ico(Icon::Sparkle, 18).color(p().accent), text("Sign in with ChatGPT").size(18)]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .into(),
+                column![
+                    para("mira writes commit messages with your ChatGPT subscription. To connect it:"),
+                    step("1", "Your browser opens auth.openai.com: the same sign-in as Codex CLI."),
+                    step("2", "You approve there, and the browser hands the session back to mira on this computer (localhost:1455)."),
+                    step("3", "mira keeps it in ~/.local/state/mira/chatgpt.json, readable only by you. Sign out any time from the account icon."),
+                    para("When you generate a message, only the next commit's diff and its file list are sent."),
+                    note("Rather use an API key or a local model? Set commit_provider in ~/.config/mira/config."),
+                ]
+                .spacing(10),
+                row![
+                    space::horizontal(),
+                    cancel,
+                    button(text("Open browser").size(UI)).padding([6, 14]).style(theme::primary).on_press(Msg::SignInStart),
+                ]
+                .spacing(8),
+            ),
+            SignInStage::Waiting { url, opened } => {
+                let mut body = column![para(
+                    "Finish signing in at auth.openai.com, then come back: this closes by itself and the commit message starts."
+                )]
+                .spacing(10);
+                if url.is_some() && !opened {
+                    body = body.push(text("mira couldn't open a browser.").size(UI).color(p().warn_text));
+                }
+                body = body.push(note("Browser didn't open, or opened the wrong one? Copy the link and paste it there."));
+                let copy = button(row![ico(Icon::GoToFile, 13), text("Copy link").size(UI)].spacing(6).align_y(Alignment::Center))
+                    .padding([6, 14])
+                    .style(theme::flat_fn)
+                    .on_press_maybe(url.is_some().then_some(Msg::SignInCopyLink));
+                (
+                    row![
+                        text(SPINNER[self.spin])
+                            .size(18)
+                            .font(icons::font().unwrap_or_else(theme::mono_font))
+                            .color(p().accent),
+                        text("Waiting for your browser…").size(18)
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .into(),
+                    body,
+                    row![copy, space::horizontal(), cancel].spacing(8),
+                )
+            }
+        };
+        container(column![title, body, actions].spacing(18))
+            .padding(24)
+            .max_width(480)
+            .style(|_| container::Style {
+                background: Some(p().sidebar.into()),
+                text_color: Some(p().fg),
+                border: iced::Border { color: p().border, width: 1.0, radius: 8.0.into() },
+                shadow: iced::Shadow {
+                    color: Color::BLACK.scale_alpha(0.25),
+                    offset: iced::Vector::new(0.0, 6.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            })
+            .into()
     }
 
     fn view_terminal(&self) -> Element<'_, Msg> {

@@ -24,7 +24,7 @@ processes could read them.
 
 ## ChatGPT sign-in
 
-Signing in uses OAuth with PKCE in your browser, through the public client that Codex CLI uses,
+mira asks first: a dialog explains these steps before anything opens. Signing in uses OAuth with PKCE in your browser, through the public client that Codex CLI uses,
 with a callback on `localhost:1455` (or `1457`). Tokens are stored in
 `~/.local/state/mira/chatgpt.json` with `0600` permissions and refreshed when needed. The
 account icon signs out and deletes them. The endpoint behind the subscription is undocumented

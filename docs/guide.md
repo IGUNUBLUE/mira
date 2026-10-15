@@ -29,6 +29,9 @@ running in herdr when mira closes and are there again when it opens.
   to its pane, even in another workspace.
 - "need you" in the status bar jumps to an agent that is waiting for you.
 - Text is copied on selection; the mouse wheel, right/middle clicks and Alt+key reach herdr.
+- **Scrolling long output** (an agent's diff, a test run): drag the scrollbar at the right
+  edge of the pane, or click its track to jump. From the keyboard, `Ctrl+B [` enters herdr's
+  copy mode: `PageUp`/`PageDown`, `Ctrl+U`/`Ctrl+D`, `/` to search, `q` to leave.
 - `Ctrl+Shift+V` pastes (bracketed paste).
 
 ### herdr settings
@@ -44,16 +47,18 @@ dark_name = "terminal"
 light_name = "terminal"
 
 [theme.custom.light]
-overlay1 = "gray"       # tab labels and the right side of the tab bar
+overlay0 = "darkgray"   # tabs, and the scrollbar track
+overlay1 = "gray"       # named tabs, the right side of the tab bar, the scrollbar thumb
 surface_dim = "white"   # text of the active tab
 active_row_bg = "white"
 
 [theme.custom.dark]
+overlay1 = "blue"       # stands out from the track
 surface_dim = "black"
 active_row_bg = "darkgray"
 
 [ui]
-pane_scrollbars = false # its track uses a color that is dark in light palettes
+pane_scrollbars = true  # draggable scrollbars (herdr's default)
 
 [ui.toast]
 delivery = "system"     # notifications (mira doesn't send its own)
@@ -110,7 +115,7 @@ Pick a provider with `commit_provider` in the [config](configuration.md):
 
 | Provider | What it uses |
 |---|---|
-| `chatgpt` | Your ChatGPT subscription. The first click opens the browser to sign in (the same flow as `codex login`). The account icon next to Pull/Push signs out (two clicks). |
+| `chatgpt` | Your ChatGPT subscription. The first time, a dialog explains the sign-in and asks before opening your browser (the same flow as `codex login`); if the browser doesn't open, copy the link from the dialog. The account icon next to Pull/Push signs out (two clicks). |
 | `openai` | An API key from `OPENAI_API_KEY` or `~/.config/mira/openai_key` (must be `chmod 600`). |
 | `command` | `commit_command`: any command that reads the prompt on stdin and prints the message, for example a local model with ollama. Its output streams too. |
 | `auto` (default) | The ChatGPT session if you are signed in, else an API key, else `commit_command`, else asks you to sign in. |
@@ -155,7 +160,7 @@ plain symbols. Fonts default to Inter and JetBrains Mono (medium weight); see
 | `Ctrl+S` / `Ctrl+W` | Save / close tab |
 | `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | Undo / redo |
 | `Ctrl+Enter` | Commit (in the commit box) |
-| `Escape` | Cancel, one at a time: a pending confirmation, the diff's selected line, its comment, the status message |
+| `Escape` | Cancel, one at a time: the sign-in dialog, a pending confirmation, the diff's selected line, its comment, the status message |
 
 `Ctrl+Shift+…` and ``Ctrl+` `` work while the terminal has focus. `Escape` stays with the
 terminal and with focused inputs; mira only acts on it when nothing else does.

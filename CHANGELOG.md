@@ -22,7 +22,8 @@ First public release. mira is in early development: expect breaking changes befo
 - Source control: stage, unstage, commit, push, pull, history, merge-conflict section,
   `git init`.
 - Streaming commit-message generation from a ChatGPT subscription, an OpenAI API key or a
-  local command.
+  local command. Signing in with ChatGPT goes through a dialog that explains the flow
+  and asks before opening the browser.
 - Editor with syntax highlighting, undo/redo and autosave; search & replace; file explorer.
 - Four LAGC themes (light and dark), following HyDE when installed; Nerd Font icons.
 - Install script, release binaries for Linux x86_64 and aarch64, desktop entry and icon.

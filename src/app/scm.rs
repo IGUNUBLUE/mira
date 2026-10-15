@@ -7,6 +7,7 @@ use iced::Task;
 use iced::widget::text_editor::{self, Content};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A commit message being generated and streamed into the commit box.
 pub struct CommitGen {
@@ -29,6 +30,35 @@ pub enum GitOutcome {
 
 /// Spinner frames for the generate button.
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Not a widget: focusing it takes the keyboard away from the terminal and
+/// inputs while the sign-in dialog is open (so Escape reaches it).
+const DIALOG_FOCUS: &str = "mira-dialog";
+
+/// The ChatGPT sign-in dialog. mira explains the flow and asks before it
+/// opens the browser; then it waits for the browser to come back.
+pub struct SignIn {
+    id: u64,
+    pub stage: SignInStage,
+    cancel: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignInStage {
+    /// Explaining what will happen; nothing started yet.
+    Ask,
+    /// Waiting for the browser. `url` is the sign-in link once known;
+    /// `opened` says whether a browser could be started for it.
+    Waiting { url: Option<String>, opened: bool },
+}
+
+/// Progress of a sign-in, from its thread.
+#[derive(Debug, Clone)]
+pub enum SignInEvent {
+    Url(String, bool),
+    /// The account's email (maybe empty), or why it failed.
+    Done(Result<String, String>),
+}
 
 impl App {
     pub(super) fn update_scm(&mut self, msg: Msg) -> Task<Msg> {
@@ -152,6 +182,8 @@ impl App {
                 });
             }
             Msg::GitInit => return self.git_op(git::init),
+            // The dialog asks first; ✦ does nothing while it is open.
+            Msg::GenerateCommit if self.signin.is_some() => {}
             Msg::GenerateCommit => {
                 if let Some(job) = self.commit_gen.take() {
                     job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -166,6 +198,17 @@ impl App {
                 if !staged && self.git.unstaged.is_empty() {
                     self.set_status("Nothing to commit", true);
                     return Task::none();
+                }
+                if crate::commitgen::needs_sign_in() {
+                    self.signin_seq += 1;
+                    self.signin = Some(SignIn {
+                        id: self.signin_seq,
+                        stage: SignInStage::Ask,
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    });
+                    self.focus_epoch += 1;
+                    self.term_focus = false;
+                    return iced::widget::operation::focus(DIALOG_FOCUS);
                 }
                 let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 // Close the open typing group first, so the history's last
@@ -199,7 +242,6 @@ impl App {
                     return Task::none();
                 };
                 match event {
-                    Event::Status(s) => self.set_status(s, false),
                     Event::Delta(d) => {
                         // Append at the end instead of rebuilding the box from the
                         // whole text per delta (quadratic, and every line reshaped).
@@ -243,6 +285,57 @@ impl App {
                         self.set_status("Signed out of ChatGPT", false);
                     }
                     Err(e) => self.set_status(format!("Sign out: {e}"), true),
+                }
+            }
+            Msg::SignInStart => {
+                let Some(signin) = self.signin.as_mut().filter(|s| s.stage == SignInStage::Ask) else {
+                    return Task::none();
+                };
+                signin.stage = SignInStage::Waiting { url: None, opened: false };
+                let (id, cancel) = (signin.id, Arc::clone(&signin.cancel));
+                let (tx, rx) = iced::futures::channel::mpsc::unbounded();
+                std::thread::spawn(move || {
+                    let result = crate::commitgen::sign_in(&cancel, &mut |url, opened| {
+                        let _ = tx.unbounded_send(SignInEvent::Url(url.to_string(), opened));
+                    });
+                    let _ = tx.unbounded_send(SignInEvent::Done(result));
+                });
+                return Task::run(rx, move |e| Msg::SignInEvent(id, e));
+            }
+            Msg::SignInCancel => {
+                if let Some(signin) = self.signin.take() {
+                    signin.cancel.store(true, Ordering::Relaxed);
+                    self.set_status("Sign-in cancelled", false);
+                }
+            }
+            Msg::SignInCopyLink => {
+                if let Some(SignIn { stage: SignInStage::Waiting { url: Some(url), .. }, .. }) = &self.signin {
+                    let url = url.clone();
+                    self.set_status("Sign-in link copied: open it in your browser", false);
+                    return iced::clipboard::write(url);
+                }
+            }
+            Msg::SignInEvent(id, event) => {
+                // Events of a dialog that was cancelled (or replaced) are dropped.
+                let Some(signin) = self.signin.as_mut().filter(|s| s.id == id) else {
+                    return Task::none();
+                };
+                match event {
+                    SignInEvent::Url(url, opened) => signin.stage = SignInStage::Waiting { url: Some(url), opened },
+                    SignInEvent::Done(result) => {
+                        self.signin = None;
+                        match result {
+                            Ok(email) => {
+                                let who = if email.is_empty() { String::new() } else { format!(" as {email}") };
+                                self.set_status(format!("Signed in to ChatGPT{who}"), false);
+                                self.chatgpt_account = Some(email);
+                                // What the user asked for in the first place.
+                                return self.update(Msg::GenerateCommit);
+                            }
+                            Err(e) if e == "Cancelled" => {}
+                            Err(e) => self.set_status(format!("ChatGPT sign-in: {e}"), true),
+                        }
+                    }
                 }
             }
             // Said only once the action really starts (one git action at a time).

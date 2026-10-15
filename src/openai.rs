@@ -140,7 +140,9 @@ pub fn fresh(tokens: Tokens, cancel: &AtomicBool) -> Result<Tokens, String> {
 
 /// Browser sign-in (OAuth PKCE with a localhost callback, like `codex login`).
 /// Blocks until the browser comes back, `cancel` is set or 5 minutes pass.
-pub fn login(cancel: &AtomicBool) -> Result<Tokens, String> {
+/// `on_url` gets the sign-in link and whether a browser was opened for it, so
+/// the user can open it by hand.
+pub fn login(cancel: &AtomicBool, on_url: &mut dyn FnMut(&str, bool)) -> Result<Tokens, String> {
     let listener = CALLBACK_PORTS
         .iter()
         .find_map(|port| TcpListener::bind(("127.0.0.1", *port)).ok())
@@ -166,7 +168,7 @@ pub fn login(cancel: &AtomicBool) -> Result<Tokens, String> {
             ("originator", "codex_cli_rs"),
         ])
     );
-    open_browser(&url)?;
+    on_url(&url, open_browser(&url).is_ok());
 
     let deadline = Instant::now() + LOGIN_TIMEOUT;
     let code = loop {

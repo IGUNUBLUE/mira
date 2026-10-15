@@ -21,7 +21,7 @@ mod terminal;
 pub use documents::{AutoSave, DiffSource, DiffTab, FileTab, Tab};
 pub use find::SearchState;
 pub use layout::{CenterPane, Divider, Inspector, SEARCH_INPUT};
-pub use scm::{CommitGen, GitOutcome, SPINNER};
+pub use scm::{CommitGen, GitOutcome, SPINNER, SignIn, SignInEvent, SignInStage};
 pub use terminal::TermKind;
 
 use crate::diff::FileDiff;
@@ -129,6 +129,9 @@ pub struct App {
     /// The running commit-message generation.
     pub commit_gen: Option<CommitGen>,
     commit_gen_seq: u64,
+    /// The ChatGPT sign-in dialog, while open.
+    pub signin: Option<SignIn>,
+    signin_seq: u64,
     /// Spinner frame while generating.
     pub spin: usize,
     /// Signed-in ChatGPT account (email, maybe empty), for the sign-out button.
@@ -255,6 +258,11 @@ pub enum Msg {
     CommitGen(u64, crate::commitgen::Event),
     Spin,
     ChatGptSignOut,
+    /// The sign-in dialog: open the browser, stop, copy the link, progress.
+    SignInStart,
+    SignInCancel,
+    SignInCopyLink,
+    SignInEvent(u64, SignInEvent),
     Push,
     Pull,
     /// A git action started in folder epoch `.0` finished.
@@ -386,6 +394,8 @@ impl App {
             commit_history: crate::history::History::default(),
             commit_gen: None,
             commit_gen_seq: 0,
+            signin: None,
+            signin_seq: 0,
             spin: 0,
             chatgpt_account: crate::openai::account(),
             search: SearchState::default(),
@@ -412,7 +422,8 @@ impl App {
         subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Msg::Tick));
         subs.push(iced::time::every(Duration::from_millis(700)).map(|_| Msg::StatusTick));
         // Animate the generate button only while a message is being generated.
-        if self.commit_gen.is_some() {
+        let waiting = matches!(&self.signin, Some(s) if s.stage != SignInStage::Ask);
+        if self.commit_gen.is_some() || waiting {
             subs.push(iced::time::every(Duration::from_millis(80)).map(|_| Msg::Spin));
         }
         // Autosave timer, only while some tab has unsaved edits.
@@ -587,6 +598,10 @@ impl App {
             | Msg::CommitGen(..)
             | Msg::Spin
             | Msg::ChatGptSignOut
+            | Msg::SignInStart
+            | Msg::SignInCancel
+            | Msg::SignInCopyLink
+            | Msg::SignInEvent(..)
             | Msg::Push
             | Msg::Pull
             | Msg::GitDone(..)) => self.update_scm(m),

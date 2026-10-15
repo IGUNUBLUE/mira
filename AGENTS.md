@@ -72,8 +72,11 @@ sits around that loop: review what the agents changed, edit, search, commit.
   Autosave (`AutoSave`, VSCodium's names) lives in app/documents.rs: `save_tab(i, manual)`; autosave skips files whose
   mtime changed under unsaved edits (`FileTab.conflict`). The window doesn't exit on close: `Msg::CloseRequested`
   saves, then `iced::exit()`.
+- ChatGPT sign-in is a modal (`App::signin`, `SignInStage::Ask` → `Waiting`, app/scm.rs; drawn with `stack` +
+  `opaque` in `view`): ✦ checks `commitgen::needs_sign_in()` and asks before `openai::login` opens the browser;
+  focusing `DIALOG_FOCUS` (no such widget) takes the keyboard from the terminal so Escape cancels it.
 - `src/commitgen.rs` — commit message prompt/diff budget, provider choice (`commit_provider`), streams `Event`s
-  (Status, Delta, Account, Done) to `Msg::CommitGen`; cancel restores the previous text.
+  (Delta, Account, Done) to `Msg::CommitGen`; cancel restores the previous text.
 - `src/openai.rs` — Responses API over `curl` with SSE streaming; ChatGPT OAuth PKCE login (codex's client,
   localhost:1455/1457), refresh, tokens in `$XDG_STATE_HOME/mira/chatgpt.json` (0600); API key from
   `OPENAI_API_KEY` or `~/.config/mira/openai_key` (must be 0600). Own SHA-256/base64url, no crypto crates.
@@ -115,7 +118,7 @@ sits around that loop: review what the agents changed, edit, search, commit.
   Blue (4). mira reports light/dark like Ghostty (`CSI ? 997 ; 1|2 n`, `termio::color_scheme_report`) at start,
   on focus and on theme change, so herdr's `auto_switch` can apply `[theme.custom.light]`/`[theme.custom.dark]`
   overrides; the recommended ones are in docs/guide.md (checked in all four palettes). ANSI 7 is dark in the
-  light palettes, which herdr uses for the focused pane's scrollbar track (`pane_scrollbars = false`).
+  light palettes; the recommended overrides also keep herdr's draggable pane scrollbars visible (thumb vs track).
 
 ## Quality gate
 

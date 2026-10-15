@@ -8,7 +8,7 @@
 //!   stdin and prints the message (e.g. a local model), streamed as it prints.
 //!
 //! `auto` uses the ChatGPT session if there is one, else an API key, else
-//! `commit_command`, else asks you to sign in with ChatGPT.
+//! `commit_command`, else (after asking) signs in with ChatGPT.
 //! Only the diff of the next commit and its `--stat` leave the machine.
 
 use crate::git::git;
@@ -65,7 +65,6 @@ Rules:
 /// Progress of a generation, sent to the UI as it happens.
 #[derive(Debug, Clone)]
 pub enum Event {
-    Status(String),
     /// More text of the message.
     Delta(String),
     /// The ChatGPT account after the run: `Some(email)` (maybe empty) or signed out.
@@ -212,6 +211,22 @@ fn config(key: &str) -> Option<String> {
     crate::persist::config_get(key).filter(|v| !v.trim().is_empty())
 }
 
+/// Generating now would need a ChatGPT sign-in first (the provider resolves
+/// to ChatGPT and there is no session). The app asks before signing in.
+/// Errors in the settings count as "no": `generate` reports them.
+pub fn needs_sign_in() -> bool {
+    let signed_in = openai::load_tokens().is_some();
+    !signed_in
+        && choose(&config("commit_provider").unwrap_or_default(), false, openai::api_key, config("commit_command"))
+            == Ok(Provider::ChatGpt)
+}
+
+/// Sign in with ChatGPT in the browser. `on_url` gets the link and whether a
+/// browser opened. Returns the account's email (empty when unknown).
+pub fn sign_in(cancel: &AtomicBool, on_url: &mut dyn FnMut(&str, bool)) -> Result<String, String> {
+    openai::login(cancel, on_url).map(|t| t.email.unwrap_or_default())
+}
+
 /// Generate a message for the next commit in the repository at `root`
 /// (limited to `prefix`, see [`changes`]), sending progress to `emit`.
 /// Blocking; stops early when `cancel` is set.
@@ -254,13 +269,9 @@ pub fn generate(
 fn chatgpt(model: &str, input: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
     let tokens = match openai::load_tokens() {
         Some(t) => openai::fresh(t, cancel)?,
-        None => {
-            emit(Event::Status("Sign in with ChatGPT in your browser…".into()));
-            let t = openai::login(cancel)?;
-            emit(Event::Account(Some(t.email.clone().unwrap_or_default())));
-            emit(Event::Status("Signed in — generating a commit message…".into()));
-            t
-        }
+        // The app signs in first (`needs_sign_in`, after asking); the session
+        // may have been removed in between.
+        None => return Err("not signed in to ChatGPT: click ✦ to sign in".into()),
     };
     let mut tokens = tokens;
     let mut retried = false;

@@ -53,12 +53,16 @@ impl App {
         Task::none()
     }
 
-    /// Escape cancels the most pressing pending thing, one per press: a
+    /// Escape cancels the most pressing pending thing, one per press: the
+    /// ChatGPT sign-in dialog, a
     /// confirmation (revert, replace, sign out, discard tab), the diff's
     /// anchored line, its typed comment, then the status message. It never
     /// stops a commit-message generation: Escape also reaches mira from the
     /// file editor, and ✦ already stops it.
     fn escape(&mut self) -> Task<Msg> {
+        if self.signin.is_some() {
+            return self.update(Msg::SignInCancel);
+        }
         if self.clear_confirms() {
             self.status = None;
             self.status_detail = None;
