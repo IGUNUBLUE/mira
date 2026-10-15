@@ -1,127 +1,75 @@
-# mira
+<p align="center">
+  <img src="assets/mira.svg" width="96" alt="mira icon: an eye whose pupil is a terminal prompt">
+</p>
 
-A lightweight, terminal-first workspace for agent-driven development, written in Rust.
+<h1 align="center">mira</h1>
 
-*Mira* is Spanish for “look!”, which is what it is for: see what your agents did. (In Latin it
-means “wonderful”, as in the star Mira.)
+<p align="center">
+  A light, terminal-first workspace for reviewing what your coding agents change.
+  <br>
+  <a href="https://github.com/IGUNUBLUE/mira/actions/workflows/ci.yml"><img src="https://github.com/IGUNUBLUE/mira/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/platform-Linux-informational" alt="Platform: Linux">
+</p>
 
-You talk to your coding agents (codex, kiro-cli, claude, …) in a terminal; mira is built
-around that loop: ask → the agent acts → you review, correct, accept.
+![mira: the terminal on the left, the agent's changes on the right](docs/images/mira.png)
 
-- **herdr in the center.** The terminal runs [herdr](https://herdr.dev), the terminal
-  workspace for coding agents: workspaces, tabs, panes, agent status, and agents that keep
-  running when mira closes. mira opens (or creates) the herdr workspace for its folder.
-  Without herdr installed it falls back to your shell.
-  The terminal header lists the agents working in this folder with their status; click one to
-  jump to its pane (across workspaces). The status bar's “need you” jumps to the blocked agent.
-- **Changes, with authors.** The Changes panel is your git working tree (stage, commit,
-  push), and each file says which agent changed it and when (`kiro · 2m`, hover for what you
-  asked). mira asks herdr which agents work in this folder and snapshots the working tree
-  around each of their turns (temporary git index, no commits). Files changed since you last
-  opened them get a dot; the tab and status bar count them. Switch to **By agent run** to see
-  each turn with its files, titled with your prompt (read from kiro's and codex's logs), and
-  stage or revert a whole turn. Turns without changes never show up; a turn interrupted by a
-  quick follow-up stays one turn.
-- **Diffs that talk back.** Side-by-side diff with intra-line highlights; `‹ ›` steps
-  through a turn's files. Click a line, write a comment, and it is typed into the pane of the
-  agent that changed that file, through herdr (not whatever pane has focus), ready for you to
-  press Enter.
-- **Source control**: stage / unstage, commit, push, pull, recent history. With nothing
-  staged, Commit All stages every listed change (the button shows how many). Merge conflicts
-  get their own section and block the commit until you fix and stage them. A folder without
-  a repository offers `git init`.
-- **Commit message generation** (the sparkle button next to the commit box, which grows with
-  the message): Conventional Commits from the
-  staged diff (or all changes when nothing is staged), with lockfiles excluded and the diff
-  capped at 12k chars — same prompt as the `chatgpt-commit-gen` extension. The message streams
-  into the box as it is written; while generating, the button spins and clicking it stops and
-  restores what you had. Providers (`commit_provider` in `~/.config/mira/config`):
-  - `chatgpt` — your ChatGPT subscription. The first click opens the browser to sign in (same
-    OAuth flow as `codex login`); the account icon next to Pull/Push signs out (click it twice).
-  - `openai` — an API key from `OPENAI_API_KEY` or `~/.config/mira/openai_key` (chmod 600).
-  - `command` — `commit_command = "…"`, any command that reads the prompt on stdin and prints
-    the message (e.g. a local model via ollama), streamed as it prints.
-  - `auto` (default) — ChatGPT session if signed in, else API key, else `commit_command`, else
-    sign in with ChatGPT.
+*Mira* is Spanish for "look!". You talk to your agents (Codex, Claude Code, Kiro, …) in the
+terminal; mira sits around that loop so you can **see what they did**, fix it, and commit it.
 
-  `commit_model = "gpt-6-luna"` picks the model. Only the diff and its `--stat` are sent, and
-  only when you click; this is the one network request mira makes (through `curl`). The
-  subscription endpoint is undocumented and OpenAI may change it.
-- **Search & replace** (respects `.gitignore`; Replace all asks for a second click), **explorer** and a syntax-highlighted editor
-  whose clean tabs reload when an agent changes the file.
-- **Undo / redo** (`Ctrl+Z`, `Ctrl+Shift+Z` / `Ctrl+Y`) in the editor and the commit box, one
-  step per word like VSCodium. Reloads caused by an agent are undoable too.
-- **Autosave**, on by default: files save 1 s after you stop typing, and when you leave the
-  window, close a tab or quit. Set `autosave = "afterDelay" | "onFocusChange" |
-  "onWindowChange" | "off"` and `autosave_delay = "1000"` (ms) in `~/.config/mira/config`.
-  Autosave never overwrites a file that changed on disk under your edits (e.g. an agent wrote
-  it): it pauses for that tab and tells you; `Ctrl+S` overwrites.
+## Why
 
-No extension host, no telemetry, no accounts required. Git operations shell out to your `git`,
-so hooks, signing and credential helpers behave exactly as in your terminal.
+I moved most of my coding to agents that run in a terminal, and kept an editor open only to
+review their work. The editor took more memory than the agents, and it still couldn't tell me
+which agent changed which file. mira is the small tool I wanted instead: a native Rust app
+with the terminal at the center and the review around it. [The longer story →](docs/why.md)
 
-## Build & run
+## Features
 
-```bash
-cargo build --release
-./target/release/mira [--fresh] [DIRECTORY]
+- **Terminal first.** The terminal runs [herdr](https://herdr.dev), so agents keep running in
+  their workspaces and panes, even when mira closes. mira follows the herdr workspace you are in.
+- **Changes, with authors.** Every changed file says which agent touched it and when. Review
+  turn by turn, titled with your prompt; stage or revert a whole turn.
+- **Diffs that talk back.** Side-by-side diffs. Click a line, write a comment, and it is typed
+  into the pane of the agent that made the change.
+- **Commit messages that stream.** Conventional Commits from your ChatGPT subscription, an
+  OpenAI API key, or any local command (e.g. ollama).
+- **The VS Code basics, without the weight.** Source control, search & replace, an explorer,
+  a syntax-highlighted editor with undo and autosave, file icons, four themes.
+- **Private by default.** No telemetry, no account needed, no network unless you ask for a
+  commit message. [What leaves your machine →](docs/privacy.md)
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/IGUNUBLUE/mira/main/install.sh | sh
 ```
 
-mira never asks for a folder; herdr's workspaces decide. With `DIRECTORY` (or when run from a
-project directory) mira opens it and focuses its herdr workspace, creating one if needed. From
-the app launcher it opens the folder of herdr's focused workspace (the last folder if herdr
-isn't up yet). After that it follows herdr: switch workspace in herdr and mira's Changes,
-Files, Search and history switch with it; open file tabs stay. `--fresh` forgets the recorded
-agent turns. Config (`~/.config/mira/config`):
-`herdr_session = "name"` attaches to a named herdr session instead of the default one;
-`terminal = "shell"` skips herdr.
+This installs a release binary (or builds from source with cargo) into `~/.local`, with a
+desktop entry and icon. Linux only for now (x86_64, aarch64). Uninstall with
+`… | sh -s -- --uninstall`.
 
-Recommended herdr settings (`~/.config/herdr/config.toml`): `[theme] name = "terminal"`
-so herdr draws with mira's palette, and keep `[ui.toast] delivery = "system"` for
-notifications (mira does not send its own, to avoid duplicates).
+Works best with [herdr](https://herdr.dev) (agent tracking) and a
+[Nerd Font](https://www.nerdfonts.com) (icons). It needs `git` and `curl`.
 
-Themes: the four LAGC palettes (Tech / Calm, light / dark). The default, `auto`,
-follows the active HyDE theme live (`~/.local/state/hyde/staterc`) and falls back to
-LAGC Tech Light. `Ctrl+Shift+T` or the status-bar button cycles auto → each palette;
-the choice is saved in `~/.config/mira/config` (`theme = "LAGC Tech Dark"`).
+From source: `cargo install --git https://github.com/IGUNUBLUE/mira --locked`.
 
-Icons come from any installed [Nerd Font](https://www.nerdfonts.com) (codicons for the UI,
-seti/devicons for file types); set `icon_font = "…"` in the config to pick one. Without a
-Nerd Font mira falls back to plain symbols. Drag the divider next to the inspector to
-resize it, and the one above History in Changes to split it; both sizes are remembered.
+## Use
 
-Fonts default to Inter and JetBrains Mono (medium weight); set `MIRA_FONT` /
-`MIRA_MONO_FONT` to use other installed families.
+Open mira from your app launcher, or run `mira [folder]`. Ask an agent to do something in the
+terminal; its changes show up on the right as it works. Key shortcuts: ``Ctrl+` `` terminal ·
+`Ctrl+Shift+G` changes · `Ctrl+Shift+F` search · `Ctrl+Shift+E` files.
 
-Linux needs the usual Wayland/X11 and OpenGL libraries. mira uses the GPU through wgpu's OpenGL
-backend by default (its Vulkan path showed washed-out colors). `ICED_BACKEND=tiny-skia` draws on
-the CPU instead: about a quarter of the memory, but typing and panel resizing feel laggy.
+- [User guide](docs/guide.md): every panel, shortcuts, commit messages, herdr
+- [Configuration](docs/configuration.md): `~/.config/mira/config`, environment, files
+- [Privacy & network](docs/privacy.md)
+- [Architecture](docs/architecture.md), for contributors · [Roadmap](docs/roadmap.md)
 
-## Shortcuts
+## Contributing
 
-| Keys | Action |
-|---|---|
-| ``Ctrl+` `` | Focus the terminal |
-| `Ctrl+B` … | herdr's prefix (`Ctrl+B ?` lists its keys) |
-| `Ctrl+Shift+M` | Focus mode (hide the inspector) |
-| `Ctrl+Shift+G` / `F` / `E` | Inspector: Changes / Search (focuses the query) / Files |
-| `Ctrl+Shift+B` | Toggle inspector |
-| `Escape` | Cancel, one at a time: a pending confirmation (revert, replace all, sign out, discard tab), commit-message generation, the diff's anchored line, its comment, the status message |
-| `Ctrl+Shift+T` | Cycle theme |
-| `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | Undo / redo (editor, commit box) |
-| `Ctrl+Shift+V` | Paste in the terminal (bracketed) |
-| `Ctrl+S` / `Ctrl+W`, middle click | Save / close tab |
-
-`Ctrl+Shift+…` and `` Ctrl+` `` work even while the terminal has focus; `Escape` stays with the
-terminal (and with a focused input) and only reaches mira when nothing else takes it. Inside herdr, text
-is copied on selection; the mouse wheel, right/middle clicks and Alt+key reach herdr.
-
-## Roadmap
-
-- Editor: line numbers, find in file, scroll-to-line, tree-sitter highlighting
-- LSP completion (optional, per language)
-- Fonts and keybindings in the config file
-- Hunk navigation and per-hunk staging
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first; the
+quality gate is `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`.
+Security issues: see [SECURITY.md](SECURITY.md).
 
 ## License
 

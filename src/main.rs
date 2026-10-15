@@ -82,14 +82,25 @@ fn main() -> iced::Result {
         }
     };
 
+    let window = iced::window::Settings {
+        size: iced::Size::new(1400.0, 900.0),
+        // mira saves edited files before closing (see `Msg::CloseRequested`).
+        exit_on_close_request: false,
+        // Raw 64×64 RGBA (assets/mira-64.rgba): no image decoder needed at runtime.
+        icon: iced::window::icon::from_rgba(include_bytes!("../assets/mira-64.rgba").to_vec(), 64, 64).ok(),
+        // Matches mira.desktop, so launchers and docks show its icon (Wayland app id, X11 class).
+        platform_specific: iced::window::settings::PlatformSpecific {
+            application_id: "mira".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     iced::application(move || app::App::new(start.clone(), fresh), app::App::update, app::App::view)
         .title(app::App::title)
         .subscription(app::App::subscription)
         .theme(|_: &app::App| theme::theme())
         .default_font(theme::ui_font())
-        .window_size((1400.0, 900.0))
-        // mira saves edited files before closing (see `Msg::CloseRequested`).
-        .exit_on_close_request(false)
+        .window(window)
         .antialiasing(true)
         .run()
 }

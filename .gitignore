@@ -1,1 +1,10 @@
 /target
+# Third-party agent skills: restored from skills-lock.json (npx skills experimental_install)
+/.agents/skills/iced-rs/
+/.agents/skills/rust-best-practices/
+/.agents/skills/systematic-debugging/
+/.kiro/skills/iced-rs
+/.kiro/skills/rust-best-practices
+/.kiro/skills/systematic-debugging
+# Local maintainer notes
+/.kiro/steering/maintainer.md

@@ -4,7 +4,7 @@ Lightweight, terminal-first workspace for agent-driven development, in Rust (ice
 The user talks to coding agents (codex, kiro-cli, claude, …) in a terminal running herdr; mira is what
 sits around that loop: review what the agents changed, edit, search, commit.
 
-## Product rules (from the owner)
+## Product rules
 
 - **Terminal first.** The terminal is the priority; everything else supports the ask → act → review loop.
 - **Light and fast.** Rust, low RAM, no Electron, no extension host. New features must keep memory low;
@@ -19,12 +19,12 @@ sits around that loop: review what the agents changed, edit, search, commit.
   others. Work through public APIs (wrappers, composition); fix bugs upstream with issues/PRs.
 - **Don't invent.** Before using any API (herdr, iced, iced_term, git, agent CLIs) read its docs, schema or
   source and verify against the installed version. State what was verified and what was not.
-- **Best UX, familiar where it helps.** The owner comes from VSCodium: keep its good workflows (edit, side-by-side
+- **Best UX, familiar where it helps.** Many users come from VSCodium / VS Code: keep their good workflows (edit, side-by-side
   diff, search & replace, AI commit messages, file icons, resizable panels) without its weight.
 - **Files are files.** `.env` and other dotfiles open, show and edit in the editor like any file; no special panels.
 - **Readable.** Good contrast and medium-weight fonts; never thin, low-contrast text.
-- **Themes.** The LAGC palettes from `~/Projects/My-HyDE-dots` (VSCodium + kitty themes); `auto` follows HyDE.
-- **Dogfooding.** mira is developed from inside mira. Never leave the user's running mira broken: test risky
+- **Themes.** The four LAGC palettes (the author's VSCodium + kitty themes); `auto` follows HyDE when it is installed.
+- **Dogfooding.** mira is developed from inside mira. Never leave a running mira broken: test risky
   changes in an isolated instance (`XDG_CONFIG_HOME`/`XDG_STATE_HOME` in a temp dir, a named herdr session)
   before installing and restarting, and keep agents alive across restarts (herdr does this).
 
@@ -95,15 +95,15 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - Diff rows: content row is the stack base layer, backgrounds go `push_under` so wrapped lines stay aligned.
 - App shortcuts are `Ctrl+Shift+<letter>` and are swallowed in the terminal (`SHORTCUT_LETTERS` in app/terminal.rs).
   Never take `C`/`V` (terminal copy/paste) or plain `Ctrl+B` (herdr's prefix).
-- Code, comments and docs in English; talk to the owner in Spanish.
+- Code, comments and docs in English.
 
 ## Gotchas
 
-- Renderer: `main.rs` defaults `WGPU_BACKEND=gl` (Vulkan washes colors out here). tiny-skia saves RAM but lags on
+- Renderer: `main.rs` defaults `WGPU_BACKEND=gl` (on some Vulkan drivers colors were gamma-encoded twice). tiny-skia saves RAM but lags on
   typing and resizing: measure latency, not only RAM/CPU, before changing the default.
   Check colors with real pixels (grim) when touching rendering, not by eye.
 
-- Never stop, restart or delete the user's herdr server or sessions. Run every herdr command meant for a test
+- Never stop, restart or delete a running herdr server or sessions. Run every herdr command meant for a test
   session with `HERDR_*` unset (see the `herdr-client` skill): inside a pane `HERDR_SOCKET_PATH` overrides
   `--session` and `XDG_CONFIG_HOME`.
 
@@ -129,13 +129,13 @@ Lints live in `Cargo.toml [lints]` (no `unsafe`, no `unwrap`/`expect` outside te
 ## Commits
 
 - Conventional Commits; message says why, not only what. No AI attribution or co-author trailers.
-- Author: `Lenin Garizabalo <934933+IGUNUBLUE@users.noreply.github.com>` (pass with `git -c`, never edit git config).
-- Commit only when the owner asks; never push without being asked.
+- Never edit git config; commit only when asked, never push without being asked.
 
 ## Skills
 
-Repo-level skills live in `.agents/skills/` (installed with `npx skills`, pinned in `skills-lock.json`, update with
-`npx skills update -p`); `.kiro/skills/` entries are symlinks to them.
+Repo-level skills live in `.agents/skills/`; `.kiro/skills/` entries are symlinks to them. mira's own skills are
+tracked; third-party ones are pinned in `skills-lock.json` and restored with `npx skills experimental_install`
+(update with `npx skills update -p`).
 
 - `rust-quality`, `iced-ui`, `herdr-client` — mira's own: quality gate, UI conventions, herdr protocol facts.
 - `rust-best-practices` (apollographql), `iced-rs` (iced 0.14 API reference), `systematic-debugging` (obra/superpowers).

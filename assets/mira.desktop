@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=mira
+GenericName=Agent workspace
+Comment=Terminal-first workspace for reviewing what coding agents change
+Exec=mira
+Icon=mira
+Terminal=false
+Categories=Development;IDE;
+Keywords=terminal;agents;git;diff;review;herdr;
+StartupWMClass=mira

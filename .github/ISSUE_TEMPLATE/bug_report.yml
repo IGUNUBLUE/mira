@@ -1,0 +1,51 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! For security problems, please use a private report instead
+        (Security tab → Report a vulnerability).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open mira in a repository with …
+        2. Click …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: mira version
+      description: Output of `mira --version`, or the commit you built.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: Distro, compositor (e.g. Hyprland, GNOME, KDE, X11), GPU driver.
+      placeholder: Arch Linux, Hyprland, Mesa
+    validations:
+      required: true
+  - type: input
+    id: herdr
+    attributes:
+      label: herdr version
+      description: Output of `herdr --version`, or "not installed".
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Run mira from a terminal to see its output. Remove anything private (paths, tokens) before pasting.
+      render: text

@@ -2,11 +2,14 @@
 name = "mira"
 version = "0.1.0"
 edition = "2024"
-description = "A lightweight, terminal-first code review workspace for agent-driven development"
+description = "A light, terminal-first workspace for reviewing what your coding agents change"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-keywords = ["editor", "git", "diff", "terminal", "ide"]
+repository = "https://github.com/IGUNUBLUE/mira"
+homepage = "https://github.com/IGUNUBLUE/mira"
+keywords = ["agents", "git", "diff", "terminal", "review"]
 categories = ["development-tools", "text-editors"]
+exclude = ["/.agents", "/.kiro", "/.github", "/docs/images"]
 
 [dependencies]
 iced = { version = "0.14.0", features = ["highlighter", "tokio", "advanced", "lazy"] }
