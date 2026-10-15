@@ -64,7 +64,8 @@ pane_scrollbars = true  # draggable scrollbars (herdr's default)
 delivery = "system"     # notifications (mira doesn't send its own)
 ```
 
-Then restart mira (or choose `reload config` in herdr's menu).
+Then run `herdr server reload-config` (or choose `reload config` in herdr's menu). Restarting
+mira only reloads herdr's client settings (the theme); pane scrollbars belong to the server.
 
 ## Changes: what the agents did
 
