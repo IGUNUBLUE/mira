@@ -65,7 +65,32 @@ dependencies = [
  "rustix 1.1.5",
  "rustix-openpty",
  "serde",
- "signal-hook",
+ "signal-hook 0.3.18",
+ "unicode-width",
+ "vte",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "alacritty_terminal"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bda177466b9524d59f1b12f0dd30b68696788e9992a7e959021c4a0ed96fcf59"
+dependencies = [
+ "base64 0.22.1",
+ "bitflags 2.13.2",
+ "home",
+ "libc",
+ "log",
+ "miow",
+ "parking_lot",
+ "piper",
+ "polling",
+ "regex-automata",
+ "rustix 1.1.5",
+ "rustix-openpty",
+ "serde",
+ "signal-hook 0.4.5",
  "unicode-width",
  "vte",
  "windows-sys 0.59.0",
@@ -1464,7 +1489,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1e287970417db55e0b395a966f061f10c7d3b03fd146d0b8806678d8c063103"
 dependencies = [
- "alacritty_terminal",
+ "alacritty_terminal 0.25.1",
  "anyhow",
  "iced",
  "iced_core",
@@ -1931,7 +1956,7 @@ dependencies = [
 name = "mira"
 version = "0.1.0"
 dependencies = [
- "alacritty_terminal",
+ "alacritty_terminal 0.26.0",
  "iced",
  "iced_term",
  "ignore",
@@ -3007,6 +3032,16 @@ name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+dependencies = [
+ "libc",
+ "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b29ffa27d3d59a049bb328258de100f8012848d1b08d444e08bbc02ac468435e"
 dependencies = [
  "libc",
  "signal-hook-registry",

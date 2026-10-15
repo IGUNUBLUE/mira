@@ -15,7 +15,7 @@ exclude = ["/.agents", "/.kiro", "/.github", "/docs/images"]
 iced = { version = "0.14.0", features = ["highlighter", "tokio", "advanced", "lazy"] }
 iced_term = "0.8.0"
 # Same version iced_term uses; only for its event and grid types.
-alacritty_terminal = "=0.25.1"
+alacritty_terminal = "=0.26.0"
 ignore = "0.4.33"
 regex = "1.13.1"
 serde = { version = "=1.0.229", features = ["derive"] }
