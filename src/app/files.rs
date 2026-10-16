@@ -226,9 +226,10 @@ impl App {
             let (path, crumbs) = match tab {
                 Tab::File(t) => (&mut t.path, &mut t.crumbs),
                 Tab::Image(t) => (&mut t.path, &mut t.crumbs),
-                // A working-tree diff follows the file (a run's diff shows its snapshots).
+                // An unstaged diff follows the file. A staged one stays: the index
+                // still has the change under the old name (and a run's diff shows its snapshots).
                 Tab::Diff(d) => {
-                    if matches!(d.source, DiffSource::Index { .. })
+                    if d.source == (DiffSource::Index { staged: false })
                         && let Some(rel) = moved(&repo.join(&d.rel), from, to)
                             .and_then(|new| new.strip_prefix(&repo).ok().map(|r| r.to_string_lossy().into_owned()))
                     {

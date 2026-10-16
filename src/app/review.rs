@@ -19,12 +19,20 @@ impl App {
                 // Taken for a folder shown before: its saved state gets it, so the
                 // run stays reviewable there (its files load when it's shown again).
                 if root != self.root {
-                    if let Ok(tree) = result
-                        && let Err(e) = persist::edit_runs(&root, |runs| {
-                            runs.iter_mut().find(|r| r.id == id).is_some_and(|r| r.store_tree(after, tree))
-                        })
-                    {
-                        self.set_status(format!("Could not save review state: {e}"), true);
+                    match result {
+                        Ok(tree) => {
+                            if let Err(e) = persist::edit_runs(&root, |runs| {
+                                runs.iter_mut().find(|r| r.id == id).is_some_and(|r| r.store_tree(after, tree))
+                            }) {
+                                self.set_status(format!("Could not save review state: {e}"), true);
+                            }
+                        }
+                        // Too large to snapshot: its other queued ones would time out too,
+                        // each holding up the shown folder's.
+                        Err(e) if e.starts_with(git::SNAPSHOT_TIMED_OUT) || e == NOT_A_REPO => {
+                            self.snapshot_queue.retain(|(r, ..)| *r != root);
+                        }
+                        Err(_) => {}
                     }
                     return self.next_snapshot();
                 }

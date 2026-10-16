@@ -62,6 +62,9 @@ pub struct FileTab {
     /// The file changed on disk while this tab had unsaved edits: autosave
     /// stops for it until the user saves by hand.
     pub(super) conflict: bool,
+    /// The last write failed (disk full, permissions): autosave stops
+    /// retrying it; Ctrl+S tries again right away.
+    pub(super) write_failed: bool,
     /// The editor's scroll, mirrored for the line numbers (see `gutter.rs`).
     pub scroll: crate::gutter::Scroll,
     /// Opened at a line and not touched since: keep that line in view while
@@ -413,6 +416,7 @@ impl App {
                         history: crate::history::History::default(),
                         edited_at: None,
                         conflict: false,
+                        write_failed: false,
                         scroll: crate::gutter::Scroll::default(),
                         reveal: false,
                         find: None,
@@ -566,7 +570,7 @@ impl App {
                 }
             }
         } else {
-            if !t.dirty || t.conflict {
+            if !t.dirty || t.conflict || t.write_failed {
                 return false;
             }
             if mtime(&t.path) != t.mtime {
@@ -584,6 +588,7 @@ impl App {
                 t.history.mark_saved(&t.content);
                 t.dirty = false;
                 t.conflict = false;
+                t.write_failed = false;
                 t.edited_at = None;
                 t.mtime = mtime(&t.path);
                 let name = file_name(&t.path);
@@ -593,10 +598,12 @@ impl App {
                 true
             }
             Err(e) => {
-                // Stop retrying every tick; a manual save tries again.
-                t.conflict = true;
+                // Stop retrying every tick; a manual save tries again. What a
+                // half-done write left on disk is ours, not a change to ask about.
+                t.write_failed = true;
+                t.mtime = mtime(&t.path);
                 let name = file_name(&t.path);
-                self.set_status(format!("Save {name} failed: {e}"), true);
+                self.set_status(format!("Save {name} failed: {e} — autosave paused for it; Ctrl+S tries again"), true);
                 false
             }
         }
@@ -739,6 +746,7 @@ impl FileTab {
             history: crate::history::History::default(),
             edited_at: None,
             conflict: false,
+            write_failed: false,
             scroll: crate::gutter::Scroll::default(),
             reveal: false,
             find: None,

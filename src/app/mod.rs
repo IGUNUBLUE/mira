@@ -562,7 +562,7 @@ impl App {
         }
         // Autosave timer, only while some tab has unsaved edits.
         if matches!(self.autosave, AutoSave::AfterDelay(_))
-            && self.tabs.iter().any(|t| matches!(t, Tab::File(f) if f.dirty && !f.conflict))
+            && self.tabs.iter().any(|t| matches!(t, Tab::File(f) if f.dirty && !f.conflict && !f.write_failed))
         {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Msg::AutoSaveTick));
         }

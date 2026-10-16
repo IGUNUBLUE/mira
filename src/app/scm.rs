@@ -5,7 +5,7 @@ use crate::git;
 
 use iced::Task;
 use iced::widget::text_editor::{self, Content};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -142,25 +142,17 @@ impl App {
                 let files: Vec<(String, char)> = paths
                     .iter()
                     .filter_map(|p| self.git.unstaged.iter().find(|c| &c.path == p && c.code != '!'))
-                    .map(|c| (c.path.clone(), c.code))
+                    .flat_map(|c| match (&c.orig, c.code) {
+                        // A worktree rename (after `git add -N`): the new name goes, the old comes back.
+                        (Some(orig), 'R') => vec![(c.path.clone(), 'A'), (orig.clone(), 'D')],
+                        _ => vec![(c.path.clone(), c.code)],
+                    })
                     .collect();
                 if files.is_empty() {
                     return Task::none();
                 }
                 self.confirm_discard_all = false;
-                return self.git_task(move |r| {
-                    // The snapshot is the Undo: without it, nothing is discarded.
-                    let tree = git::snapshot_tree(r)
-                        .map_err(|e| format!("couldn't back the files up, nothing was discarded: {e}"))?;
-                    // From here on, a failure still hands back the snapshot: some files may be discarded.
-                    let error = git::discard(r, &files).err();
-                    let paths: Vec<String> = files.into_iter().map(|(p, _)| p).collect();
-                    let done = match paths.as_slice() {
-                        [one] => format!("Discarded {}", one.rsplit('/').next().unwrap_or(one)),
-                        many => format!("Discarded {} files", many.len()),
-                    };
-                    Ok(GitOutcome::Discarded { tree, paths, done, close_diffs: true, error })
-                });
+                return self.git_task(move |r| discard_in(r, files));
             }
             Msg::Hunk(op, id, i) if !self.git_busy => {
                 let Some(d) = self.active_diff() else { return Task::none() };
@@ -240,9 +232,15 @@ impl App {
             Msg::HoverChange(key, false) if self.hovered_change == Some(key) => self.hovered_change = None,
             Msg::HoverChange(..) => {}
             Msg::Unstage(mut paths) => {
-                // A staged rename also staged its old path's deletion: both go back.
-                let origs: Vec<String> =
-                    self.git.staged.iter().filter(|c| paths.contains(&c.path)).filter_map(|c| c.orig.clone()).collect();
+                // A staged rename also staged its old path's deletion: both go back
+                // (a copy's source wasn't touched by it).
+                let origs: Vec<String> = self
+                    .git
+                    .staged
+                    .iter()
+                    .filter(|c| c.code == 'R' && paths.contains(&c.path))
+                    .filter_map(|c| c.orig.clone())
+                    .collect();
                 paths.extend(origs);
                 return self.git_op(move |r| git::unstage(r, &paths));
             }
@@ -595,6 +593,37 @@ fn append(content: &mut Content, text: String) {
     content.perform(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text))));
 }
 
+/// Discard `files` (path, worktree status) in the repository at `repo`,
+/// after a snapshot for Undo. Untracked folders (nested repositories) are
+/// left alone and named; the rest is discarded.
+fn discard_in(repo: &Path, files: Vec<(String, char)>) -> Result<GitOutcome, String> {
+    let folders = git::untracked_folders(repo, &files);
+    let files: Vec<(String, char)> = files.into_iter().filter(|(p, _)| !folders.contains(p)).collect();
+    let left = match folders.as_slice() {
+        [] => String::new(),
+        [one] => format!("{one} is a folder (a nested repository?): remove it in a terminal"),
+        many => format!("{} folders (nested repositories?) left: remove them in a terminal", many.len()),
+    };
+    if files.is_empty() {
+        return Err(format!("nothing was discarded: {left}"));
+    }
+    // The snapshot is the Undo: without it, nothing is discarded.
+    let tree =
+        git::snapshot_tree(repo).map_err(|e| format!("couldn't back the files up, nothing was discarded: {e}"))?;
+    // From here on, a failure still hands back the snapshot: some files may be discarded.
+    let error = git::discard(repo, &files).err();
+    let paths: Vec<String> = files.into_iter().map(|(p, _)| p).collect();
+    let mut done = match paths.as_slice() {
+        [one] => format!("Discarded {}", one.rsplit('/').next().unwrap_or(one)),
+        many => format!("Discarded {} files", many.len()),
+    };
+    if !left.is_empty() {
+        done = format!("{done} · {left}");
+    }
+    // Diff tabs close only when their changes are surely gone.
+    Ok(GitOutcome::Discarded { tree, paths, done, close_diffs: error.is_none(), error })
+}
+
 /// Commit in the repository at `repo`: what's staged, or with `stage_all`
 /// (Commit All: path, untracked) those changes staged first. `prefix` is the
 /// opened folder inside the repository.
@@ -611,19 +640,55 @@ fn commit_in(repo: &Path, message: &str, prefix: &str, stage_all: Vec<(String, b
     // The list is up to a refresh old: an untracked file deleted
     // since would fail `git add` and with it the whole commit.
     let stage_all = still_there(repo, stage_all);
+    // A copy of the index puts it back exactly if the commit is rejected
+    // (unstaging would also drop `git add -N` entries and anything staged meanwhile).
+    let backup = if stage_all.is_empty() { None } else { IndexBackup::take(repo) };
     if !stage_all.is_empty() {
         git::stage(repo, &stage_all)?;
     }
     match git::commit(repo, message) {
-        Ok(out) => Ok(GitOutcome::Committed(first_line(&out).unwrap_or("Committed").to_string())),
+        Ok(out) => {
+            drop(backup);
+            Ok(GitOutcome::Committed(first_line(&out).unwrap_or("Committed").to_string()))
+        }
         Err(e) => {
             // A rejected Commit All (e.g. by a hook) leaves the index as it was:
             // left staged, the next Commit would commit only those, a different one.
-            if !stage_all.is_empty() {
-                let _ = git::unstage(repo, &stage_all);
+            match backup {
+                Some(b) => b.restore(),
+                None if !stage_all.is_empty() => drop(git::unstage(repo, &stage_all)),
+                None => {}
             }
             Err(e)
         }
+    }
+}
+
+/// A copy of the repository's index, removed when dropped unless restored.
+struct IndexBackup {
+    index: PathBuf,
+    copy: PathBuf,
+}
+
+impl IndexBackup {
+    fn take(repo: &Path) -> Option<Self> {
+        let out = git::git(repo, &["rev-parse", "--path-format=absolute", "--git-path", "index"]).ok()?;
+        let index = PathBuf::from(out.trim());
+        let copy = index.with_extension("mira-backup");
+        std::fs::copy(&index, &copy).ok()?;
+        Some(Self { index, copy })
+    }
+
+    /// Put the copy back in place (a rename: git never sees half an index).
+    fn restore(self) {
+        let _ = std::fs::rename(&self.copy, &self.index);
+    }
+}
+
+impl Drop for IndexBackup {
+    fn drop(&mut self) {
+        // Gone already after `restore`.
+        let _ = std::fs::remove_file(&self.copy);
     }
 }
 
@@ -702,6 +767,25 @@ mod tests {
     }
 
     #[test]
+    fn discard_leaves_nested_repositories_and_does_the_rest() {
+        let dir = repo("discard-nested");
+        std::fs::create_dir_all(dir.join("sub/.git")).unwrap();
+        // Only the nested repository: nothing happens, not even a snapshot.
+        let err = discard_in(&dir, vec![("sub/".into(), 'U')]).err().unwrap_or_default();
+        assert!(err.starts_with("nothing was discarded"), "{err}");
+        std::fs::write(dir.join("a.txt"), "edited\n").unwrap();
+        let out = discard_in(&dir, vec![("a.txt".into(), 'M'), ("sub/".into(), 'U')]);
+        let Ok(GitOutcome::Discarded { done, error: None, close_diffs: true, paths, .. }) = out else {
+            panic!("expected a clean discard")
+        };
+        assert!(done.contains("sub/ is a folder"), "{done}");
+        assert_eq!(paths, ["a.txt"]);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "a\n");
+        assert!(dir.join("sub/.git").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_rejected_commit_all_unstages_what_it_staged() {
         let dir = repo("commit-hook");
         let hook = dir.join(".git/hooks/pre-commit");
@@ -713,6 +797,14 @@ mod tests {
         let listed = vec![("a.txt".to_string(), false), ("new.txt".to_string(), true)];
         assert!(commit_in(&dir, "edit", "", listed).is_err());
         assert_eq!(staged(&dir), "", "the index is as it was");
+        // An intent-to-add entry survives a rejected Commit All too.
+        git::git(&dir, &["add", "-N", "new.txt"]).unwrap();
+        let before = git::git(&dir, &["status", "--porcelain"]).unwrap();
+        let listed = vec![("a.txt".to_string(), false), ("new.txt".to_string(), false)];
+        assert!(commit_in(&dir, "edit", "", listed).is_err());
+        assert_eq!(git::git(&dir, &["status", "--porcelain"]).unwrap(), before);
+        assert!(!dir.join(".git/index.mira-backup").exists(), "no copy left behind");
+        git::git(&dir, &["rm", "--cached", "-q", "new.txt"]).unwrap();
         // A plain Commit leaves what you staged yourself alone.
         git::stage(&dir, &["a.txt".to_string()]).unwrap();
         assert!(commit_in(&dir, "edit", "", Vec::new()).is_err());

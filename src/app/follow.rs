@@ -207,6 +207,7 @@ impl App {
                 pane: a.pane_id.clone(),
                 status: a.agent_status,
                 seq: a.completion_seq,
+                change: a.state_change_seq,
                 agent: a.label(),
                 kind: a.agent.clone(),
                 dir: a.dir().map_or_else(|| root.clone(), Path::to_path_buf),
@@ -214,7 +215,7 @@ impl App {
             .collect();
         self.agents = here;
         let effects = self.runs.observe(&seen, persist::now());
-        if !effects.is_empty() {
+        if !effects.is_empty() || self.runs.take_touched() {
             self.state_dirty = true;
         }
         let mut tasks: Vec<Task<Msg>> = effects.into_iter().map(|e| self.run_effect(e)).collect();

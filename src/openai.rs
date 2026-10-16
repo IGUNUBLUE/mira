@@ -48,13 +48,19 @@ fn tokens_path() -> Option<PathBuf> {
 }
 
 pub fn load_tokens() -> Option<Tokens> {
-    // Rotated but not written yet: newer than the file (which the server no longer takes).
+    let on_disk = || -> Option<Tokens> { serde_json::from_str(&std::fs::read_to_string(tokens_path()?).ok()?).ok() };
+    // Rotated but not written yet: newer than the file (which the server no longer
+    // takes), unless another mira refreshed and wrote a newer pair since.
     let kept = unsaved().clone();
     if let Some(t) = kept {
+        if let Some(file) = on_disk().filter(|f| f.expires_at > t.expires_at) {
+            *unsaved() = None;
+            return Some(file);
+        }
         let _ = save_tokens(&t);
         return Some(t);
     }
-    serde_json::from_str(&std::fs::read_to_string(tokens_path()?).ok()?).ok()
+    on_disk()
 }
 
 /// Tokens a refresh got but couldn't write (disk full, permissions). The

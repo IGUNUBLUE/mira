@@ -279,6 +279,7 @@ mod tests {
             started: 10,
             finished: None,
             seen: Vec::new(),
+            last_change: None,
             files: None,
         };
         let runs = [run];

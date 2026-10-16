@@ -50,6 +50,10 @@ pub struct Run {
     /// Files of this run the user has opened since it changed them.
     #[serde(default)]
     pub seen: Vec<String>,
+    /// The pane's herdr `state_change_seq` last seen while the run was open: on
+    /// restore, the same value means the agent is still in this turn.
+    #[serde(default)]
+    pub last_change: Option<u64>,
     /// Changed files, computed from the trees (not persisted).
     #[serde(skip)]
     pub files: Option<Vec<Change>>,
@@ -97,6 +101,8 @@ pub struct Seen {
     pub pane: PaneId,
     pub status: AgentStatus,
     pub seq: Option<u64>,
+    /// herdr's `state_change_seq` for the pane.
+    pub change: Option<u64>,
     pub agent: String,
     pub kind: Option<String>,
     pub dir: PathBuf,
@@ -115,8 +121,9 @@ struct PaneTrack {
     status: AgentStatus,
     seq: Option<u64>,
     open: Option<RunId>,
-    /// `open` was restored from disk: mira didn't watch its end.
-    restored: bool,
+    /// `open` was restored from disk: mira didn't watch it meanwhile. Its
+    /// last seen herdr `state_change_seq`, if known.
+    restored: Option<Option<u64>>,
 }
 
 #[derive(Debug, Default)]
@@ -131,26 +138,40 @@ pub struct Tracker {
     origins: HashMap<String, (usize, bool)>,
     /// Paths in `origins` that are new.
     new_count: usize,
+    /// An open run's `last_change` moved since [`Tracker::take_touched`].
+    touched: bool,
 }
 
 impl Tracker {
     /// Restore saved runs. A run that was still open when mira closed (or
-    /// showed another folder) closes on the first poll: nobody watched its
-    /// agent meanwhile, which may have finished long ago and be on another
-    /// turn now. If it's busy, that turn starts a new run.
+    /// showed another folder) goes on if herdr reports no state change in its
+    /// pane since (the agent is still in that turn). Otherwise it closes on the
+    /// first poll: the agent may have finished long ago and be on another turn
+    /// now, which starts a new run.
     pub fn from_runs(runs: Vec<Run>) -> Self {
         let next = runs.iter().map(|r| r.id.0 + 1).max().unwrap_or(0);
         let panes = runs
             .iter()
             .filter(|r| r.running())
             .map(|r| {
-                let track = PaneTrack { status: AgentStatus::Working, seq: None, open: Some(r.id), restored: true };
+                // Unknown until polled: `unknown` frames then keep it unknown, not busy.
+                let track = PaneTrack {
+                    status: AgentStatus::Unknown,
+                    seq: None,
+                    open: Some(r.id),
+                    restored: Some(r.last_change),
+                };
                 (r.pane.clone(), track)
             })
             .collect();
         let mut t = Self { runs, panes, next, ..Self::default() };
         t.reindex();
         t
+    }
+
+    /// Whether a run changed in a way only worth saving (see `Run::last_change`).
+    pub fn take_touched(&mut self) -> bool {
+        std::mem::take(&mut self.touched)
     }
 
     /// The runs, oldest first.
@@ -239,7 +260,7 @@ impl Tracker {
                 status: AgentStatus::Unknown,
                 seq: s.seq,
                 open: None,
-                restored: false,
+                restored: None,
             });
             // `unknown` is a detection gap, not a transition.
             let status = if s.status == AgentStatus::Unknown { track.status } else { s.status };
@@ -250,7 +271,9 @@ impl Tracker {
             let replaced = open.and_then(|id| self.get(id)).is_some_and(
                 |r| matches!((r.kind.as_deref(), s.kind.as_deref()), (Some(was), Some(now)) if was != now),
             );
-            let restored = track.restored && open.is_some();
+            // A restored run whose pane changed state since: its turn is over.
+            let restored = open.is_some()
+                && track.restored.is_some_and(|last| last.is_none() || s.change.is_none() || last != s.change);
             // Finished and immediately busy again within one poll: same turn.
             let continued = seq_moved && status.busy() && !replaced && !restored;
             if let Some(id) = open
@@ -279,7 +302,14 @@ impl Tracker {
                 };
                 open = Some(id);
             }
-            self.panes.insert(s.pane.clone(), PaneTrack { status, seq: s.seq.or(track.seq), open, restored: false });
+            if let Some(id) = open
+                && let Some(r) = self.get_mut(id)
+                && r.last_change != s.change
+            {
+                r.last_change = s.change;
+                self.touched = true;
+            }
+            self.panes.insert(s.pane.clone(), PaneTrack { status, seq: s.seq.or(track.seq), open, restored: None });
         }
         // Agents that left (exited, closed, moved out of this folder).
         let gone: Vec<PaneId> = self.panes.keys().filter(|p| !seen.iter().any(|s| &s.pane == *p)).cloned().collect();
@@ -313,6 +343,7 @@ impl Tracker {
             started: now,
             finished: None,
             seen: Vec::new(),
+            last_change: s.change,
             files: None,
         });
         id
@@ -370,6 +401,7 @@ mod tests {
             pane: PaneId(pane.into()),
             status,
             seq,
+            change: None,
             agent: "codex".into(),
             kind: Some("codex".into()),
             dir: PathBuf::from("/repo"),
@@ -512,6 +544,26 @@ mod tests {
     }
 
     #[test]
+    fn a_restored_run_whose_pane_did_nothing_since_goes_on() {
+        let mut t = Tracker::default();
+        let mut busy = seen("w1:p1", Working, None);
+        busy.change = Some(41);
+        t.observe(std::slice::from_ref(&busy), 1);
+        // A glance at another workspace (or a restart): herdr saw no state change.
+        let mut back = Tracker::from_runs(t.runs.clone());
+        assert_eq!(back.observe(std::slice::from_ref(&busy), 8), vec![], "the same turn, still one run");
+        let mut done = seen("w1:p1", Idle, Some(42));
+        done.change = Some(42);
+        assert_eq!(back.observe(&[done], 20), vec![Effect::After(RunId(0))]);
+        // Its pane changed state meanwhile and herdr can't tell now: closed, nothing new opened.
+        t.observe(&[seen("w1:p1", Working, None)], 30);
+        let mut back = Tracker::from_runs(t.runs.clone());
+        let mut unsure = seen("w1:p1", Unknown, None);
+        unsure.change = Some(50);
+        assert_eq!(back.observe(&[unsure], 40), vec![Effect::After(RunId(0))]);
+    }
+
+    #[test]
     fn a_different_agent_in_a_restored_pane_closes_the_old_run() {
         let mut t = Tracker::default();
         t.observe(&[seen("w1:p1", Working, None)], 1);
@@ -557,6 +609,7 @@ mod e2e {
                     pane: a.pane_id.clone(),
                     status: a.agent_status,
                     seq: a.completion_seq,
+                    change: a.state_change_seq,
                     agent: a.label(),
                     kind: a.agent.clone(),
                     dir: a.dir().map(std::path::Path::to_path_buf).unwrap_or_default(),

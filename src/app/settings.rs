@@ -196,8 +196,10 @@ impl App {
                 self.save_drafts();
             }
             Msg::OpenConfigFile => {
-                // What was typed is saved first, as when the dialog closes.
-                if !self.save_drafts() {
+                // What was typed is saved first, as when the dialog closes (and as
+                // there, a second click goes on without a value that can't be saved).
+                let seen = self.settings_error.is_some();
+                if !self.save_drafts() && !seen {
                     return Task::none();
                 }
                 let Some(path) = persist::config_dir().map(|d| d.join("config")) else { return Task::none() };

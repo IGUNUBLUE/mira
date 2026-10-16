@@ -358,19 +358,26 @@ pub fn stage(root: &Path, paths: &[String]) -> Result<String, String> {
 pub fn discard(root: &Path, files: &[(String, char)]) -> Result<String, String> {
     // Checked before touching anything: an untracked folder is a nested repository (git
     // lists it as `sub/`), and deleting it here would take its history with it.
-    if let Some((path, _)) = files.iter().find(|(p, c)| *c == 'U' && (p.ends_with('/') || root.join(p).is_dir())) {
+    if let Some(path) = untracked_folders(root, files).first() {
         return Err(format!(
             "{path} is a folder (a nested repository?): nothing was discarded; remove it in a terminal"
         ));
     }
-    let tracked: Vec<&str> = files.iter().filter(|(_, code)| *code != 'U').map(|(p, _)| p.as_str()).collect();
+    // `A` in the worktree column is an intent-to-add entry (`git add -N`): restoring it
+    // would empty the file. It goes like an untracked file, out of the index too.
+    let tracked: Vec<&str> =
+        files.iter().filter(|(_, code)| !matches!(code, 'U' | 'A')).map(|(p, _)| p.as_str()).collect();
     if !tracked.is_empty() {
         git_paths(root, &["restore", "--worktree"], &tracked)?;
+    }
+    let added: Vec<&str> = files.iter().filter(|(_, code)| *code == 'A').map(|(p, _)| p.as_str()).collect();
+    if !added.is_empty() {
+        git_paths(root, &["rm", "--cached", "-q", "--ignore-unmatch"], &added)?;
     }
     // Every untracked file is tried; the failures are reported together.
     let failed: Vec<String> = files
         .iter()
-        .filter(|(_, code)| *code == 'U')
+        .filter(|(_, code)| matches!(code, 'U' | 'A'))
         .filter_map(|(path, _)| match std::fs::remove_file(root.join(path)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Some(format!("{path}: {e}")),
             _ => None,
@@ -380,6 +387,17 @@ pub fn discard(root: &Path, files: &[(String, char)]) -> Result<String, String> 
         return Err(failed.join("; "));
     }
     Ok(format!("Discarded {} file{}", files.len(), if files.len() == 1 { "" } else { "s" }))
+}
+
+/// The untracked entries of `files` that are folders (git lists a nested
+/// repository as `sub/`). A symlink to a folder is a file here: removing it
+/// leaves the folder alone.
+pub fn untracked_folders(root: &Path, files: &[(String, char)]) -> Vec<String> {
+    files
+        .iter()
+        .filter(|(p, c)| *c == 'U' && (p.ends_with('/') || root.join(p).symlink_metadata().is_ok_and(|m| m.is_dir())))
+        .map(|(p, _)| p.clone())
+        .collect()
 }
 
 /// git's diff of one file (`--cached`: HEAD ⇄ index), as `git apply` reads
@@ -889,6 +907,30 @@ mod snapshot_tests {
             assert!(e.contains("ro/f.txt"), "{e}");
         }
         assert!(!dir.join("loose.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discard_removes_links_to_folders_and_intent_to_add_renames() {
+        let dir = repo();
+        let id = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
+        std::fs::create_dir_all(dir.join("shared")).unwrap();
+        std::fs::write(dir.join("shared/keep.txt"), "x").unwrap();
+        std::fs::write(dir.join("old.txt"), "some text long enough to be a rename\n").unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &[&id[..], &["commit", "-qm", "base"]].concat()).unwrap();
+        // A link to a folder is a file to git (`?? lib`): it goes, the folder stays.
+        std::os::unix::fs::symlink("shared", dir.join("lib")).unwrap();
+        assert!(untracked_folders(&dir, &[("lib".into(), 'U')]).is_empty());
+        discard(&dir, &[("lib".into(), 'U')]).unwrap();
+        assert!(dir.join("lib").symlink_metadata().is_err() && dir.join("shared/keep.txt").exists());
+        // ` R new.txt <- old.txt`: the new name goes, the old file comes back whole.
+        std::fs::rename(dir.join("old.txt"), dir.join("new.txt")).unwrap();
+        git(&dir, &["add", "-N", "new.txt"]).unwrap();
+        discard(&dir, &[("new.txt".into(), 'A'), ("old.txt".into(), 'D')]).unwrap();
+        assert!(!dir.join("new.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("old.txt")).unwrap(), "some text long enough to be a rename\n");
+        assert!(git(&dir, &["status", "--porcelain"]).unwrap().trim().is_empty(), "clean again");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -28,10 +28,15 @@ impl App {
             }
             // A name being typed in Files: Escape cancels it. Its input has already
             // dropped the keyboard by now (text inputs unfocus on Escape), so this
-            // doesn't ask which widget had it; a name left behind (the editor was
-            // clicked) goes with one Escape too, and Files hidden drops it (layout).
+            // asks only whether the terminal has it (an agent interrupted there keeps
+            // the name). A name left behind (the editor was clicked) goes with one
+            // Escape too, and Files hidden drops it (layout).
             if self.name_edit.is_some() {
-                return self.update(Msg::ExplorerNameCancel);
+                let cancel = |terminal: bool| if terminal { Task::none() } else { Task::done(Msg::ExplorerNameCancel) };
+                return match &self.term {
+                    Some(t) => iced::widget::operation::is_focused(t.widget_id().clone()).then(cancel),
+                    None => cancel(false),
+                };
             }
             self.on_escape(captured)
         } else {

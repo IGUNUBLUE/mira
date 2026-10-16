@@ -76,6 +76,10 @@ pub struct Agent {
     /// Changes every time a working period completes.
     #[serde(default)]
     pub completion_seq: Option<u64>,
+    /// herdr's counter of agent state changes, as of this pane's last one
+    /// (unchanged = nothing happened in the pane since).
+    #[serde(default)]
+    pub state_change_seq: Option<u64>,
 }
 
 impl Agent {
