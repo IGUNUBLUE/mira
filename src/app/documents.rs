@@ -537,10 +537,27 @@ impl App {
 
     /// Save tab `i`. Autosave (`manual == false`) never overwrites a file that
     /// changed on disk since it was loaded (an agent may have written it): it
-    /// pauses for that tab and says so; Ctrl+S still overwrites.
+    /// pauses for that tab and says so. Ctrl+S overwrites it only when pressed
+    /// again (see [`manual_save`]).
     pub(super) fn save_tab(&mut self, i: usize, manual: bool) -> bool {
         let Some(Tab::File(t)) = self.tabs.get_mut(i) else { return false };
-        if !manual {
+        if manual {
+            let changed = mtime(&t.path) != t.mtime;
+            let confirmed = self.pending_overwrite.as_ref() == Some(&t.path);
+            match manual_save(t.dirty, t.conflict, changed, confirmed) {
+                SaveCheck::Skip => return false,
+                SaveCheck::Write => self.pending_overwrite = None,
+                SaveCheck::Confirm => {
+                    let name = file_name(&t.path);
+                    let what = if mtime(&t.path).is_none() { "was deleted on disk" } else { "changed on disk" };
+                    self.pending_overwrite = Some(t.path.clone());
+                    self.set_confirm(&format!(
+                        "{name} {what} — Ctrl+S again replaces it with your version · Esc cancels"
+                    ));
+                    return false;
+                }
+            }
+        } else {
             if !t.dirty || t.conflict {
                 return false;
             }
@@ -548,7 +565,7 @@ impl App {
                 t.conflict = true;
                 let name = file_name(&t.path);
                 self.set_status(
-                    format!("{name} changed on disk — autosave paused for it; Ctrl+S overwrites the file"),
+                    format!("{name} changed on disk — autosave paused for it; Ctrl+S twice replaces it"),
                     true,
                 );
                 return false;
@@ -586,6 +603,7 @@ impl App {
     pub(super) fn reload_changed_files(&mut self) {
         let view = self.editor_view;
         let mut deleted = Vec::new();
+        let mut unreadable = Vec::new();
         for tab in &mut self.tabs {
             if let Tab::Image(t) = tab {
                 // An agent re-rendered a screenshot or an icon: show the new one.
@@ -614,7 +632,17 @@ impl App {
                 deleted.push(file_name(&t.path));
                 continue;
             }
-            if let Ok(text) = read_text(&t.path) {
+            let text = match read_text(&t.path) {
+                Ok(text) => text,
+                // Too large, binary or unreadable now: keep the text, and keep autosave
+                // from writing it over the new file (that would undo the agent's change).
+                Err(e) => {
+                    t.conflict = true;
+                    unreadable.push(format!("{}: {e}", file_name(&t.path)));
+                    continue;
+                }
+            };
+            {
                 t.conflict = false;
                 let old = t.content.text();
                 let before = t.content.cursor();
@@ -633,10 +661,37 @@ impl App {
                 t.refind();
             }
         }
+        if let Some(first) = unreadable.first() {
+            self.set_status(format!("{first} — not reloaded; autosave paused for it"), true);
+        }
         if let Some(first) = deleted.first() {
             let more = if deleted.len() > 1 { format!(" (and {} more)", deleted.len() - 1) } else { String::new() };
-            self.set_status(format!("{first}{more} deleted on disk — autosave paused; Ctrl+S writes it again"), true);
+            self.set_status(
+                format!("{first}{more} deleted on disk — autosave paused; Ctrl+S twice writes it again"),
+                true,
+            );
         }
+    }
+}
+
+/// What Ctrl+S does with a tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SaveCheck {
+    /// Nothing to save (writing a clean buffer could only undo a newer file).
+    Skip,
+    Write,
+    /// The file changed or vanished since it was loaded: ask before replacing it.
+    Confirm,
+}
+
+/// `conflict`: autosave paused (the file changed, vanished or can't be read);
+/// a clean tab in conflict is one whose file was deleted, which Ctrl+S writes back.
+fn manual_save(dirty: bool, conflict: bool, disk_changed: bool, confirmed: bool) -> SaveCheck {
+    match (dirty || conflict, conflict || disk_changed) {
+        (false, _) => SaveCheck::Skip,
+        (true, false) => SaveCheck::Write,
+        (true, true) if confirmed => SaveCheck::Write,
+        (true, true) => SaveCheck::Confirm,
     }
 }
 
@@ -674,6 +729,17 @@ impl FileTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctrl_s_never_silently_replaces_a_newer_file() {
+        use SaveCheck::*;
+        assert_eq!(manual_save(false, false, true, false), Skip, "a clean tab writes nothing");
+        assert_eq!(manual_save(true, false, false, false), Write);
+        assert_eq!(manual_save(true, false, true, false), Confirm, "changed on disk: ask");
+        assert_eq!(manual_save(true, true, false, false), Confirm, "a conflict: ask");
+        assert_eq!(manual_save(true, true, true, true), Write, "asked and pressed again");
+        assert_eq!(manual_save(false, true, true, false), Confirm, "deleted on disk: written back after asking");
+    }
 
     #[test]
     fn autosave_setting_follows_vscodium_names() {

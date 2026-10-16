@@ -567,7 +567,10 @@ impl App {
     }
 
     /// Run one git action at a time in the repository, off the UI thread.
-    pub(super) fn git_task(&mut self, op: impl FnOnce(&Path) -> Result<GitOutcome, String> + Send + 'static) -> Task<Msg> {
+    pub(super) fn git_task(
+        &mut self,
+        op: impl FnOnce(&Path) -> Result<GitOutcome, String> + Send + 'static,
+    ) -> Task<Msg> {
         if self.git_busy {
             return Task::none();
         }

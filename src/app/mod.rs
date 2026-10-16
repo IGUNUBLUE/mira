@@ -116,6 +116,10 @@ pub struct App {
     pub active_tab: Option<usize>,
     /// The dirty file tab a first close attempt warned about.
     pub pending_close: Option<PathBuf>,
+    /// A first Ctrl+S on a file that changed on disk (the next one replaces it).
+    pending_overwrite: Option<PathBuf>,
+    /// A first close of the window with unsaved edits (the next one quits).
+    confirm_quit: bool,
 
     // inspectors
     pub explorer: Explorer,
@@ -498,6 +502,8 @@ impl App {
             editor_view: None,
             active_tab: None,
             pending_close: None,
+            pending_overwrite: None,
+            confirm_quit: false,
             git: Snapshot::default(),
             repo_prefix: String::new(),
             refreshing: false,
@@ -650,7 +656,11 @@ impl App {
             || self.confirm_replace
             || self.confirm_signout
             || self.confirm_discard_all
-            || self.pending_close.is_some();
+            || self.pending_close.is_some()
+            || self.pending_overwrite.is_some()
+            || self.confirm_quit;
+        self.pending_overwrite = None;
+        self.confirm_quit = false;
         self.confirm_revert = None;
         self.confirm_replace = false;
         self.confirm_signout = false;
@@ -673,6 +683,26 @@ impl App {
             Msg::CloseRequested => {
                 if self.autosave != AutoSave::Off {
                     self.save_dirty_tabs();
+                }
+                // What autosave couldn't write (it's off, or the file changed on disk) is
+                // only lost after a second close.
+                let unsaved: Vec<String> = self
+                    .tabs
+                    .iter()
+                    .filter_map(|t| match t {
+                        Tab::File(f) if f.dirty => Some(file_name(&f.path)),
+                        _ => None,
+                    })
+                    .collect();
+                if !unsaved.is_empty() && !self.confirm_quit {
+                    self.clear_confirms();
+                    self.confirm_quit = true;
+                    let what = match unsaved.as_slice() {
+                        [one] => format!("{one} has unsaved edits"),
+                        many => format!("{} files have unsaved edits", many.len()),
+                    };
+                    self.set_confirm(&format!("{what} — close again to discard them · Ctrl+S saves · Esc cancels"));
+                    return Task::none();
                 }
                 self.save_state();
                 iced::exit()

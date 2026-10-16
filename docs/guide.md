@@ -155,7 +155,9 @@ command are the stable options. See [privacy](privacy.md) for exactly what is se
   step per word as in VS Code. A reload caused by an agent is undoable too.
 - **Autosave** is on: files save 1 s after you stop typing, and when you leave the window,
   close a tab or quit. It never overwrites a file that changed on disk under your edits (for
-  example, an agent wrote it): it pauses for that tab and tells you; `Ctrl+S` overwrites.
+  example, an agent wrote it): it pauses for that tab and tells you; pressing `Ctrl+S` twice
+  replaces the file with your version. Closing the window with edits that couldn't be saved asks
+  for a second close.
 - **Search & replace** respects `.gitignore`, with match case, whole word and regex options.
   Replace all works line by line, exactly like the results show, and asks for a second click.
 - **Files** shows the tree with git status colors; ignored files are dimmed. Right-click a file
