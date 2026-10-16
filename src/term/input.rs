@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn control_letters_and_symbols() {
         assert_eq!(k(ch("c"), None, Modifiers::CTRL), [0x03]);
-        // iced_term sent 'Q' here.
+        // Kill line (0x15), not 0x51.
         assert_eq!(k(ch("u"), None, Modifiers::CTRL), [0x15]);
         assert_eq!(k(ch("U"), None, Modifiers::CTRL | Modifiers::SHIFT), [0x15]);
         assert_eq!(k(ch("["), None, Modifiers::CTRL), [0x1b]);

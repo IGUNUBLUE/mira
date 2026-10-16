@@ -26,7 +26,7 @@ use iced::alignment::Vertical;
 use iced::keyboard::{self, Key, Modifiers, key::Named};
 use iced::{Color, Element, Event, Font, Length, Pixels, Point, Rectangle, Size};
 
-/// Line height, relative to the font size (what iced_term used).
+/// Line height, relative to the font size.
 const LINE_HEIGHT: f32 = 1.3;
 
 /// mira's shortcuts that must reach the app while the terminal has focus
