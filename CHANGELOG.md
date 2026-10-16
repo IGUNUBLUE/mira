@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1]
+
 ### Fixed
 
 - Paths with glob characters (`app/[id]/page.tsx`) no longer also stage, discard or revert
