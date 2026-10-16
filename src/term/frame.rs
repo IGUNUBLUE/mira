@@ -220,11 +220,10 @@ pub fn build<T: EventListener>(term: &Term<T>, p: &Palette, links: &[(usize, Ran
     let selection = content.selection;
 
     for indexed in content.display_iter {
-        let Ok(line) = usize::try_from(indexed.point.line.0 + offset as i32) else { continue };
-        let col = indexed.point.column.0;
-        if line >= lines || col >= cols {
-            continue;
-        }
+        // The display iterator stays on screen; checked anyway, so a cell can never land outside.
+        let (line, col) =
+            (usize::try_from(indexed.point.line.0 + offset as i32).unwrap_or(lines), indexed.point.column.0);
+        let Some(slot) = (line < lines && col < cols).then_some(line * cols + col) else { continue };
         let cell = &indexed.cell;
         let flags = cell.flags;
         let fg_color = if flags.contains(Flags::DIM) { dimmed(cell.fg).unwrap_or(cell.fg) } else { cell.fg };
@@ -249,7 +248,7 @@ pub fn build<T: EventListener>(term: &Term<T>, p: &Palette, links: &[(usize, Ran
         if links.iter().any(|(l, r)| *l == line && r.contains(&col)) {
             u = Underline::Single;
         }
-        cells[line * cols + col] = Cell {
+        cells[slot] = Cell {
             c: cell.c,
             extra,
             fg,
@@ -316,33 +315,64 @@ mod tests {
         &PALETTES[0]
     }
 
+    /// The snapshot copies only the visible rows: with a full history it must
+    /// beat cloning the grid (what iced_term did on every sync) by far. Timings:
+    /// `MIRA_BENCH=1 cargo test --release snapshot_beats -- --nocapture`.
     #[test]
-    #[ignore = "benchmark: cargo test --release -- --ignored bench_snapshot --nocapture"]
-    fn bench_snapshot() {
-        // A 200×50 screen with a full 10k-line history of colored text.
+    fn snapshot_beats_cloning_the_grid() {
+        let full = std::env::var_os("MIRA_BENCH").is_some();
         let mut text = String::new();
-        for i in 0..10_050 {
-            text.push_str(&format!(
-                "\x1b[3{}m{i:>6} lorem ipsum dolor sit amet \x1b[44m consectetur \x1b[0m adipiscing\r\n",
-                i % 8
-            ));
+        for i in 0..if full { 10_050 } else { 2_050 } {
+            text.push_str(&format!("\x1b[3{}m{i:>6} lorem ipsum \x1b[44m dolor \x1b[0m sit amet\r\n", i % 8));
         }
-        let mut t = Term::new(Config::default(), &TermSize::new(200, 50), VoidListener);
+        let mut t = Term::new(Config::default(), &TermSize::new(120, 40), VoidListener);
         let mut parser: Processor = Processor::new();
         parser.advance(&mut t, text.as_bytes());
-        let n = 1000;
-        let start = std::time::Instant::now();
-        for _ in 0..n {
-            std::hint::black_box(build(&t, p(), &[]));
-        }
-        let ours = start.elapsed() / n;
-        let start = std::time::Instant::now();
-        for _ in 0..n {
-            // What iced_term did on every sync.
-            std::hint::black_box(t.grid().clone());
-        }
-        let clone = start.elapsed() / n;
-        println!("snapshot of the visible rows: {ours:?}; whole-grid clone (iced_term): {clone:?}");
+        let n = if full { 1000 } else { 20 };
+        let time = |f: &dyn Fn()| {
+            let start = std::time::Instant::now();
+            (0..n).for_each(|_| f());
+            start.elapsed() / n
+        };
+        let ours = time(&|| drop(std::hint::black_box(build(&t, p(), &[]))));
+        let clone = time(&|| drop(std::hint::black_box(t.grid().clone())));
+        println!("visible rows: {ours:?}; whole grid: {clone:?}");
+        assert!(ours * 3 < clone, "{ours:?} vs {clone:?}");
+    }
+
+    #[test]
+    fn xterm_colors_dim_variants_and_every_underline() {
+        assert_eq!(palette_rgb(16 + 36 + 6 + 1, p()), Rgb { r: 95, g: 95, b: 95 });
+        assert_eq!(palette_rgb(196, p()), Rgb { r: 255, g: 0, b: 0 });
+        assert_eq!(palette_rgb(244, p()), Rgb { r: 128, g: 128, b: 128 });
+        assert_eq!(palette_rgb(260, p()), dim(hex(p().ansi[1]), to_rgb(p().bg)));
+        assert_eq!(palette_rgb(268, p()), to_rgb(p().muted));
+        // Indexed and direct colors, dimmed by mixing when there is no named dim color.
+        let t = term(6, 1, "\x1b[38;5;196mA\x1b[2;38;2;200;0;0mB\x1b[0m\x1b[4:2mC\x1b[4:4mD\x1b[4:5mE");
+        let r = build(&t, p(), &[]);
+        let r = r.row(0);
+        assert_eq!(r[0].fg, Rgb { r: 255, g: 0, b: 0 });
+        assert_eq!(r[1].fg, dim(Rgb { r: 200, g: 0, b: 0 }, to_rgb(p().bg)));
+        assert_eq!(
+            [r[2].underline, r[3].underline, r[4].underline],
+            [Underline::Double, Underline::Dotted, Underline::Dashed]
+        );
+        // An underline in its own color (SGR 58).
+        let t = term(2, 1, "\x1b[4;58;2;1;2;3mx");
+        assert_eq!(build(&t, p(), &[]).row(0)[0].underline_color, Some(Rgb { r: 1, g: 2, b: 3 }));
+    }
+
+    #[test]
+    fn the_selection_is_highlighted() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut t = term(8, 1, "abcdef");
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(1)), Side::Left);
+        sel.update(Point::new(Line(0), Column(2)), Side::Right);
+        t.selection = Some(sel);
+        let f = build(&t, p(), &[]);
+        let selected: Vec<bool> = f.row(0).iter().map(|c| c.bg == Some(to_rgb(p().selection))).collect();
+        assert_eq!(selected, [false, true, true, false, false, false, false, false]);
     }
 
     #[test]

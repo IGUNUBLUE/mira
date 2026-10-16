@@ -298,6 +298,48 @@ mod tests {
     }
 
     #[test]
+    fn every_named_key_and_control_code() {
+        let n = |key| String::from_utf8(k(Key::Named(key), None, NONE)).unwrap();
+        let table = [
+            (Named::Escape, "\x1b"),
+            (Named::Tab, "\t"),
+            (Named::Space, " "),
+            (Named::ArrowDown, "\x1b[B"),
+            (Named::ArrowRight, "\x1b[C"),
+            (Named::End, "\x1b[F"),
+            (Named::Insert, "\x1b[2~"),
+            (Named::PageDown, "\x1b[6~"),
+            (Named::F2, "\x1bOQ"),
+            (Named::F3, "\x1bOR"),
+            (Named::F6, "\x1b[17~"),
+            (Named::F7, "\x1b[18~"),
+            (Named::F8, "\x1b[19~"),
+            (Named::F9, "\x1b[20~"),
+            (Named::F10, "\x1b[21~"),
+            (Named::F11, "\x1b[23~"),
+            (Named::F13, "\x1b[25~"),
+            (Named::F14, "\x1b[26~"),
+            (Named::F15, "\x1b[28~"),
+            (Named::F16, "\x1b[29~"),
+            (Named::F17, "\x1b[31~"),
+            (Named::F18, "\x1b[32~"),
+            (Named::F19, "\x1b[33~"),
+            (Named::F20, "\x1b[34~"),
+        ];
+        for (key, seq) in table {
+            assert_eq!(n(key), seq, "{key:?}");
+        }
+        let ctrl = |c: &str| k(ch(c), None, Modifiers::CTRL);
+        let codes = [("@", 0), (" ", 0), ("3", 0x1b), ("\\", 0x1c), ("4", 0x1c), ("]", 0x1d), ("5", 0x1d)];
+        let more = [("^", 0x1e), ("6", 0x1e), ("_", 0x1f), ("-", 0x1f), ("7", 0x1f), ("?", 0x7f), ("8", 0x7f)];
+        for (c, code) in codes.into_iter().chain(more) {
+            assert_eq!(ctrl(c), [code], "Ctrl+{c}");
+        }
+        // Ctrl with a key that has no code and types nothing sends nothing.
+        assert_eq!(super::key(&ch("."), None, Modifiers::CTRL, TermMode::empty()), None);
+    }
+
+    #[test]
     fn application_cursor_mode_uses_ss3() {
         let app = TermMode::APP_CURSOR;
         assert_eq!(super::key(&Key::Named(Named::ArrowUp), None, NONE, app), Some(b"\x1bOA".to_vec()));
@@ -334,6 +376,9 @@ mod tests {
         assert_eq!(mouse_report(MouseEvent::Press(Button::Left), 0, 300, NONE, normal), None);
         let utf8 = mouse_report(MouseEvent::Press(Button::Left), 0, 300, NONE, TermMode::UTF8_MOUSE).unwrap();
         assert_eq!(&utf8[4..], "\u{14d}!".as_bytes());
+        // Columns 95–222 fit in one byte without UTF-8; past 2014 nothing can say it.
+        assert_eq!(mouse_report(MouseEvent::Press(Button::Left), 0, 150, NONE, normal).map(|r| r[4]), Some(183));
+        assert_eq!(mouse_report(MouseEvent::Press(Button::Left), 0, 3000, NONE, TermMode::UTF8_MOUSE), None);
     }
 
     #[test]

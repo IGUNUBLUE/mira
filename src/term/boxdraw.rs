@@ -140,6 +140,29 @@ mod tests {
     }
 
     #[test]
+    fn every_glyph_stays_inside_its_cell() {
+        let all = "─━│┃┌╭┐╮└╰┘╯├┤┬┴┼┏┓┗┛┣┫┳┻╋╴╵╶╷█▀▔▁▂▃▄▅▆▇▐▕▉▊▋▌▍▎▏░▒▓";
+        for c in all.chars() {
+            let Some(p) = pieces(c, 9.0, 19.0) else { panic!("{c} is drawn") };
+            assert!(!p.is_empty(), "{c}");
+            for piece in p {
+                assert!(piece.w > 0.0 && piece.h > 0.0, "{c}: {piece:?}");
+                assert!(
+                    piece.x >= 0.0 && piece.y >= 0.0 && piece.x + piece.w <= 9.0 && piece.y + piece.h <= 19.0,
+                    "{c}: {piece:?}"
+                );
+            }
+        }
+        // A heavy tee: its arms are twice as thick.
+        let t = pieces('┣', 8.0, 16.0).unwrap();
+        assert_eq!((t[0].w, t[2].h), (2.0, 2.0));
+        assert_eq!(pieces('▐', 8.0, 16.0), Some(vec![rect(4.0, 0.0, 4.0, 16.0)]));
+        assert_eq!(pieces('▕', 8.0, 16.0), Some(vec![rect(7.0, 0.0, 1.0, 16.0)]));
+        assert_eq!(pieces('▀', 8.0, 16.0), Some(vec![rect(0.0, 0.0, 8.0, 8.0)]));
+        assert_eq!(pieces('▔', 8.0, 16.0), Some(vec![rect(0.0, 0.0, 8.0, 2.0)]));
+    }
+
+    #[test]
     fn blocks_and_shades() {
         assert_eq!(pieces('█', 8.0, 16.0), Some(vec![rect(0.0, 0.0, 8.0, 16.0)]));
         assert_eq!(pieces('▄', 8.0, 16.0), Some(vec![rect(0.0, 8.0, 8.0, 8.0)]));

@@ -692,21 +692,26 @@ struct Glyph {
 /// What to draw for the text of `row`. `block`: the block cursor's column and
 /// the color of the character under it.
 fn glyphs(row: &[Cell], block: Option<(usize, Rgb)>) -> Vec<Glyph> {
-    let mut out: Vec<Glyph> = Vec::new();
-    // The run being collected: (first column, text, fg, bold, italic).
-    let mut run: Option<Glyph> = None;
-    let flush = |run: &mut Option<Glyph>, out: &mut Vec<Glyph>| {
-        let Some(mut g) = run.take() else { return };
-        let GlyphKind::Run(text) = &g.kind else { return };
+    /// A run of plain ASCII being collected.
+    struct Pending {
+        col: usize,
+        text: String,
+        fg: Rgb,
+        bold: bool,
+        italic: bool,
+    }
+    let flush = |run: &mut Option<Pending>, out: &mut Vec<Glyph>| {
+        let Some(p) = run.take() else { return };
         // Spaces cost nothing to skip: the run starts at its first letter.
-        let lead = text.len() - text.trim_start().len();
-        let trimmed = text.trim();
+        let lead = p.text.len() - p.text.trim_start().len();
+        let trimmed = p.text.trim();
         if !trimmed.is_empty() {
-            g.col += lead;
-            g.kind = GlyphKind::Run(trimmed.to_string());
-            out.push(g);
+            let kind = GlyphKind::Run(trimmed.to_string());
+            out.push(Glyph { col: p.col + lead, kind, fg: p.fg, bold: p.bold, italic: p.italic });
         }
     };
+    let mut out: Vec<Glyph> = Vec::new();
+    let mut run: Option<Pending> = None;
     for (i, c) in row.iter().enumerate() {
         if c.spacer || c.hidden {
             flush(&mut run, &mut out);
@@ -718,20 +723,10 @@ fn glyphs(row: &[Cell], block: Option<(usize, Rgb)>) -> Vec<Glyph> {
         };
         if is_plain(c) {
             match &mut run {
-                Some(g) if (g.fg, g.bold, g.italic) == (fg, c.bold, c.italic) => {
-                    if let GlyphKind::Run(text) = &mut g.kind {
-                        text.push(c.c);
-                    }
-                }
+                Some(p) if (p.fg, p.bold, p.italic) == (fg, c.bold, c.italic) => p.text.push(c.c),
                 _ => {
                     flush(&mut run, &mut out);
-                    run = Some(Glyph {
-                        col: i,
-                        kind: GlyphKind::Run(c.c.to_string()),
-                        fg,
-                        bold: c.bold,
-                        italic: c.italic,
-                    });
+                    run = Some(Pending { col: i, text: c.c.to_string(), fg, bold: c.bold, italic: c.italic });
                 }
             }
             continue;
@@ -849,6 +844,8 @@ mod tests {
         assert!(matches!(a.as_slice(), [Action::Scroll(3)]));
         let (a, _) = run(&mut s, wheel(-2.0), at(5.0, 5.0), &ctx(TermMode::SGR_MOUSE | TermMode::MOUSE_REPORT_CLICK));
         assert_eq!(reports(&a), ["\x1b[<65;1;1M", "\x1b[<65;1;1M"]);
+        let (a, _) = run(&mut s, wheel(1.0), at(5.0, 5.0), &ctx(TermMode::SGR_MOUSE | TermMode::MOUSE_REPORT_CLICK));
+        assert_eq!(reports(&a), ["\x1b[<64;1;1M"]);
         let pager = TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL;
         let (a, _) = run(&mut s, wheel(1.0), at(5.0, 5.0), &ctx(pager));
         assert_eq!(reports(&a), ["\x1b[A\x1b[A\x1b[A"]);
@@ -1060,6 +1057,53 @@ mod tests {
     }
 
     #[test]
+    fn every_underline_wide_text_and_what_does_not_fit() {
+        let f = frame_of(12, 1, "\x1b[4:2ma\x1b[4:3mb\x1b[4:4mc\x1b[4:5md\x1b[0m日e\u{301}\x1b[9mz\x1b[?25l");
+        let ops = painted(&f, true);
+        let bars = |col: usize| {
+            let x = 100.0 + col as f32 * 8.0;
+            ops.iter().filter(|o| matches!(o, Op::Quad(r, _) if r.height == 1.0 && r.x >= x && r.x < x + 8.0)).count()
+        };
+        // Double: two bars; curly, dotted and dashed: several short ones.
+        assert_eq!(bars(0), 2);
+        assert!(bars(1) >= 2 && bars(2) >= 3 && bars(3) >= 2, "{ops:?}");
+        // Struck through without an underline: one bar in the middle.
+        assert_eq!(bars(7), 1);
+        // The wide character and the combined accent are drawn on their own, centered.
+        assert!(ops.contains(&Op::Text("日".into(), Point::new(140.0, 20.0), color(f.row(0)[4].fg), false)));
+        assert!(ops.iter().any(|o| matches!(o, Op::Text(t, p, _, _) if t == "e\u{301}" && p.x == 152.0)));
+        // Italic text, and an underline and the cursor across a wide character.
+        let wide = frame_of(6, 1, "\x1b[3mi\x1b[0m\x1b[4m日\x1b[0m\x1b[D\x1b[D");
+        let ops = painted(&wide, true);
+        assert!(ops.contains(&Op::Quad(rect(108.0, 28.0, 16.0, 1.0), color(wide.row(0)[1].fg))), "{ops:?}");
+        assert!(ops.contains(&Op::Quad(rect(108.0, 10.0, 16.0, 20.0), color(wide.cursor.unwrap().color))));
+        let look = Look { font: Font::MONOSPACE, size: 14.0, cell: CELL, focused: true };
+        let mut r = Recorder::default();
+        texts(&mut r, wide.row(0), 0.0, 0.0, &look, None);
+        assert!(matches!(r.0.first(), Some(Op::Text(t, ..)) if t == "i"));
+        assert!(glyphs(wide.row(0), None)[0].italic);
+        // Rows past the bounds are not drawn.
+        let look = Look { font: Font::MONOSPACE, size: 14.0, cell: CELL, focused: true };
+        let two = frame_of(4, 2, "a\r\nb");
+        let mut r = Recorder::default();
+        paint(&mut r, &two, rect(0.0, 0.0, 32.0, 20.0), &look);
+        assert!(!r.0.iter().any(|o| matches!(o, Op::Text(t, ..) if t == "b")));
+        // A hidden cursor draws nothing.
+        let mut r = Recorder::default();
+        let mut hidden = frame_of(4, 1, "").cursor.unwrap();
+        hidden.shape = CursorShape::Hidden;
+        draw_cursor(&mut r, hidden, true, 0.0, 0.0, CELL);
+        assert!(r.0.is_empty());
+    }
+
+    #[test]
+    fn scrolled_back_the_thumb_is_painted() {
+        let mut f = frame_of(4, 2, "");
+        (f.history, f.display_offset) = (8, 2);
+        assert!(painted(&f, true).iter().any(|o| matches!(o, Op::Rounded(_))));
+    }
+
+    #[test]
     fn the_history_thumb_tracks_the_scroll() {
         let mut f = frame_of(4, 2, "");
         f.history = 8;
@@ -1073,6 +1117,231 @@ mod tests {
         assert_eq!(mid.y, 38.0);
         f.display_offset = 0;
         assert_eq!(history_thumb(&f, b), None);
+    }
+
+    #[test]
+    fn more_input_paths() {
+        let c = ctx(TermMode::empty());
+        let mut s = State { focused: true, ..State::default() };
+        // Right and other buttons select nothing outside a mouse program.
+        let (a, captured) = run(&mut s, press(mouse::Button::Right), at(5.0, 5.0), &c);
+        assert!(a.is_empty() && captured);
+        assert!(run(&mut s, press(mouse::Button::Back), at(5.0, 5.0), &c).0.is_empty());
+        assert!(run(&mut s, release(mouse::Button::Back), at(5.0, 5.0), &c).0.is_empty());
+        // Double click selects a word, triple a line.
+        let kind = |a: &[Action]| a.iter().find_map(|a| if let Action::Select(k, ..) = a { Some(*k) } else { None });
+        let mut kinds = Vec::new();
+        for _ in 0..3 {
+            let (a, _) = run(&mut s, press(mouse::Button::Left), at(5.0, 5.0), &c);
+            kinds.extend(kind(&a));
+            run(&mut s, release(mouse::Button::Left), at(5.0, 5.0), &c);
+        }
+        assert_eq!(kind(&[Action::Copy]), None);
+        assert_eq!(kinds, [SelectionType::Simple, SelectionType::Semantic, SelectionType::Lines]);
+        // A program that wants every motion gets it, with no button held.
+        let mut m = State::default();
+        let (a, _) = run(&mut m, moved(20.0, 5.0), at(20.0, 5.0), &ctx(TermMode::SGR_MOUSE | TermMode::MOUSE_MOTION));
+        assert_eq!(reports(&a), ["\x1b[<35;3;1M"]);
+        assert!(reports(&[Action::Copy]).is_empty());
+        // Ctrl while moving looks for links.
+        run(&mut m, mods(Modifiers::CTRL), at(500.0, 5.0), &c);
+        let (a, _) = run(&mut m, moved(20.0, 5.0), at(20.0, 5.0), &c);
+        assert!(matches!(a.as_slice(), [Action::Hover(Some(Pos { line: 0, col: 2 }))]));
+        // Shift pages, keys type.
+        let key = |k: Key, m: Modifiers| {
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: k.clone(),
+                modified_key: k,
+                physical_key: keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
+                location: keyboard::Location::Standard,
+                modifiers: m,
+                text: Some("a".into()),
+                repeat: false,
+            })
+        };
+        let mut shifted = |n| run(&mut s, key(Key::Named(n), Modifiers::SHIFT), at(5.0, 5.0), &c).0;
+        assert!(matches!(shifted(Named::PageDown).as_slice(), [Action::Scroll(-1)]));
+        assert!(matches!(shifted(Named::Home).as_slice(), [Action::ScrollToTop]));
+        assert!(matches!(shifted(Named::End).as_slice(), [Action::ScrollToBottom]));
+        assert!(matches!(shifted(Named::ArrowUp).as_slice(), [Action::Input(b)] if b == b"\x1b[1;2A"));
+        let (a, _) = run(&mut s, key(Key::Character("a".into()), Modifiers::empty()), at(5.0, 5.0), &c);
+        assert!(matches!(a.as_slice(), [Action::Input(b)] if b == b"a"));
+        // The wheel in a full-screen program that asked for application cursor keys.
+        let wheel = |y| Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y } });
+        let app = ctx(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL | TermMode::APP_CURSOR);
+        assert_eq!(reports(&run(&mut s, wheel(1.0), at(5.0, 5.0), &app).0), ["\x1bOA\x1bOA\x1bOA"]);
+        assert_eq!(reports(&run(&mut s, wheel(-1.0), at(5.0, 5.0), &app).0), ["\x1bOB\x1bOB\x1bOB"]);
+        let pager = ctx(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL);
+        assert_eq!(reports(&run(&mut s, wheel(-1.0), at(5.0, 5.0), &pager).0), ["\x1b[B\x1b[B\x1b[B"]);
+        // A wheel too small for a line does nothing yet.
+        let tiny = Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Pixels { x: 0.0, y: 2.0 } });
+        assert!(run(&mut s, tiny, at(5.0, 5.0), &c).0.is_empty());
+    }
+
+    #[test]
+    fn focus_follows_iced_operations() {
+        use iced::advanced::widget::operation::Focusable as _;
+        let mut s = State::default();
+        s.focus();
+        assert!(s.is_focused());
+        s.unfocus();
+        assert!(!s.is_focused());
+    }
+
+    /// iced's CPU renderer, headless (no window, no GPU).
+    fn headless() -> iced::Renderer {
+        use iced::advanced::renderer::Headless;
+        let mut new =
+            std::pin::pin!(<iced::Renderer as Headless>::new(Font::MONOSPACE, Pixels(14.0), Some("tiny-skia")));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Some(r)) = new.as_mut().poll(&mut cx) else { panic!("no headless renderer") };
+        r
+    }
+
+    /// Reads say which clipboard was read; writes are kept (the widget makes none: the app copies).
+    #[derive(Default)]
+    struct Clip(Vec<String>);
+
+    impl Clipboard for Clip {
+        fn read(&self, kind: clipboard::Kind) -> Option<String> {
+            Some(format!("{kind:?}"))
+        }
+        fn write(&mut self, _kind: clipboard::Kind, contents: String) {
+            self.0.push(contents);
+        }
+    }
+
+    /// The whole widget on a real renderer: layout, events, focus, pointer and drawing.
+    #[test]
+    fn the_widget_runs_on_a_real_renderer() {
+        use iced::advanced::widget::operation;
+        let script = "seq 1 40; printf '\\033[44mhi\\033[0m 日 https://a.b/c\\033[?1000h\\033[?1006h'; sleep 5";
+        let mut t = super::super::Terminal::spawn(
+            9,
+            super::super::Options {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), script.into()],
+                env: std::collections::HashMap::new(),
+                cwd: std::env::temp_dir(),
+            },
+        )
+        .expect("spawn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !t.mode().contains(TermMode::SGR_MOUSE) {
+            assert!(std::time::Instant::now() < deadline, "no output");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            t.redraw();
+        }
+        // The size the widget will ask for, so the cursor is on screen.
+        t.apply(Action::Resize { cols: 47, lines: 11, cell_width: 8.4, cell_height: 18.0 });
+        t.apply(Action::Hover(Some(Pos { line: 0, col: 8 })));
+        let mut renderer = headless();
+        let mut el: Element<'_, Action> = view(&t, Font::MONOSPACE, 14.0, |a| a);
+        let mut tree = Tree::new(&el);
+        let node =
+            el.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, Size::new(400.0, 200.0)));
+        let layout = Layout::new(&node);
+        assert_eq!(layout.bounds().size(), Size::new(400.0, 200.0));
+        let inside = mouse::Cursor::Available(Point::new(10.0, 5.0));
+        assert_eq!(el.as_widget().size(), Size::new(Length::Fill, Length::Fill));
+        let mut messages = Vec::new();
+        let mut clip = Clip::default();
+        let viewport = layout.bounds();
+        let mut send =
+            |el: &mut Element<'_, Action>, tree: &mut Tree, renderer: &iced::Renderer, event: Event, cursor| {
+                let mut shell = Shell::new(&mut messages);
+                el.as_widget_mut().update(tree, &event, layout, cursor, renderer, &mut clip, &mut shell, &viewport);
+            };
+        // The first event reports the size; a click focuses; a key is typed; Ctrl+Shift+V pastes.
+        send(&mut el, &mut tree, &renderer, mods(Modifiers::empty()), inside);
+        send(&mut el, &mut tree, &renderer, press(mouse::Button::Left), inside);
+        let key = Event::Keyboard(keyboard::Event::KeyPressed {
+            key: Key::Character("v".into()),
+            modified_key: Key::Character("V".into()),
+            physical_key: keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
+            location: keyboard::Location::Standard,
+            modifiers: Modifiers::CTRL | Modifiers::SHIFT,
+            text: None,
+            repeat: false,
+        });
+        send(&mut el, &mut tree, &renderer, key, inside);
+        assert!(clip.0.is_empty(), "the widget never writes the clipboard");
+        clip.write(clipboard::Kind::Standard, "app".into());
+        assert_eq!(clip.0, ["app"]);
+        assert!(matches!(messages.first(), Some(Action::Resize { .. })));
+        assert!(messages.iter().any(|m| matches!(m, Action::Report(_))), "the click is reported to the program");
+        assert!(messages.iter().any(|m| matches!(m, Action::Paste(p) if p == "Standard")));
+        // Focus moves through iced's operations, as with any input.
+        el.as_widget_mut().operate(&mut tree, layout, &renderer, &mut operation::focusable::unfocus());
+        assert!(!tree.state.downcast_ref::<State>().focused);
+        el.as_widget_mut().operate(
+            &mut tree,
+            layout,
+            &renderer,
+            &mut operation::focusable::focus(t.widget_id().clone()),
+        );
+        assert!(tree.state.downcast_ref::<State>().focused);
+        // The pointer: idle over a mouse program, nothing outside.
+        let pointer = |c| el.as_widget().mouse_interaction(&tree, layout, c, &viewport, &renderer);
+        assert_eq!(pointer(inside), mouse::Interaction::Idle);
+        assert_eq!(pointer(mouse::Cursor::Unavailable), mouse::Interaction::None);
+        // Drawing goes to the renderer (and doesn't panic on wide text, links, cursor),
+        // focused and not, at the bottom and scrolled back (the history thumb).
+        let style = renderer::Style { text_color: Color::BLACK };
+        el.as_widget().draw(&tree, &mut renderer, &iced::Theme::Light, &style, layout, inside, &viewport);
+        el.as_widget_mut().operate(&mut tree, layout, &renderer, &mut operation::focusable::unfocus());
+        el.as_widget().draw(&tree, &mut renderer, &iced::Theme::Light, &style, layout, inside, &viewport);
+        drop(el);
+        t.apply(Action::Scroll(5));
+        let el: Element<'_, Action> = view(&t, Font::MONOSPACE, 14.0, |a| a);
+        el.as_widget().draw(&tree, &mut renderer, &iced::Theme::Light, &style, layout, inside, &viewport);
+        let shot =
+            iced::advanced::renderer::Headless::screenshot(&mut renderer, Size::new(400, 200), 1.0, Color::WHITE);
+        assert_eq!(shot.len(), 400 * 200 * 4);
+        // The cell measures the font's real advance.
+        let cell = measure(Font::MONOSPACE, 14.0);
+        assert!(cell.width > 4.0 && cell.width < 14.0 && cell.height == 18.0, "{cell:?}");
+    }
+
+    #[test]
+    fn the_pointer_shows_text_links_and_mouse_programs() {
+        let mut t = super::super::Terminal::spawn(
+            10,
+            super::super::Options {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "printf 'https://a.b/c'; sleep 5".into()],
+                env: std::collections::HashMap::new(),
+                cwd: std::env::temp_dir(),
+            },
+        )
+        .expect("spawn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while t.frame().row(0).first().is_none_or(|c| c.c != 'h') {
+            assert!(std::time::Instant::now() < deadline, "no output");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            t.apply(Action::Resize { cols: 40, lines: 4, cell_width: 8.0, cell_height: 18.0 });
+        }
+        let renderer = headless();
+        let mut el: Element<'_, Action> = view(&t, Font::MONOSPACE, 14.0, |a| a);
+        let mut tree = Tree::new(&el);
+        let node =
+            el.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, Size::new(320.0, 72.0)));
+        let layout = Layout::new(&node);
+        let over = mouse::Cursor::Available(Point::new(5.0, 5.0));
+        // Drawn before any event: the cell is measured on the spot.
+        let mut gpu = headless();
+        let style = renderer::Style { text_color: Color::BLACK };
+        el.as_widget().draw(&tree, &mut gpu, &iced::Theme::Dark, &style, layout, over, &layout.bounds());
+        let pointer = |tree: &Tree| el.as_widget().mouse_interaction(tree, layout, over, &layout.bounds(), &renderer);
+        assert_eq!(pointer(&tree), mouse::Interaction::Text);
+        tree.state.downcast_mut::<State>().modifiers = Modifiers::CTRL;
+        drop(el);
+        t.apply(Action::Hover(Some(Pos { line: 0, col: 2 })));
+        let el: Element<'_, Action> = view(&t, Font::MONOSPACE, 14.0, |a| a);
+        assert_eq!(
+            el.as_widget().mouse_interaction(&tree, layout, over, &layout.bounds(), &renderer),
+            mouse::Interaction::Pointer
+        );
     }
 
     #[test]

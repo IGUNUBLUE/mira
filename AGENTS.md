@@ -160,6 +160,10 @@ MIRA_E2E_SOCKET=… MIRA_E2E_ROOT=… cargo test e2e -- --ignored --nocapture
 
 Lints live in `Cargo.toml [lints]` (no `unsafe`, no `unwrap`/`expect` outside tests); CI runs the gate.
 
+`src/term/` keeps 100 % line and function coverage (`cargo llvm-cov --summary-only`; the widget is tested on
+iced's headless tiny-skia renderer and through a recording `Painter`). New code there comes with its tests.
+Snapshot speed vs a full grid clone: `MIRA_BENCH=1 cargo test --release snapshot_beats -- --nocapture`.
+
 ## Commits
 
 - Conventional Commits; message says why, not only what. No AI attribution or co-author trailers.

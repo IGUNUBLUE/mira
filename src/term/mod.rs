@@ -499,6 +499,81 @@ mod tests {
         assert_eq!(t.apply(Action::Open(Pos { line: 0, col: 1 })), Effect::None);
         t.apply(Action::Hover(None));
         assert!(!t.hovered_link());
+        // The modes the program set decide what is written for focus and paste.
+        t.focus_changed(true);
+        t.focus_changed(false);
+        t.on_event(&Event::Exited);
+        assert_eq!(t.apply(Action::Paste("x".into())), Effect::None);
+        assert_eq!(t.apply(Action::Report(b"\x1b[<0;1;1M".to_vec())), Effect::None);
+        t.on_event(&Event::Wakeup);
+        assert!(t.dirty.get());
+        let _ = t.subscription();
+        assert_eq!(t.widget_id(), t.widget_id());
+    }
+
+    #[test]
+    fn a_program_that_cannot_start_is_an_error() {
+        let options = Options {
+            program: "/nonexistent/mira-test".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            cwd: std::env::temp_dir(),
+        };
+        assert!(Terminal::spawn(11, options).is_err());
+    }
+
+    #[test]
+    fn plain_urls_are_links_too() {
+        let mut t = run("printf 'go to https://example.org/x now'; sleep 5", |t| line(t, 0).ends_with("now"));
+        t.apply(Action::Hover(Some(Pos { line: 0, col: 10 })));
+        assert!(t.hovered_link());
+        assert_eq!(t.apply(Action::Open(Pos { line: 0, col: 10 })), Effect::Open("https://example.org/x".into()));
+        // A terminal that is told nothing doesn't report focus.
+        t.focus_changed(false);
+    }
+
+    #[test]
+    fn the_listener_answers_and_forwards_without_blocking() {
+        use alacritty_terminal::event::EventListener as _;
+        let (tx, mut rx) = mpsc::unbounded();
+        let size = Arc::new(Mutex::new(WindowSize { num_lines: 1, num_cols: 1, cell_width: 1, cell_height: 1 }));
+        // No event loop yet: replies are dropped instead of blocking.
+        let l = Listener { events: tx, pty: Arc::new(OnceLock::new()), size };
+        l.send_event(AlacrittyEvent::PtyWrite("x".into()));
+        l.send_event(AlacrittyEvent::TextAreaSizeRequest(Arc::new(|s| format!("{}x{}", s.num_cols, s.num_lines))));
+        l.send_event(AlacrittyEvent::ColorRequest(1, Arc::new(|c| format!("{c:?}"))));
+        l.send_event(AlacrittyEvent::ClipboardStore(ClipboardType::Selection, "sel".into()));
+        l.send_event(AlacrittyEvent::ClipboardStore(ClipboardType::Clipboard, "clip".into()));
+        l.send_event(AlacrittyEvent::Bell);
+        l.send_event(AlacrittyEvent::Exit);
+        let got: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok()).map(|e| format!("{e:?}")).collect();
+        assert_eq!(
+            got,
+            ["Clipboard { primary: true, text: \"sel\" }", "Clipboard { primary: false, text: \"clip\" }", "Exited"]
+        );
+    }
+
+    #[test]
+    fn events_arrive_in_batches_with_one_wakeup() {
+        use iced::futures::StreamExt;
+        use std::hash::{Hash, Hasher};
+        let (tx, rx) = mpsc::unbounded();
+        for e in [Event::Wakeup, Event::Wakeup, Event::Clipboard { primary: false, text: "a".into() }, Event::Wakeup] {
+            tx.unbounded_send(e).unwrap();
+        }
+        let source = EventSource { id: 7, rx: Arc::new(Mutex::new(Some(rx))) };
+        let mut stream = std::pin::pin!(source.stream());
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Some(batch)) = stream.poll_next_unpin(&mut cx) else { panic!("a batch") };
+        assert_eq!(batch.iter().filter(|e| matches!(e, Event::Wakeup)).count(), 1);
+        assert_eq!(batch.len(), 2);
+        // Same id, same subscription.
+        let hash = |s: &EventSource| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            s.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(&source), hash(&EventSource { id: 7, rx: Arc::new(Mutex::new(None)) }));
     }
 
     #[test]
