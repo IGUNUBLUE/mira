@@ -7,6 +7,10 @@ updates:
     groups:
       iced:
         patterns: ["iced*"]
+    ignore:
+      # Dev-dependency pinned to the exact version iced uses (the gutter test checks
+      # the editor's real scrolling); it moves when iced does.
+      - dependency-name: cosmic-text
   - package-ecosystem: github-actions
     directory: /
     schedule:
