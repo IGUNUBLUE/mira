@@ -107,6 +107,8 @@ pub struct App {
     /// A button next to the status message (e.g. Undo after a discard).
     pub status_action: Option<(&'static str, Msg)>,
     pub comment: String,
+    /// The comment is on its way to an agent's pane (cleared on delivery).
+    sending_comment: bool,
     state_dirty: bool,
 
     // documents
@@ -497,6 +499,7 @@ impl App {
             hovered_change: None,
             status_action: None,
             comment: String::new(),
+            sending_comment: false,
             state_dirty: false,
             tabs: Vec::new(),
             editor_view: None,

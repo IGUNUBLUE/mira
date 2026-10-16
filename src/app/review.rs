@@ -192,8 +192,7 @@ impl App {
                     DiffSource::Trees { run, .. } => Some(*run),
                     DiffSource::Index { .. } => self.runs.origin(&d.rel).map(|r| r.id),
                 };
-                self.comment.clear();
-                return self.send_to_agent(format!("{place} — {comment}"), target);
+                return self.send_to_agent(format!("{place} — {comment}"), target, true);
             }
             _ => {}
         }

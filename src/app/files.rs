@@ -175,7 +175,7 @@ impl App {
             MenuAction::SendPath => {
                 let rel = self.rel(&menu.path);
                 let text = if menu.is_dir && !menu.is_root { format!("{rel}/ ") } else { format!("{rel} ") };
-                return self.send_to_agent(text, None);
+                return self.send_to_agent(text, None, false);
             }
         }
         Task::none()

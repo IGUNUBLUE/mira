@@ -60,7 +60,7 @@ impl App {
                     }
                 }
             }
-            Msg::SendToAgent(text) => return self.send_to_agent(text, None),
+            Msg::SendToAgent(text) => return self.send_to_agent(text, None, false),
             Msg::FocusAgent(pane) => {
                 let focus = self.focus_terminal();
                 let Some(client) = self.herdr.clone() else { return focus };
@@ -68,10 +68,21 @@ impl App {
                 return Task::batch([task, focus]);
             }
             Msg::AgentFocused(Err(e)) => self.set_status(e.to_string(), true),
-            Msg::SentToPane(result) => match result {
-                Ok(()) => self.set_status("Sent to the agent — review and press Enter", false),
-                Err(e) => self.set_status(e.to_string(), true),
-            },
+            Msg::SentToPane(result) => {
+                // The comment box empties only once the agent got it.
+                let comment = std::mem::take(&mut self.sending_comment);
+                match result {
+                    Ok(()) => {
+                        if comment {
+                            self.comment.clear();
+                        }
+                        self.set_status("Sent to the agent — review and press Enter", false);
+                    }
+                    Err(e) => {
+                        self.set_status(format!("{e}{}", if comment { " — the comment is kept" } else { "" }), true)
+                    }
+                }
+            }
             _ => {}
         }
         Task::none()
@@ -225,8 +236,9 @@ impl App {
 
     /// Type `text` without pressing Enter: into the pane of run `target`
     /// through herdr when that agent is still there, else into the terminal
-    /// (herdr's focused pane) as a paste.
-    pub(super) fn send_to_agent(&mut self, text: String, target: Option<RunId>) -> Task<Msg> {
+    /// (herdr's focused pane) as a paste. `comment`: it is the diff's comment
+    /// box, emptied only once the text was delivered.
+    pub(super) fn send_to_agent(&mut self, text: String, target: Option<RunId>, comment: bool) -> Task<Msg> {
         let pane: Option<PaneId> = target
             .and_then(|id| self.runs.get(id))
             .map(|r| r.pane.clone())
@@ -234,6 +246,7 @@ impl App {
         let focus = self.focus_terminal();
         match (pane, self.herdr.clone()) {
             (Some(pane), Some(client)) => {
+                self.sending_comment = comment;
                 let task = Task::perform(
                     blocking(move || {
                         client.send_text(&pane, &text)?;
@@ -245,8 +258,14 @@ impl App {
             }
             _ => {
                 // A paste, bracketed when the program asked for it (herdr does).
-                if let Some(t) = &mut self.term {
-                    t.apply(crate::term::Action::Paste(text));
+                let Some(t) = &mut self.term else {
+                    let what = if comment { "the comment is kept" } else { "nothing was sent" };
+                    self.set_status(format!("No terminal to type into ({what}): reattach it first"), true);
+                    return Task::none();
+                };
+                t.apply(crate::term::Action::Paste(text));
+                if comment {
+                    self.comment.clear();
                 }
                 let msg = if target.is_some() {
                     "That agent is gone — typed into the focused pane instead"

@@ -340,7 +340,7 @@ impl App {
                 if let Some(Tab::File(t)) = self.active_tab.and_then(|i| self.tabs.get(i)) {
                     let rel = t.path.strip_prefix(&self.root).unwrap_or(&t.path).to_string_lossy();
                     let text = format!("{rel}:{} ", t.content.cursor().position.line + 1);
-                    return self.send_to_agent(text, None);
+                    return self.send_to_agent(text, None, false);
                 }
             }
             Msg::DiffAnchor(line) => {

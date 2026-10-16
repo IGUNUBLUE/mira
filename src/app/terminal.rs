@@ -43,12 +43,13 @@ impl App {
                 let mut tasks = Vec::new();
                 for event in events {
                     match event {
+                        // What it copied just before exiting still goes to the clipboard.
                         term::Event::Exited => {
                             self.term = None;
                             let what =
                                 if self.term_kind == TermKind::Herdr { "herdr detached" } else { "The shell exited" };
                             self.set_status(format!("{what} — agents keep running in herdr"), false);
-                            return Task::none();
+                            break;
                         }
                         // OSC 52 from programs in the terminal (herdr copies on select).
                         term::Event::Clipboard { primary: true, text } => {
