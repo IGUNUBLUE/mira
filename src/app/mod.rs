@@ -11,6 +11,7 @@
 //! (find in file, go to line, quick open) and `keys`.
 
 mod documents;
+mod files;
 mod find;
 mod follow;
 mod keys;
@@ -21,6 +22,7 @@ mod scm;
 mod terminal;
 
 pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, ImageData, ImageTab, Tab};
+pub use files::{EditKind, ExplorerMenu, MenuAction, NAME_INPUT, NameEdit};
 pub use find::SearchState;
 pub use layout::{COMMIT_INPUT, CenterPane, Divider, Inspector, SEARCH_INPUT};
 pub use navigate::{EDITOR, FIND_INPUT, FindBar, PALETTE_INPUT, QuickOpen};
@@ -115,6 +117,13 @@ pub struct App {
 
     // inspectors
     pub explorer: Explorer,
+    /// The row a right click was on, until the panel reports where (see `rightclick`).
+    explorer_target: Option<(PathBuf, bool)>,
+    pub explorer_menu: Option<ExplorerMenu>,
+    /// A name being typed in Files (new file or folder, rename).
+    pub name_edit: Option<NameEdit>,
+    /// The last delete, for Undo.
+    undo_trash: Option<Vec<crate::fileops::Trashed>>,
     pub git: Snapshot,
     /// The opened folder relative to its repository ("" at the top), from the last snapshot.
     pub repo_prefix: String,
@@ -256,8 +265,21 @@ pub enum Msg {
     /// Send the active file's `path:line` (cursor line) to the agent.
     SendLine,
 
-    // git
+    // files
     ExplorerClick(PathBuf, bool),
+    /// Right press on a Files row: what (`path`, `is_dir`); [`Msg::ExplorerMenuAt`] follows.
+    ExplorerTarget(PathBuf, bool),
+    /// Right press in Files, in window coordinates: open the context menu there.
+    ExplorerMenuAt(iced::Point),
+    ExplorerMenuClose,
+    ExplorerMenu(MenuAction),
+    ExplorerName(String),
+    ExplorerNameSubmit,
+    ExplorerNameCancel,
+    TrashDone(Result<files::TrashOutcome, String>),
+    UndoTrash,
+
+    // git
     /// A snapshot from refresh `.0` (see `git_gen`).
     GitLoaded(u64, Result<Snapshot, String>),
     OpenDiff(String, bool),
@@ -396,6 +418,10 @@ impl App {
             hovered_divider: None,
             theme: theme_choice,
             explorer: Explorer::new(root.clone()),
+            explorer_target: None,
+            explorer_menu: None,
+            name_edit: None,
+            undo_trash: None,
             root,
             center: pane_grid::State::new(CenterPane::Terminal).0,
             doc_ratio: 0.55,
@@ -670,6 +696,15 @@ impl App {
             | Msg::DiffOpenFile
             | Msg::SendLine
             | Msg::ExplorerClick(..)) => self.update_documents(m),
+            m @ (Msg::ExplorerTarget(..)
+            | Msg::ExplorerMenuAt(_)
+            | Msg::ExplorerMenuClose
+            | Msg::ExplorerMenu(_)
+            | Msg::ExplorerName(_)
+            | Msg::ExplorerNameSubmit
+            | Msg::ExplorerNameCancel
+            | Msg::TrashDone(_)
+            | Msg::UndoTrash) => self.update_files(m),
             m @ (Msg::GitLoaded(..)
             | Msg::OpenDiff(..)
             | Msg::Stage(_)

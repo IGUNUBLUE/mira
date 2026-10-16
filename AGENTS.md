@@ -73,6 +73,10 @@ sits around that loop: review what the agents changed, edit, search, commit.
   when HEAD/refs mtimes move or after 60 s) and lists ignored files only while Files is visible. Commit All and commit messages are scoped to `repo_prefix`.
 - `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context); a full
   view over `MAX_FULL_ROWS` falls back to hunks. Tabs hold `Arc<FileDiff>`; `FileDiff.id` keys the cached rows.
+- `src/app/files.rs` — Files context menu (`ExplorerMenu`, opened by `rightclick::right_click`, which reports the
+  pointer in window coordinates after the row's `mouse_area` says what was clicked), in-place `NameEdit`
+  (`NAME_INPUT`), trash with Undo. `src/fileops.rs` — create/rename (never replace), freedesktop home trash
+  (`.trashinfo`, `restore`); tested in temp dirs.
 - `src/explorer.rs` — lazy tree, only expanded dirs are read, and only again when their mtime moves; git `Marks`
   (status, ignored) are computed per snapshot and copied onto entries.
 - `src/gutter.rs` — editor line numbers. iced 0.14 exposes no editor scroll, so `gutter::Scroll` mirrors

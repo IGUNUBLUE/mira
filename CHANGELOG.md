@@ -6,6 +6,11 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Right-click menu in Files: new file or folder, rename in place, delete to the trash (with
+  Undo), copy the path or relative path, send the path to the agent.
+
 ### Changed
 
 - mira draws its terminal itself (over Alacritty's terminal emulation) instead of using

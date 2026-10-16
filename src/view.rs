@@ -114,6 +114,19 @@ fn file_glyph<'a>(name: &str, size: u32) -> Element<'a, Msg> {
     }
 }
 
+/// A folder or file icon for a Files row (file icons need a Nerd Font).
+fn entry_icon<'a>(is_dir: bool, expanded: bool, name: &str, ignored: bool) -> Element<'a, Msg> {
+    match (is_dir, icons::font()) {
+        (true, _) => ico(if expanded { Icon::FolderOpen } else { Icon::Folder }, 15).color(p().accent).width(18).into(),
+        (false, Some(f)) => {
+            let (glyph, c) = icons::file_icon(name);
+            let c = if ignored { c.scale_alpha(0.55) } else { c };
+            text(glyph).font(f).size(15).line_height(1.0).color(c).width(18).into()
+        }
+        (false, None) => space().width(0).into(),
+    }
+}
+
 fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
     button(text(label).size(12)).padding([2, 8]).style(theme::flat(false)).on_press_maybe(msg).into()
 }
@@ -217,6 +230,19 @@ impl App {
             body = body.push(divider(Divider::Inspector, active)).push(self.view_inspector());
         }
         let base: Element<'_, Msg> = column![body.height(Length::Fill), self.view_status_bar()].into();
+        if let Some(menu) = &self.explorer_menu {
+            // Any click outside closes it, like a desktop menu.
+            return iced::widget::stack![
+                base,
+                iced::widget::opaque(
+                    mouse_area(space().width(Length::Fill).height(Length::Fill))
+                        .on_press(Msg::ExplorerMenuClose)
+                        .on_right_press(Msg::ExplorerMenuClose)
+                ),
+                self.view_explorer_menu(menu),
+            ]
+            .into();
+        }
         if let Some(palette) = &self.palette {
             // Near the top like VSCodium's, so the input stays put while the list
             // grows. A click outside closes it; `opaque` keeps it from what is behind
@@ -1247,6 +1273,11 @@ impl App {
     fn view_explorer(&self) -> Element<'_, Msg> {
         let open = self.active_tab.and_then(|i| self.tabs.get(i)).and_then(Tab::file_path);
         let mut list = Column::new();
+        let edit = self.name_edit.as_ref();
+        // A new entry in the folder itself is typed at the top.
+        if let Some(e) = edit.filter(|e| e.kind != EditKind::Rename && e.target == self.root) {
+            list = list.push(self.name_input(e, 0));
+        }
         // Status and ignored flags are computed in update (see `Explorer::set_marks`).
         for e in &self.explorer.entries {
             let color = match (e.ignored, e.status) {
@@ -1262,48 +1293,135 @@ impl App {
             } else {
                 space().width(14).into()
             };
-            let kind: Element<'_, Msg> = match (e.is_dir, icons::font()) {
-                (true, _) => {
-                    ico(if e.expanded { Icon::FolderOpen } else { Icon::Folder }, 15).color(p().accent).width(18).into()
-                }
-                (false, Some(f)) => {
-                    let (glyph, c) = icons::file_icon(&e.name);
-                    let c = if e.ignored { c.scale_alpha(0.55) } else { c };
-                    text(glyph).font(f).size(15).line_height(1.0).color(c).width(18).into()
-                }
-                (false, None) => space().width(0).into(),
-            };
-            let mut line = row![
-                space::horizontal().width(e.depth as f32 * 12.0),
-                chevron,
-                kind,
-                // Clipped, so a deep or long name never pushes the status letter out.
-                container(text(e.name.as_str()).size(UI).color(color).wrapping(text::Wrapping::None))
+            let kind = entry_icon(e.is_dir, e.expanded, &e.name, e.ignored);
+            let renaming = edit.filter(|ed| ed.kind == EditKind::Rename && ed.target == e.path);
+            let name: Element<'_, Msg> = match renaming {
+                Some(ed) => self.name_field(ed),
+                None => container(text(e.name.as_str()).size(UI).color(color).wrapping(text::Wrapping::None))
                     .width(Length::Fill)
-                    .clip(true),
-            ]
-            .align_y(Alignment::Center)
-            .spacing(4);
+                    .clip(true)
+                    .into(),
+            };
+            let mut line = row![space::horizontal().width(e.depth as f32 * 12.0), chevron, kind, name]
+                .align_y(Alignment::Center)
+                .spacing(4);
             if let Some(code) = e.status.filter(|_| !e.is_dir) {
                 line = line.push(text(code).size(SMALL).color(theme::status_color(code)));
             }
+            let menu_open = self.explorer_menu.as_ref().is_some_and(|m| m.path == e.path);
+            let row_button = button(line)
+                .width(Length::Fill)
+                .padding([2, 8])
+                .style(theme::flat(open == Some(e.path.as_path()) || menu_open));
+            // While renaming, clicks go to the input, not to the row.
+            let row_button = if renaming.is_some() {
+                row_button
+            } else {
+                row_button.on_press(Msg::ExplorerClick(e.path.clone(), e.is_dir))
+            };
             list = list.push(row_tip(
-                button(line)
-                    .width(Length::Fill)
-                    .padding([2, 8])
-                    .style(theme::flat(open == Some(e.path.as_path())))
-                    .on_press(Msg::ExplorerClick(e.path.clone(), e.is_dir)),
+                mouse_area(row_button).on_right_press(Msg::ExplorerTarget(e.path.clone(), e.is_dir)),
                 e.name.as_str(),
             ));
+            if let Some(ed) = edit.filter(|ed| ed.kind != EditKind::Rename && e.is_dir && ed.target == e.path) {
+                list = list.push(self.name_input(ed, e.depth + 1));
+            }
         }
-        if self.explorer.entries.is_empty() {
-            list = list.push(self.hint("Empty folder"));
+        if self.explorer.entries.is_empty() && edit.is_none() {
+            list = list.push(self.hint("Empty folder · right-click for New File"));
         }
-        column![
-            container(text(file_name(&self.root).to_uppercase()).size(SMALL).color(p().muted)).padding([6, 10]),
-            scrollable(list).height(Length::Fill),
-        ]
+        // A right click anywhere in the panel opens the menu there (on a row: for it).
+        crate::rightclick::right_click(
+            column![
+                container(text(file_name(&self.root).to_uppercase()).size(SMALL).color(p().muted)).padding([6, 10]),
+                scrollable(list).height(Length::Fill),
+            ],
+            Msg::ExplorerMenuAt,
+        )
+    }
+
+    /// The name input of `edit`, without its row.
+    fn name_field<'a>(&'a self, edit: &'a NameEdit) -> Element<'a, Msg> {
+        let input = text_input(if edit.kind == EditKind::NewFolder { "Folder name" } else { "File name" }, &edit.name)
+            .id(NAME_INPUT)
+            .on_input(Msg::ExplorerName)
+            .on_submit(Msg::ExplorerNameSubmit)
+            .size(UI)
+            .padding([1, 4])
+            .style(theme::input);
+        match &edit.error {
+            None => input.into(),
+            Some(err) => column![input, text(err.as_str()).size(SMALL).color(p().error_text)].spacing(2).into(),
+        }
+    }
+
+    /// A row to type a new entry's name in, at `depth`.
+    fn name_input<'a>(&'a self, edit: &'a NameEdit, depth: usize) -> Element<'a, Msg> {
+        let folder = edit.kind == EditKind::NewFolder;
+        container(
+            row![
+                space::horizontal().width(depth as f32 * 12.0 + 14.0),
+                entry_icon(folder, false, &edit.name, false),
+                self.name_field(edit),
+            ]
+            .align_y(Alignment::Center)
+            .spacing(4),
+        )
+        .padding([2, 8])
         .into()
+    }
+
+    /// The Files context menu, near the pointer and kept inside the window.
+    fn view_explorer_menu(&self, menu: &ExplorerMenu) -> Element<'_, Msg> {
+        let item = |label: &'static str, action: MenuAction, danger: bool| -> Element<'_, Msg> {
+            button(text(label).size(UI).color(if danger { p().error_text } else { p().fg }))
+                .width(Length::Fill)
+                .padding([4, 12])
+                .style(theme::flat(false))
+                .on_press(Msg::ExplorerMenu(action))
+                .into()
+        };
+        let sep = || container(hrule()).padding([3, 6]);
+        let mut items =
+            column![item("New File…", MenuAction::NewFile, false), item("New Folder…", MenuAction::NewFolder, false)];
+        let mut rows = 2;
+        let mut seps = 0;
+        if !menu.is_root {
+            items = items.push(sep()).push(item("Rename…", MenuAction::Rename, false)).push(item(
+                "Delete (to the trash)",
+                MenuAction::Delete,
+                true,
+            ));
+            rows += 2;
+            seps += 1;
+        }
+        items = items.push(sep()).push(item("Copy Path", MenuAction::CopyPath, false));
+        rows += 1;
+        seps += 1;
+        if !menu.is_root {
+            items = items.push(item("Copy Relative Path", MenuAction::CopyRelativePath, false));
+            rows += 1;
+        }
+        if self.term.is_some() {
+            items = items.push(item("Send Path to Agent", MenuAction::SendPath, false));
+            rows += 1;
+        }
+        const WIDTH: f32 = 220.0;
+        let height = rows as f32 * 27.0 + seps as f32 * 7.0 + 10.0;
+        let x = menu.at.x.min(self.window_width - WIDTH - 4.0).max(0.0);
+        let y = menu.at.y.min(self.window_height - height - 4.0).max(0.0);
+        let panel = container(items.spacing(1)).width(WIDTH).padding(4).style(|_| container::Style {
+            background: Some(p().sidebar.into()),
+            text_color: Some(p().fg),
+            border: iced::Border { color: p().border, width: 1.0, radius: 6.0.into() },
+            shadow: iced::Shadow {
+                color: Color::BLACK.scale_alpha(0.25),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 16.0,
+            },
+            ..Default::default()
+        });
+        iced::widget::pin(iced::widget::opaque(panel)).x(x).y(y).into()
     }
 
     // ------------------------------------------------------------- documents

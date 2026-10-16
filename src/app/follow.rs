@@ -1,6 +1,6 @@
 //! herdr: polling agents, following herdr's focused workspace, sending text to agents.
 
-use super::{App, AutoSave, Focus, Msg, SearchState, Tab, TermKind, blocking, file_name};
+use super::{App, AutoSave, Focus, Msg, SearchState, Tab, blocking, file_name};
 use crate::explorer::Explorer;
 use crate::git::{self, Snapshot};
 use crate::herdr::{self, Agent, PaneId};
@@ -163,8 +163,11 @@ impl App {
         let generation = std::sync::Arc::clone(&self.search.generation);
         generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.search = SearchState { generation, ..SearchState::default() };
-        // Its file list is the old folder's.
+        // Its file list is the old folder's, and so are the Files menu and a name being typed.
         self.palette = None;
+        self.explorer_menu = None;
+        self.name_edit = None;
+        self.explorer_target = None;
         let before = self.tabs.len();
         let active = self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| t.file_path().is_some());
         self.tabs.retain(|t| t.file_path().is_some());
@@ -241,12 +244,10 @@ impl App {
                 Task::batch([task, focus])
             }
             _ => {
-                let bytes = if self.term_kind == TermKind::Herdr {
-                    crate::term::input::bracketed(&text)
-                } else {
-                    text.into_bytes()
-                };
-                self.term_write(bytes);
+                // A paste, bracketed when the program asked for it (herdr does).
+                if let Some(t) = &mut self.term {
+                    t.apply(crate::term::Action::Paste(text));
+                }
                 let msg = if target.is_some() {
                     "That agent is gone — typed into the focused pane instead"
                 } else {

@@ -1,6 +1,6 @@
 //! Global keyboard shortcuts.
 
-use super::{App, Inspector, Msg, Tab};
+use super::{App, Inspector, Msg, NAME_INPUT, Tab};
 
 use iced::{Task, keyboard};
 
@@ -15,6 +15,14 @@ impl App {
             // terminal can't have it while the palette is open.
             if self.palette.is_some() {
                 return self.update(Msg::PaletteClose);
+            }
+            // The Files menu, then a name being typed there (its input captures Escape).
+            if self.explorer_menu.is_some() {
+                return self.update(Msg::ExplorerMenuClose);
+            }
+            if self.name_edit.is_some() {
+                let cancel = |typing: bool| if typing { Task::done(Msg::ExplorerNameCancel) } else { Task::none() };
+                return iced::widget::operation::is_focused(NAME_INPUT).then(cancel);
             }
             // Escape that no widget took: the terminal (it writes ESC and
             // captures it) and a focused text input (it unfocuses and captures)

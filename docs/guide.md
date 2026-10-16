@@ -158,7 +158,11 @@ command are the stable options. See [privacy](privacy.md) for exactly what is se
   example, an agent wrote it): it pauses for that tab and tells you; `Ctrl+S` overwrites.
 - **Search & replace** respects `.gitignore`, with match case, whole word and regex options.
   Replace all works line by line, exactly like the results show, and asks for a second click.
-- **Files** shows the tree with git status colors; ignored files are dimmed.
+- **Files** shows the tree with git status colors; ignored files are dimmed. Right-click a file
+  or folder (or the empty space, for the folder itself) for **New File / New Folder**,
+  **Rename** (typed in place: `Enter` saves, `Escape` cancels), **Delete** (to the desktop's
+  trash, with **Undo** in the status bar), **Copy Path**, **Copy Relative Path** and **Send Path
+  to Agent**.
 
 ## Look
 

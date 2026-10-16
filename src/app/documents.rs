@@ -349,6 +349,8 @@ impl App {
                 }
             }
             Msg::ExplorerClick(path, is_dir) => {
+                // Clicking elsewhere leaves a name being typed, as Escape does.
+                self.name_edit = None;
                 if is_dir {
                     self.explorer.toggle(&path);
                 } else {
@@ -381,7 +383,7 @@ impl App {
         self.tabs.len() - 1
     }
 
-    fn open_file(&mut self, path: PathBuf, line: Option<usize>) {
+    pub(super) fn open_file(&mut self, path: PathBuf, line: Option<usize>) {
         if imagefile::kind(&path) == Some(imagefile::Kind::Raster) {
             self.open_image(path);
             return;
