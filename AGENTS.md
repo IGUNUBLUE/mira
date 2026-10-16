@@ -73,6 +73,9 @@ sits around that loop: review what the agents changed, edit, search, commit.
   when HEAD/refs mtimes move or after 60 s) and lists ignored files only while Files is visible. Commit All and commit messages are scoped to `repo_prefix`.
 - `src/diff.rs` — side-by-side model on `similar` (patience, inline emphasis, hunks with 3 lines of context); a full
   view over `MAX_FULL_ROWS` falls back to hunks. Tabs hold `Arc<FileDiff>`; `FileDiff.id` keys the cached rows.
+- `src/app/settings.rs` — gear menu, `Dialog` (Settings, Shortcuts, About; drawn in the overlay layer), `Drafts`
+  (what Settings shows, read when it opens: `view` never reads the config), `WindowControls` (`decorated()` in
+  main.rs; `on` draws `view_title_bar`), `SHORTCUTS` (keep in sync with docs/guide.md).
 - `src/app/files.rs` — Files context menu (`ExplorerMenu`, opened by `rightclick::right_click`, which reports the
   pointer in window coordinates after the row's `mouse_area` says what was clicked), in-place `NameEdit`
   (`NAME_INPUT`), trash with Undo. `src/fileops.rs` — create/rename (never replace), freedesktop home trash

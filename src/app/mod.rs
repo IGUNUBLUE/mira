@@ -19,6 +19,7 @@ mod layout;
 mod navigate;
 mod review;
 mod scm;
+mod settings;
 mod terminal;
 
 pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, ImageData, ImageTab, Tab};
@@ -27,6 +28,7 @@ pub use find::SearchState;
 pub use layout::{COMMIT_INPUT, CenterPane, Divider, Inspector, SEARCH_INPUT};
 pub use navigate::{EDITOR, FIND_INPUT, FindBar, PALETTE_INPUT, QuickOpen};
 pub use scm::{BusyOp, CommitGen, GitOutcome, HunkOp, SPINNER, SignIn, SignInEvent, SignInStage};
+pub use settings::{Dialog, Drafts, Field, MenuItem, REPO_URL, SHORTCUTS, Setting, WindowControls};
 pub use terminal::TermKind;
 
 use crate::diff::FileDiff;
@@ -117,6 +119,15 @@ pub struct App {
 
     // inspectors
     pub explorer: Explorer,
+    /// The open dialog (Settings, Shortcuts, About), and the gear menu.
+    pub dialog: Option<Dialog>,
+    pub gear_menu: bool,
+    /// Settings typed but not saved yet, and why the last save failed.
+    pub drafts: Drafts,
+    pub settings_error: Option<String>,
+    /// `herdr --version`, asked when About first opens.
+    pub herdr_version: Option<String>,
+    pub window_controls: WindowControls,
     /// The row a right click was on, until the panel reports where (see `rightclick`).
     explorer_target: Option<(PathBuf, bool)>,
     pub explorer_menu: Option<ExplorerMenu>,
@@ -264,6 +275,24 @@ pub enum Msg {
     DiffOpenFile,
     /// Send the active file's `path:line` (cursor line) to the agent.
     SendLine,
+
+    // settings
+    /// Open (`true`) or close the gear menu.
+    GearMenu(bool),
+    Gear(MenuItem),
+    OpenDialog(Dialog),
+    CloseDialog,
+    HerdrVersion(Option<String>),
+    SettingChoice(Setting),
+    SettingText(Field, String),
+    /// Enter in a typed setting: save the typed ones.
+    SettingSubmit,
+    OpenConfigFile,
+    OpenLink(String),
+    CopyAbout,
+    WindowMinimize,
+    WindowMaximize,
+    WindowDrag,
 
     // files
     ExplorerClick(PathBuf, bool),
@@ -418,6 +447,12 @@ impl App {
             hovered_divider: None,
             theme: theme_choice,
             explorer: Explorer::new(root.clone()),
+            dialog: None,
+            gear_menu: false,
+            drafts: Drafts::default(),
+            settings_error: None,
+            herdr_version: None,
+            window_controls: WindowControls::from_config(),
             explorer_target: None,
             explorer_menu: None,
             name_edit: None,
@@ -696,6 +731,20 @@ impl App {
             | Msg::DiffOpenFile
             | Msg::SendLine
             | Msg::ExplorerClick(..)) => self.update_documents(m),
+            m @ (Msg::GearMenu(_)
+            | Msg::Gear(_)
+            | Msg::OpenDialog(_)
+            | Msg::CloseDialog
+            | Msg::HerdrVersion(_)
+            | Msg::SettingChoice(_)
+            | Msg::SettingText(..)
+            | Msg::SettingSubmit
+            | Msg::OpenConfigFile
+            | Msg::OpenLink(_)
+            | Msg::CopyAbout
+            | Msg::WindowMinimize
+            | Msg::WindowMaximize
+            | Msg::WindowDrag) => self.update_settings(m),
             m @ (Msg::ExplorerTarget(..)
             | Msg::ExplorerMenuAt(_)
             | Msg::ExplorerMenuClose

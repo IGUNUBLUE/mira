@@ -19,7 +19,7 @@ pub enum TermKind {
 }
 
 /// Open `url` (a link Ctrl+clicked in the terminal) in the desktop's browser.
-fn open_url(url: &str) -> Result<(), String> {
+pub(super) fn open_url(url: &str) -> Result<(), String> {
     // Only links, never a path or an option for xdg-open.
     if !["https://", "http://", "file://", "ftp://", "ssh://"].iter().any(|s| url.starts_with(s)) {
         return Err(format!("not a link: {url}"));

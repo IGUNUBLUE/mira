@@ -16,7 +16,13 @@ impl App {
             if self.palette.is_some() {
                 return self.update(Msg::PaletteClose);
             }
-            // The Files menu, then a name being typed there (its input captures Escape).
+            // Menus and dialogs first, then a name being typed in Files (its input captures Escape).
+            if self.gear_menu {
+                return self.update(Msg::GearMenu(false));
+            }
+            if self.dialog.is_some() {
+                return self.update(Msg::CloseDialog);
+            }
             if self.explorer_menu.is_some() {
                 return self.update(Msg::ExplorerMenuClose);
             }
@@ -88,6 +94,7 @@ impl App {
             (Some('e'), true) => return self.update(Msg::Inspector(Inspector::Files)),
             (Some('t'), true) => return self.update(Msg::CycleTheme),
             (Some('m'), true) => return self.update(Msg::FocusMode),
+            (Some(','), false) => return self.update(Msg::OpenDialog(super::Dialog::Settings)),
             _ if backquote => return self.focus_terminal(),
             _ => {}
         }

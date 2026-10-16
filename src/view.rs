@@ -127,6 +127,75 @@ fn entry_icon<'a>(is_dir: bool, expanded: bool, name: &str, ignored: bool) -> El
     }
 }
 
+/// mira's icon (the SVG of the desktop entry).
+fn mira_icon<'a>(size: f32) -> Element<'a, Msg> {
+    // Hashed once: the title bar shows it on every frame.
+    static ICON: std::sync::LazyLock<iced::widget::svg::Handle> = std::sync::LazyLock::new(|| {
+        iced::widget::svg::Handle::from_memory(include_bytes!("../assets/mira.svg").as_slice())
+    });
+    iced::widget::svg(ICON.clone()).width(size).height(size).into()
+}
+
+/// A floating panel for a menu.
+fn popup<'a>(items: impl Into<Element<'a, Msg>>, width: f32) -> Element<'a, Msg> {
+    container(items)
+        .width(width)
+        .padding(4)
+        .style(|_| container::Style {
+            background: Some(p().sidebar.into()),
+            text_color: Some(p().fg),
+            border: iced::Border { color: p().border, width: 1.0, radius: 6.0.into() },
+            shadow: iced::Shadow {
+                color: Color::BLACK.scale_alpha(0.25),
+                offset: iced::Vector::new(0.0, 4.0),
+                blur_radius: 16.0,
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn choice_button<'a>(label: String, on: bool, choice: Setting) -> Element<'a, Msg> {
+    button(text(label).size(UI)).padding([3, 10]).style(theme::flat(on)).on_press(Msg::SettingChoice(choice)).into()
+}
+
+fn setting_group<'a>(title: &'static str) -> Element<'a, Msg> {
+    container(text(title.to_uppercase()).size(SMALL).color(p().accent))
+        .padding(Padding { top: 6.0, ..Padding::ZERO })
+        .into()
+}
+
+/// One setting: its name, its control, and a hint under the control.
+fn setting<'a>(label: &'static str, control: Element<'a, Msg>, hint: &'static str) -> Element<'a, Msg> {
+    let right = if hint.is_empty() {
+        column![control]
+    } else {
+        column![control, text(hint).size(SMALL).color(p().muted).wrapping(text::Wrapping::Word)].spacing(3)
+    };
+    row![text(label).size(UI).width(170), right.width(Length::Fill)].spacing(12).align_y(Alignment::Start).into()
+}
+
+fn view_shortcuts<'a>() -> Element<'a, Msg> {
+    let rows = SHORTCUTS.iter().fold(Column::new().spacing(6), |c, (keys, what)| {
+        c.push(
+            row![
+                text(*keys).size(UI).font(theme::mono_font()).color(p().accent).width(240),
+                text(*what).size(UI).wrapping(text::Wrapping::Word),
+            ]
+            .spacing(12),
+        )
+    });
+    column![
+        scrollable(container(rows).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Length::Fill),
+        text("While the terminal has the keyboard, plain Ctrl+… goes to the program in it; Ctrl+Shift+… and Ctrl+` stay with mira.")
+            .size(SMALL)
+            .color(p().muted)
+            .wrapping(text::Wrapping::Word),
+    ]
+    .spacing(12)
+    .into()
+}
+
 fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
     button(text(label).size(12)).padding([2, 8]).style(theme::flat(false)).on_press_maybe(msg).into()
 }
@@ -229,10 +298,28 @@ impl App {
             let active = self.dragging == Some(Divider::Inspector) || self.hovered_divider == Some(Divider::Inspector);
             body = body.push(divider(Divider::Inspector, active)).push(self.view_inspector());
         }
-        let base: Element<'_, Msg> = column![body.height(Length::Fill), self.view_status_bar()].into();
+        let base: Element<'_, Msg> =
+            column![self.view_title_bar(), body.height(Length::Fill), self.view_status_bar()].into();
         // Always the same two layers: changing the root's shape when a dialog opens would
         // make iced drop every widget's state (the terminal's focus, scroll positions).
-        let overlay: Element<'_, Msg> = if let Some(menu) = &self.explorer_menu {
+        let close_on_click = |msg: Msg| {
+            iced::widget::opaque(
+                mouse_area(space().width(Length::Fill).height(Length::Fill)).on_press(msg.clone()).on_right_press(msg),
+            )
+        };
+        let overlay: Element<'_, Msg> = if self.gear_menu {
+            iced::widget::stack![close_on_click(Msg::GearMenu(false)), self.view_gear_menu()].into()
+        } else if let Some(d) = self.dialog {
+            // Modal: a click outside closes it, as Escape does.
+            let panel = iced::widget::opaque(self.view_dialog(d));
+            iced::widget::opaque(
+                mouse_area(iced::widget::center(panel).padding(24).style(|_| container::Style {
+                    background: Some(p().bg.scale_alpha(0.6).into()),
+                    ..Default::default()
+                }))
+                .on_press(Msg::CloseDialog),
+            )
+        } else if let Some(menu) = &self.explorer_menu {
             // Any click outside closes it, like a desktop menu.
             iced::widget::stack![
                 iced::widget::opaque(
@@ -272,6 +359,277 @@ impl App {
             space().into()
         };
         iced::widget::stack![base, overlay].into()
+    }
+
+    /// mira's own title bar (`window_controls = "on"`): drag it to move the
+    /// window, double-click to maximize; minimize, maximize and close at the right.
+    fn view_title_bar(&self) -> Element<'_, Msg> {
+        if self.window_controls != WindowControls::On {
+            return space().height(0).into();
+        }
+        let win = |icon: Icon, msg: Msg, label: &'static str, close: bool| {
+            tip(
+                button(container(ico(icon, 14)).center(Length::Fill))
+                    .width(42)
+                    .height(Length::Fill)
+                    .padding(0)
+                    .style(move |t, s| {
+                        if close && matches!(s, button::Status::Hovered | button::Status::Pressed) {
+                            theme::danger(t, s)
+                        } else {
+                            theme::flat(false)(t, s)
+                        }
+                    })
+                    .on_press(msg),
+                label,
+            )
+        };
+        let title = mouse_area(
+            container(
+                row![mira_icon(16.0), text(self.title()).size(SMALL).color(p().muted)]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+            )
+            .padding([0, 12])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Center),
+        )
+        .on_press(Msg::WindowDrag)
+        .on_double_click(Msg::WindowMaximize);
+        container(
+            row![
+                title,
+                win(Icon::WinMinimize, Msg::WindowMinimize, "Minimize", false),
+                win(Icon::WinMaximize, Msg::WindowMaximize, "Maximize or restore", false),
+                win(Icon::WinClose, Msg::CloseRequested, "Close", true),
+            ]
+            .height(30),
+        )
+        .width(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(p().sidebar.into()),
+            border: iced::Border { color: p().border, width: 1.0, radius: 0.0.into() },
+            ..Default::default()
+        })
+        .into()
+    }
+
+    /// The gear's menu, above it at the bottom right.
+    fn view_gear_menu(&self) -> Element<'_, Msg> {
+        let item = |label: &'static str, hint: &'static str, msg: Msg| -> Element<'_, Msg> {
+            button(
+                row![text(label).size(UI), space::horizontal(), text(hint).size(SMALL).color(p().muted)]
+                    .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .padding([4, 12])
+            .style(theme::flat(false))
+            .on_press(msg)
+            .into()
+        };
+        let items = column![
+            item("Settings", "Ctrl+,", Msg::Gear(MenuItem::Settings)),
+            item("Keyboard Shortcuts", "", Msg::Gear(MenuItem::Shortcuts)),
+            container(hrule()).padding([3, 6]),
+            item("Check for Updates", "browser", Msg::Gear(MenuItem::Updates)),
+            item("About mira", "", Msg::Gear(MenuItem::About)),
+        ]
+        .spacing(1);
+        const WIDTH: f32 = 260.0;
+        const HEIGHT: f32 = 4.0 * 27.0 + 7.0 + 10.0;
+        // Over the status bar's right end, where the gear is.
+        let x = (self.window_width - WIDTH - 8.0).max(0.0);
+        let y = (self.window_height - HEIGHT - 30.0).max(0.0);
+        iced::widget::pin(iced::widget::opaque(popup(items, WIDTH))).x(x).y(y).into()
+    }
+
+    fn view_dialog(&self, d: Dialog) -> Element<'_, Msg> {
+        let (title, body): (&str, Element<'_, Msg>) = match d {
+            Dialog::Settings => ("Settings", self.view_settings()),
+            Dialog::Shortcuts => ("Keyboard Shortcuts", view_shortcuts()),
+            Dialog::About => ("About mira", self.view_about()),
+        };
+        let header = row![
+            text(title).size(18),
+            space::horizontal(),
+            tip(icon_button(Icon::Close, Msg::CloseDialog), "Close (Escape)"),
+        ]
+        .align_y(Alignment::Center);
+        // Long dialogs scroll inside, with their header and footer in place.
+        let tall = d != Dialog::About;
+        container(column![header, body].spacing(14))
+            .padding(20)
+            .width(Length::Fill)
+            .height(if tall { Length::Fill } else { Length::Shrink })
+            .max_width(if tall { 640 } else { 460 })
+            .max_height((self.window_height - 60.0).max(240.0))
+            .style(|_| container::Style {
+                background: Some(p().sidebar.into()),
+                text_color: Some(p().fg),
+                border: iced::Border { color: p().border, width: 1.0, radius: 10.0.into() },
+                shadow: iced::Shadow {
+                    color: Color::BLACK.scale_alpha(0.3),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 28.0,
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn view_settings(&self) -> Element<'_, Msg> {
+        let d = &self.drafts;
+        let field = |f: Field, placeholder: &'static str| -> Element<'_, Msg> {
+            text_input(placeholder, d.get(f))
+                .on_input(move |v| Msg::SettingText(f, v))
+                .on_submit(Msg::SettingSubmit)
+                .size(UI)
+                .padding([4, 8])
+                .style(theme::input)
+                .into()
+        };
+        let theme_names: Vec<String> =
+            std::iter::once("auto".to_string()).chain(theme::PALETTES.iter().map(|p| p.name.to_string())).collect();
+        let current_theme = self.theme.label();
+        let themes = theme_names.into_iter().fold(row![].spacing(4), |r, name| {
+            let on = name.eq_ignore_ascii_case(&current_theme);
+            r.push(choice_button(name.clone(), on, Setting::Theme(name)))
+        });
+        let wc = |w: WindowControls| {
+            choice_button(w.label().to_string(), self.window_controls == w, Setting::WindowControls(w))
+        };
+        let opts = |list: &[(&'static str, &'static str)], now: &str, make: fn(&'static str) -> Setting| {
+            list.iter().fold(row![].spacing(4), |r, (value, label)| {
+                r.push(choice_button((*label).to_string(), now.eq_ignore_ascii_case(value), make(value)))
+            })
+        };
+        let autosave = opts(
+            &[
+                ("afterDelay", "After a delay"),
+                ("onFocusChange", "On focus change"),
+                ("onWindowChange", "On window change"),
+                ("off", "Off"),
+            ],
+            &d.autosave,
+            Setting::Autosave,
+        );
+        let terminal = opts(&[("herdr", "herdr"), ("shell", "Plain shell")], &d.terminal, Setting::Terminal);
+        let provider = opts(
+            &[("auto", "auto"), ("chatgpt", "ChatGPT"), ("openai", "OpenAI API key"), ("command", "Command")],
+            &d.provider,
+            Setting::CommitProvider,
+        );
+        let changes = row![
+            button(text("By file").size(UI))
+                .padding([3, 10])
+                .style(theme::flat(!self.group_by_run))
+                .on_press(Msg::GroupByRun(false)),
+            button(text("By agent turn").size(UI))
+                .padding([3, 10])
+                .style(theme::flat(self.group_by_run))
+                .on_press(Msg::GroupByRun(true)),
+        ]
+        .spacing(4);
+        let account: Element<'_, Msg> = match &self.chatgpt_account {
+            Some(email) => row![
+                text(if email.is_empty() { "Signed in".to_string() } else { format!("Signed in as {email}") }).size(UI),
+                space::horizontal(),
+                small_button("Sign out", Some(Msg::ChatGptSignOut)),
+            ]
+            .align_y(Alignment::Center)
+            .into(),
+            None => text("Not signed in (✦ in Changes asks when needed)").size(UI).color(p().muted).into(),
+        };
+        let body = column![
+            setting_group("Appearance"),
+            setting("Theme", themes.wrap().into(), "auto follows HyDE when it is installed"),
+            setting(
+                "Window controls",
+                row![wc(WindowControls::Auto), wc(WindowControls::On), wc(WindowControls::Off)].spacing(4).into(),
+                "auto: the desktop draws them (tiling ones like Hyprland draw none) · on: mira draws its own title bar",
+            ),
+            setting_group("Editor"),
+            setting("Autosave", autosave.wrap().into(), ""),
+            setting("Autosave delay (ms)", field(Field::AutosaveDelay, "1000"), ""),
+            setting_group("Terminal"),
+            setting("Runs", terminal.into(), "Takes effect the next time mira starts"),
+            setting("herdr session", field(Field::HerdrSession, "default"), "Takes effect the next time mira starts"),
+            setting_group("Commit messages"),
+            setting("Provider", provider.wrap().into(), "Only used when you click ✦; nothing else goes to the network"),
+            setting(
+                "Model",
+                field(Field::CommitModel, crate::commitgen::DEFAULT_MODEL),
+                "For ChatGPT and the OpenAI API"
+            ),
+            setting(
+                "Command",
+                field(Field::CommitCommand, "e.g. ollama run qwen2.5-coder:7b"),
+                "Gets the prompt on stdin, prints the message"
+            ),
+            setting("ChatGPT", account, ""),
+            setting_group("Changes"),
+            setting("Show changes", changes.into(), ""),
+        ]
+        .spacing(10);
+        let footer = row![
+            self.settings_error.as_deref().map(|e| text(e).size(SMALL).color(p().error_text)),
+            space::horizontal(),
+            small_button("Open config file", Some(Msg::OpenConfigFile)),
+            button(text("Done").size(12)).padding([3, 12]).style(theme::primary).on_press(Msg::CloseDialog),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        column![
+            scrollable(container(body).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Length::Fill),
+            footer
+        ]
+        .spacing(14)
+        .height(Length::Fill)
+        .into()
+    }
+
+    fn view_about(&self) -> Element<'_, Msg> {
+        let link = |label: &'static str, url: String| small_button(label, Some(Msg::OpenLink(url)));
+        let licenses = ["/usr/local/share/doc/mira", "/usr/share/doc/mira"]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .chain(std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share/doc/mira")))
+            .map(|d| d.join("THIRD_PARTY_LICENSES.html"));
+        // Computed once per view from a few stats: About is rarely open.
+        let third_party = licenses
+            .into_iter()
+            .find(|p| p.is_file())
+            .map_or_else(|| format!("{REPO_URL}/releases"), |p| format!("file://{}", p.display()));
+        column![
+            row![
+                mira_icon(64.0),
+                column![
+                    text(format!("mira {}", env!("CARGO_PKG_VERSION"))).size(20),
+                    text(env!("CARGO_PKG_DESCRIPTION")).size(UI).color(p().muted).wrapping(text::Wrapping::Word),
+                ]
+                .spacing(4),
+            ]
+            .spacing(16)
+            .align_y(Alignment::Center),
+            row![
+                text(self.about_text()).size(SMALL).font(theme::mono_font()).color(p().muted),
+                space::horizontal(),
+                tip(small_button("Copy info", Some(Msg::CopyAbout)), "For a bug report"),
+            ]
+            .align_y(Alignment::End),
+            text("MIT OR Apache-2.0 · no telemetry · in early development").size(SMALL).color(p().muted),
+            row![
+                link("Repository", REPO_URL.to_string()),
+                link("User guide", format!("{REPO_URL}/blob/main/docs/guide.md")),
+                link("Third-party licenses", third_party),
+                link("Report a bug", format!("{REPO_URL}/issues/new")),
+            ]
+            .spacing(6)
+            .wrap(),
+        ]
+        .spacing(12)
+        .into()
     }
 
     /// The ChatGPT sign-in dialog: what will happen before it happens, then
@@ -1923,6 +2281,14 @@ impl App {
                 .style(theme::flat(false))
                 .on_press(Msg::CycleTheme),
             container(text("Switch theme (Ctrl+Shift+T)").size(12)).padding(6).style(theme::bordered(p().bg)),
+            tooltip::Position::Top,
+        ));
+        right = right.push(tooltip(
+            button(ico(Icon::Gear, 13))
+                .padding([1, 4])
+                .style(theme::flat(self.gear_menu))
+                .on_press(Msg::GearMenu(!self.gear_menu)),
+            container(text("Settings, shortcuts, about").size(12)).padding(6).style(theme::bordered(p().bg)),
             tooltip::Position::Top,
         ));
         // First run (nothing open, no agents): the shortcuts; later they live in tooltips.

@@ -176,6 +176,20 @@ pub fn installed() -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("herdr").is_file()))
 }
 
+/// herdr's version (`herdr --version`, e.g. `0.9.5`), if it runs.
+pub fn version() -> Option<String> {
+    let out = std::process::Command::new("herdr")
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let v = text.trim().trim_start_matches("herdr").trim();
+    (!v.is_empty()).then(|| v.to_string())
+}
+
 /// Program and argv that attach a herdr client to `session`. Goes through
 /// `env -u` so a mira started from inside a herdr pane does not hand its pane
 /// identity to the new client.

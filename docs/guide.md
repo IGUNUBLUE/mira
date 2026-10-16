@@ -170,6 +170,12 @@ Four palettes, LAGC Tech and Calm, each light and dark. The default, `auto`, fol
 active [HyDE](https://github.com/HyDE-Project/HyDE) theme when HyDE is installed, else LAGC
 Tech Light. `Ctrl+Shift+T` or the status bar cycles through them.
 
+The gear at the right of the status bar opens **Settings** (also `Ctrl+,`), the list of
+**Keyboard Shortcuts**, **Check for Updates** (the releases page, in your browser) and **About**
+(version, herdr's version, links and a "Copy info" for bug reports). On desktops that draw no
+title bar (Hyprland and other tiling compositors), set *Window controls* to `on` for mira's own
+close, minimize and maximize buttons.
+
 Icons come from any installed [Nerd Font](https://www.nerdfonts.com); without one mira uses
 plain symbols. Fonts default to Inter and JetBrains Mono (medium weight); see
 [configuration](configuration.md) to change them. Panel sizes are remembered.
@@ -184,6 +190,7 @@ plain symbols. Fonts default to Inter and JetBrains Mono (medium weight); see
 | `Ctrl+Shift+B` | Show or hide the inspector |
 | `Ctrl+Shift+M` | Focus mode |
 | `Ctrl+Shift+T` | Next theme |
+| `Ctrl+,` | Settings |
 | `Ctrl+Shift+V` | Paste into the terminal |
 | `Ctrl+Shift+P`, `Ctrl+P` | Quick open: go to a file of the folder by name (fuzzy; `:` + a number goes to a line) |
 | `Ctrl+F` | Find in the open file (`Enter` / `Shift+Enter` or `F3` / `Shift+F3`: next / previous) |

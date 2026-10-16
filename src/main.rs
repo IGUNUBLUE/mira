@@ -96,6 +96,8 @@ fn main() -> iced::Result {
         exit_on_close_request: false,
         // Raw 64×64 RGBA (assets/mira-64.rgba): no image decoder needed at runtime.
         icon: iced::window::icon::from_rgba(include_bytes!("../assets/mira-64.rgba").to_vec(), 64, 64).ok(),
+        // `window_controls = "on"`: mira draws the title bar itself.
+        decorations: app::WindowControls::from_config().decorated(),
         // Matches mira.desktop, so launchers and docks show its icon (Wayland app id, X11 class).
         platform_specific: iced::window::settings::PlatformSpecific {
             application_id: "mira".into(),

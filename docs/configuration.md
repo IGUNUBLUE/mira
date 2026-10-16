@@ -1,6 +1,7 @@
 # Configuration
 
-mira works without any configuration. Settings live in `~/.config/mira/config`
+mira works without any configuration. Most settings can be changed in **Settings** (the gear in
+the status bar, or `Ctrl+,`); they live in `~/.config/mira/config`
 (`$XDG_CONFIG_HOME/mira/config`), one `key = "value"` per line; `#` starts a comment. mira
 writes some keys itself (theme, panel sizes) and keeps your other lines and comments.
 
@@ -25,6 +26,7 @@ commit_provider = "openai"
 | `commit_command` | *(none)* | Shell command for `command`: gets the prompt on stdin, prints the message. |
 | `changes_view` | `files`, `runs` | Changes grouped by file or by agent run. Set from the panel. |
 | `icon_font` | *(first Nerd Font found)* | Font family to take icons from. |
+| `window_controls` | `auto`, `on`, `off` | Who draws close, minimize and maximize. `auto`: the desktop (tiling compositors such as Hyprland draw none). `on`: mira draws its own title bar (drag it to move, double-click to maximize). `off`: no title bar. |
 | `inspector_width`, `history_height` | | Panel sizes, saved when you drag the dividers. |
 
 A local model as commit-message generator, with [ollama](https://ollama.com):

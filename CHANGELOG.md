@@ -6,6 +6,15 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Settings (`Ctrl+,`, or the gear in the status bar): theme, window controls, autosave, terminal,
+  commit messages and the Changes view, written to the same config file (your comments stay).
+- Keyboard Shortcuts and About (version, herdr's version, links, "Copy info") from the gear;
+  Check for Updates opens the releases page.
+- `window_controls = "on"`: mira's own title bar with minimize, maximize and close, for desktops
+  that draw none (Hyprland).
+
 ## [0.3.0]
 
 ### Added

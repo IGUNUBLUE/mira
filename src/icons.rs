@@ -86,6 +86,10 @@ pub enum Icon {
     Account,
     Close,
     Preview,
+    Gear,
+    WinMinimize,
+    WinMaximize,
+    WinClose,
 }
 
 impl Icon {
@@ -125,6 +129,10 @@ impl Icon {
             Account => ('\u{EB99}', "@"),
             Close => ('\u{EA76}', "×"),
             Preview => ('\u{EB2F}', "◫"),
+            Gear => ('\u{EB51}', "⚙"),
+            WinMinimize => ('\u{EABA}', "—"),
+            WinMaximize => ('\u{EAB9}', "□"),
+            WinClose => ('\u{EAB8}', "✕"),
         }
     }
 
