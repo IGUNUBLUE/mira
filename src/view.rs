@@ -1290,6 +1290,8 @@ impl App {
                                 }
                             })
                             .key_binding(|kp| match kp.key.as_ref() {
+                                // Unfocused, iced still asks (see the file editor's bindings).
+                                _ if !matches!(kp.status, text_editor::Status::Focused { .. }) => None,
                                 Key::Named(Named::Enter) if kp.modifiers.command() =>
                                     Some(Binding::Custom(Msg::Commit)),
                                 Key::Character(c) if kp.modifiers.command() && c.eq_ignore_ascii_case("z") =>
@@ -1914,26 +1916,28 @@ impl App {
                 selection: p().selection,
             })
             .key_binding(|kp| {
+                // iced asks for bindings even while the editor is unfocused, and
+                // publishes (and captures) a custom one regardless: none may take a
+                // key typed in the terminal or the commit box (`keys.rs` covers Ctrl+S
+                // and Ctrl+Z when no widget has the keyboard).
+                if !matches!(kp.status, text_editor::Status::Focused { .. }) {
+                    return None;
+                }
                 let ctrl = kp.modifiers.command();
-                // iced asks for bindings even while the editor is unfocused: these
-                // must not take Ctrl+F / Ctrl+G from the terminal.
-                let focused = matches!(kp.status, text_editor::Status::Focused { .. });
                 let plain_ctrl = ctrl && !kp.modifiers.shift() && !kp.modifiers.alt();
                 match kp.key.as_ref() {
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("s") => Some(Binding::Custom(Msg::Save)),
-                    Key::Character(c) if focused && plain_ctrl && c.eq_ignore_ascii_case("f") => {
+                    Key::Character(c) if plain_ctrl && c.eq_ignore_ascii_case("f") => {
                         Some(Binding::Custom(Msg::FindOpen))
                     }
-                    Key::Character(c) if focused && plain_ctrl && c.eq_ignore_ascii_case("g") => {
+                    Key::Character(c) if plain_ctrl && c.eq_ignore_ascii_case("g") => {
                         Some(Binding::Custom(Msg::PaletteOpen(true)))
                     }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => {
                         Some(Binding::Custom(if kp.modifiers.shift() { Msg::Redo } else { Msg::Undo }))
                     }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => Some(Binding::Custom(Msg::Redo)),
-                    Key::Named(Named::Tab) if !ctrl && matches!(kp.status, text_editor::Status::Focused { .. }) => {
-                        Some(Binding::Sequence(vec![Binding::Insert(' '); 4]))
-                    }
+                    Key::Named(Named::Tab) if !ctrl => Some(Binding::Sequence(vec![Binding::Insert(' '); 4])),
                     _ => Binding::from_key_press(kp),
                 }
             })
