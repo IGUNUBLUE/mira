@@ -36,7 +36,7 @@ pub struct Loaded {
 /// Read `path` as an image of `kind`: at most [`MAX_BYTES`], and for raster
 /// images a header that decodes to at most [`MAX_PIXELS`].
 pub fn load(path: &Path, kind: Kind) -> Result<Loaded, String> {
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let file = crate::files::open_regular(path)?;
     let mut bytes = Vec::new();
     file.take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_BYTES {

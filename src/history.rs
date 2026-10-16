@@ -72,6 +72,11 @@ impl History {
             content.perform(action);
             return;
         }
+        // Backspace at the very start or Delete at the very end changes nothing:
+        // it must not open a step (the tab would look edited) or drop the redo stack.
+        if is_noop(content, &action) {
+            return;
+        }
         let (kind, ch) = match &action {
             Action::Edit(Edit::Insert(c)) => (Kind::Typing, Some(*c)),
             Action::Edit(Edit::Backspace | Edit::Delete) => (Kind::Deleting, None),
@@ -110,7 +115,11 @@ impl History {
     /// Record a change made outside the editor (e.g. the file was reloaded
     /// from disk), so it can be undone too.
     pub fn record(&mut self, before: &str, after: &str, cursor_before: Cursor, cursor_after: Cursor) {
-        self.pending = None;
+        // Typing still open becomes its own step first, or the steps before it
+        // would no longer line up with the text.
+        if let Some(p) = self.pending.take() {
+            self.push(&p.before, before, p.cursor, cursor_before);
+        }
         self.redo.clear();
         self.push(before, after, cursor_before, cursor_after);
     }
@@ -174,6 +183,24 @@ impl History {
     /// Unsaved changes, counting undos back to the saved text as clean.
     pub fn is_dirty(&self) -> bool {
         self.pending.is_some() || self.state() != self.saved
+    }
+}
+
+/// A deletion with nothing to delete: Backspace at the start or Delete at the
+/// end of the text, with no selection.
+fn is_noop(content: &Content, action: &Action) -> bool {
+    let cursor = content.cursor();
+    if cursor.selection.is_some_and(|s| s != cursor.position) {
+        return false;
+    }
+    let Position { line, column } = cursor.position;
+    match action {
+        Action::Edit(Edit::Backspace) => line == 0 && column == 0,
+        Action::Edit(Edit::Delete) => {
+            let last = content.line_count().saturating_sub(1);
+            line >= last && content.line(last).is_none_or(|l| column >= l.text.len())
+        }
+        _ => false,
     }
 }
 
@@ -277,6 +304,41 @@ mod tests {
         let mut c = Content::with_text("aéb");
         replace(&mut c, 2, "éb", "z");
         assert_eq!(c.text(), "az");
+    }
+
+    #[test]
+    fn deleting_nothing_keeps_the_tab_clean_and_the_redo() {
+        let mut c = Content::with_text("ab");
+        let mut h = History::default();
+        h.mark_saved(&c);
+        c.perform(Action::Move(Motion::DocumentEnd));
+        typed(&mut h, &mut c, "c");
+        assert!(h.undo(&mut c));
+        assert!(!h.is_dirty());
+        // Delete at the end, Backspace at the start: nothing changes, nothing is lost.
+        c.perform(Action::Move(Motion::DocumentEnd));
+        h.perform(&mut c, Action::Edit(Edit::Delete));
+        c.perform(Action::Move(Motion::DocumentStart));
+        h.perform(&mut c, Action::Edit(Edit::Backspace));
+        assert!(!h.is_dirty(), "still clean");
+        assert!(h.redo(&mut c));
+        assert_eq!(c.text(), "abc");
+    }
+
+    #[test]
+    fn a_reload_while_typing_keeps_the_typing_as_its_own_step() {
+        let mut c = Content::with_text("a");
+        c.perform(Action::Move(Motion::DocumentEnd));
+        let mut h = History::default();
+        typed(&mut h, &mut c, "b");
+        // The file is replaced from disk while a typing group is still open.
+        let (before, cursor) = (c.text(), c.cursor());
+        c = Content::with_text("ab\nmore");
+        h.record(&before, &c.text(), cursor, c.cursor());
+        assert!(h.undo(&mut c));
+        assert_eq!(c.text(), "ab");
+        assert!(h.undo(&mut c));
+        assert_eq!(c.text(), "a", "the typing is undone too, at the right place");
     }
 
     #[test]

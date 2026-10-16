@@ -80,7 +80,9 @@ pub fn changes(root: &Path, staged: bool, prefix: &str) -> Result<(String, Strin
     // The folder, literally (a `[id]` folder is not a glob); excludes stay globs.
     let literal = crate::git::literal(prefix);
     let scope = if prefix.is_empty() { "." } else { literal.as_str() };
-    let mut common = vec!["diff", "--no-ext-diff", "--no-color"];
+    // No textconv: a user's converters would run on every click, and their output
+    // (a decrypted or decompiled file) would go to the provider.
+    let mut common = vec!["diff", "--no-ext-diff", "--no-color", "--no-textconv"];
     if staged {
         common.push("--cached");
     } else if git(root, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok() {
@@ -90,9 +92,15 @@ pub fn changes(root: &Path, staged: bool, prefix: &str) -> Result<(String, Strin
     let mut stat_args = common.clone();
     stat_args.extend(["--stat=120", "--", scope]);
     let mut stat = git(root, &stat_args)?;
+    // Huge changes (a data dump, generated code) stay in the stat but not in the
+    // diff: they would fill the budget the code changes need, and memory.
+    let mut numstat_args = common.clone();
+    numstat_args.extend(["--numstat", "-z", "--no-renames", "--", scope]);
+    let huge: Vec<String> =
+        huge_files(&git(root, &numstat_args)?).into_iter().map(|p| format!(":(exclude,literal){p}")).collect();
     let mut diff_args = common.clone();
     diff_args.extend(["--", scope]);
-    diff_args.extend(excludes.iter().map(String::as_str));
+    diff_args.extend(excludes.iter().chain(&huge).map(String::as_str));
     let diff = git(root, &diff_args)?;
     if !staged {
         let untracked = git(root, &["ls-files", "--others", "--exclude-standard", "--", scope])?;
@@ -104,6 +112,23 @@ pub fn changes(root: &Path, staged: bool, prefix: &str) -> Result<(String, Strin
         return Err("Nothing to commit".into());
     }
     Ok((stat, diff))
+}
+
+/// Lines changed in one file above which its diff is left out of the prompt.
+const MAX_FILE_LINES: u64 = 2000;
+
+/// Paths in `git diff --numstat -z --no-renames` output with more than
+/// [`MAX_FILE_LINES`] lines added and removed (binary files count as none).
+fn huge_files(numstat: &str) -> Vec<String> {
+    numstat
+        .split('\0')
+        .filter_map(|entry| {
+            let mut f = entry.splitn(3, '\t');
+            let (added, removed, path) = (f.next()?, f.next()?, f.next()?);
+            let n = added.parse::<u64>().unwrap_or(0) + removed.parse::<u64>().unwrap_or(0);
+            (n > MAX_FILE_LINES && !path.is_empty()).then(|| path.to_string())
+        })
+        .collect()
 }
 
 /// `stat` cut to about [`MAX_STAT_CHARS`] on a line boundary, ending with how
@@ -388,6 +413,21 @@ mod tests {
         assert!(stat.contains("sub/in.txt") && !stat.contains("out.txt"), "{stat}");
         let (stat, _) = changes(&dir, false, "").unwrap();
         assert!(stat.contains("sub/in.txt") && stat.contains("out.txt"), "{stat}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn huge_changes_stay_in_the_stat_but_not_the_diff() {
+        let dir = crate::files::test_dir("commitgen-huge");
+        git(&dir, &["init", "-q"]).unwrap();
+        let rows: String = (0..2500).map(|i| format!("{i},x\n")).collect();
+        std::fs::write(dir.join("dump.csv"), rows).unwrap();
+        std::fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        let (stat, diff) = changes(&dir, true, "").unwrap();
+        assert!(stat.contains("dump.csv") && stat.contains("main.rs"), "{stat}");
+        assert!(diff.contains("fn main") && !diff.contains("2499,x"), "{diff}");
+        assert_eq!(huge_files("2500\t0\tdump.csv\0-\t-\tlogo.png\x003\t1\tmain.rs\0"), ["dump.csv"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

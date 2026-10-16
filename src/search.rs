@@ -119,16 +119,42 @@ pub fn search(
 /// gets replaced (no match spans lines, empty matches are left alone).
 pub fn replace_all(files: &[PathBuf], query: &str, replacement: &str, opts: &Options) -> Result<usize, String> {
     let re = build_regex(query, opts)?;
+    let replacement = if opts.regex { braced_groups(replacement) } else { replacement.to_string() };
     let mut changed = 0;
     for path in files {
         let Some(content) = read_text(path) else { continue };
-        let new = replace_lines(&re, &content, replacement, opts.regex);
+        let new = replace_lines(&re, &content, &replacement, opts.regex);
         if new != content {
-            std::fs::write(path, new.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+            crate::files::rewrite(path, new.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
             changed += 1;
         }
     }
     Ok(changed)
+}
+
+/// `$1a` as VSCodium reads it, group 1 then `a` (the regex crate would look
+/// for a group named `1a`): numbered groups get braces. `$$` stays a `$`.
+fn braced_groups(replacement: &str) -> String {
+    let mut out = String::with_capacity(replacement.len() + 4);
+    let mut chars = replacement.chars().peekable();
+    while let Some(c) = chars.next() {
+        out.push(c);
+        if c != '$' {
+            continue;
+        }
+        match chars.peek() {
+            Some('$') => out.push(chars.next().unwrap_or('$')),
+            Some(d) if d.is_ascii_digit() => {
+                out.push('{');
+                while let Some(d) = chars.next_if(char::is_ascii_digit) {
+                    out.push(d);
+                }
+                out.push('}');
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn replace_lines(re: &Regex, content: &str, replacement: &str, expand: bool) -> String {
@@ -181,6 +207,24 @@ fn preview(line: &str, ranges: &[(usize, usize)]) -> (String, Vec<(usize, usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbered_groups_read_like_vscodium_and_files_keep_mode_and_links() {
+        assert_eq!(braced_groups("$1a $$1 ${2} $x $"), "${1}a $$1 ${2} $x $");
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::files::test_dir("replace");
+        let file = dir.join("s.sh");
+        std::fs::write(&file, "echo foo\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("s.sh", dir.join("link.sh")).unwrap();
+        let opts = Options { regex: true, ..Options::default() };
+        assert_eq!(replace_all(&[dir.join("link.sh")], "(fo)o", "${1}x$1a", &opts), Ok(1));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "echo foxfoa\n");
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o755);
+        assert!(dir.join("link.sh").symlink_metadata().unwrap().file_type().is_symlink(), "the link stays a link");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "no temporary file left");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn literal_and_whole_word() {

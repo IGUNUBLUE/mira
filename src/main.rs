@@ -50,41 +50,74 @@ fn pick_renderer() {
     }
 }
 
+/// What the command line asked for.
+#[derive(Debug, PartialEq)]
+enum Cli {
+    Help,
+    Version,
+    Run { fresh: bool, dir: Option<std::ffi::OsString> },
+}
+
+const USAGE: &str = "Usage: mira [--fresh] [DIRECTORY]\n\nOpens DIRECTORY in mira and focuses its herdr workspace. Without one,\n\
+                     mira opens the current directory, or (from the home directory, e.g. the app launcher) the\n\
+                     folder of herdr's focused workspace. mira then follows herdr: switching workspace switches\n\
+                     the folder. --fresh forgets the recorded agent turns.";
+
+/// Arguments as the OS gives them: a folder name needn't be UTF-8.
+fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Cli, String> {
+    let (mut fresh, mut dir, mut only_paths) = (false, None, false);
+    for arg in args {
+        match arg.to_str() {
+            Some("--") if !only_paths => only_paths = true,
+            Some("-h" | "--help") if !only_paths => return Ok(Cli::Help),
+            Some("-V" | "--version") if !only_paths => return Ok(Cli::Version),
+            Some("--fresh") if !only_paths => fresh = true,
+            // `--pick` used to ask for a folder; herdr's workspaces decide now. Accepted for old launchers.
+            Some("--pick") if !only_paths => {}
+            Some(flag) if flag.starts_with('-') && !only_paths => return Err(format!("unknown option {flag}")),
+            _ if dir.is_some() => return Err("only one directory can be opened".into()),
+            _ => dir = Some(arg),
+        }
+    }
+    Ok(Cli::Run { fresh, dir })
+}
+
 fn main() -> iced::Result {
     pick_renderer();
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let fresh = args.iter().any(|a| a == "--fresh");
-    // `--pick` used to ask for a folder; herdr's workspaces decide now. Accepted for old launchers.
-    args.retain(|a| a != "--fresh" && a != "--pick");
-    let arg = args.into_iter().next();
-    if matches!(arg.as_deref(), Some("-h" | "--help")) {
-        println!(
-            "Usage: mira [--fresh] [DIRECTORY]\n\nOpens DIRECTORY in mira and focuses its herdr workspace. Without one,\n\
-             mira opens the current directory, or (from the home directory, e.g. the app launcher) the\n\
-             folder of herdr's focused workspace. mira then follows herdr: switching workspace switches\n\
-             the folder. --fresh forgets the recorded agent turns."
-        );
-        return Ok(());
-    }
-    if matches!(arg.as_deref(), Some("-V" | "--version")) {
-        println!("mira {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
+    let (fresh, arg) = match parse_args(std::env::args_os().skip(1)) {
+        Ok(Cli::Help) => {
+            println!("{USAGE}");
+            return Ok(());
+        }
+        Ok(Cli::Version) => {
+            println!("mira {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Ok(Cli::Run { fresh, dir }) => (fresh, dir),
+        Err(e) => {
+            eprintln!("mira: {e}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
 
     let start = match arg {
-        Some(dir) => match PathBuf::from(&dir).canonicalize().ok().filter(|p| p.is_dir()) {
-            Some(root) => app::Start::Folder(root),
-            None => {
-                eprintln!("mira: {dir}: not a directory");
+        Some(dir) => match PathBuf::from(&dir).canonicalize() {
+            Ok(root) if root.is_dir() => app::Start::Folder(root),
+            Ok(_) => {
+                eprintln!("mira: {}: not a directory", dir.to_string_lossy());
+                std::process::exit(2);
+            }
+            Err(e) => {
+                eprintln!("mira: {}: {e}", dir.to_string_lossy());
                 std::process::exit(2);
             }
         },
         None => {
             let home = std::env::var_os("HOME").map(PathBuf::from).and_then(|h| h.canonicalize().ok());
             match std::env::current_dir().ok().and_then(|d| d.canonicalize().ok()) {
-                // Launched from a project directory: open it.
-                Some(cwd) if Some(&cwd) != home.as_ref() => app::Start::Folder(cwd),
-                // From the launcher (cwd = home): whatever herdr is focused on.
+                // Launched from a project directory: open it. From the launcher (cwd = home,
+                // or `/` for some): whatever herdr is focused on.
+                Some(cwd) if Some(&cwd) != home.as_ref() && cwd.parent().is_some() => app::Start::Folder(cwd),
                 _ => app::Start::Follow,
             }
         }
@@ -113,4 +146,29 @@ fn main() -> iced::Result {
         .window(window)
         .antialiasing(true)
         .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    fn parse(args: &[&str]) -> Result<Cli, String> {
+        parse_args(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn arguments_are_read_as_given() {
+        assert_eq!(parse(&[]), Ok(Cli::Run { fresh: false, dir: None }));
+        assert_eq!(parse(&["--fresh", "a"]), Ok(Cli::Run { fresh: true, dir: Some("a".into()) }));
+        assert_eq!(parse(&["a", "-h"]), Ok(Cli::Help));
+        assert_eq!(parse(&["--pick"]), Ok(Cli::Run { fresh: false, dir: None }));
+        assert_eq!(parse(&["--", "-dir"]), Ok(Cli::Run { fresh: false, dir: Some("-dir".into()) }));
+        assert!(parse(&["--foo"]).unwrap_err().contains("--foo"));
+        assert!(parse(&["a", "b"]).is_err());
+        // A Latin-1 folder name: no panic, passed on as is.
+        let latin1 = OsString::from_vec(b"caf\xe9".to_vec());
+        assert_eq!(parse_args([latin1.clone()]), Ok(Cli::Run { fresh: false, dir: Some(latin1) }));
+    }
 }
