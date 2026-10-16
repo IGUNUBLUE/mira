@@ -8,7 +8,7 @@
 //! layer iced draws all quads before any text, so nothing covers a glyph and
 //! the cursor shows on lines with their own background.
 
-use super::frame::{Cell, Underline};
+use super::frame::{Cell, Frame, Underline};
 use super::input::{self, Button, MouseEvent};
 use super::{Action, Pos, Terminal, boxdraw};
 
@@ -434,52 +434,105 @@ impl<M> Widget<M, iced::Theme, iced::Renderer> for View<'_, M> {
         let bounds = layout.bounds();
         let frame = self.term.frame();
         let cell = state.cell.map_or_else(|| measure(self.font, self.size), |(c, _)| c);
-        renderer.with_layer(bounds, |r| {
-            fill(r, bounds, color(frame.background));
-            for line in 0..frame.lines {
-                let y = bounds.y + line as f32 * cell.height;
-                if y >= bounds.y + bounds.height {
-                    break;
-                }
-                let row = frame.row(line);
-                let cursor = frame.cursor.filter(|c| c.line == line);
-                if cursor.is_none() && row.iter().all(Cell::is_empty) {
-                    continue;
-                }
-                backgrounds(r, row, bounds.x, y, cell);
-                decorations(r, row, bounds.x, y, cell);
-                if let Some(c) = cursor {
-                    draw_cursor(r, c, state.focused, bounds.x, y, cell);
-                }
-                let block = cursor.filter(|c| state.focused && c.shape == CursorShape::Block);
-                self.texts(r, row, bounds, y, cell, block.map(|c| (c.col, c.text)));
-            }
-            // Scrolled back into the history: where in it, at the right edge.
-            if frame.display_offset > 0 && frame.history > 0 {
-                let total = (frame.history + frame.lines) as f32;
-                let h = (bounds.height * frame.lines as f32 / total).clamp(24.0_f32.min(bounds.height), bounds.height);
-                // 0 at the oldest line, 1 at the bottom.
-                let at = 1.0 - frame.display_offset.min(frame.history) as f32 / frame.history as f32;
-                let y = bounds.y + (bounds.height - h) * at;
-                let thumb = Rectangle::new(Point::new(bounds.x + bounds.width - 5.0, y), Size::new(4.0, h));
-                r.fill_quad(
-                    Quad { bounds: thumb, border: iced::Border::default().rounded(2), snap: true, ..Quad::default() },
-                    Color { a: 0.6, ..crate::theme::p().line_no },
-                );
-            }
-        });
+        let look = Look { font: self.font, size: self.size, cell, focused: state.focused };
+        renderer.with_layer(bounds, |r| paint(&mut Gpu { r, clip: bounds }, &frame, bounds, &look));
     }
 }
 
-fn fill(r: &mut iced::Renderer, bounds: Rectangle, c: Color) {
-    r.fill_quad(Quad { bounds, snap: true, ..Quad::default() }, c);
+/// What the terminal is drawn with: everything `paint` does goes through it,
+/// so tests can record it.
+trait Painter {
+    fn quad(&mut self, rect: Rectangle, color: Color);
+    /// A 1 px border, nothing inside (the unfocused cursor).
+    fn outline(&mut self, rect: Rectangle, color: Color);
+    /// A filled rectangle with rounded corners (the history thumb).
+    fn rounded(&mut self, rect: Rectangle, color: Color, radius: f32);
+    fn text(&mut self, text: iced::advanced::Text<String>, at: Point, color: Color);
+}
+
+struct Gpu<'a> {
+    r: &'a mut iced::Renderer,
+    clip: Rectangle,
+}
+
+impl Painter for Gpu<'_> {
+    fn quad(&mut self, rect: Rectangle, color: Color) {
+        self.r.fill_quad(Quad { bounds: rect, snap: true, ..Quad::default() }, color);
+    }
+
+    fn outline(&mut self, rect: Rectangle, color: Color) {
+        let border = iced::Border { color, width: 1.0, radius: 0.0.into() };
+        self.r.fill_quad(Quad { bounds: rect, border, snap: true, ..Quad::default() }, Color::TRANSPARENT);
+    }
+
+    fn rounded(&mut self, rect: Rectangle, color: Color, radius: f32) {
+        let border = iced::Border::default().rounded(radius);
+        self.r.fill_quad(Quad { bounds: rect, border, snap: true, ..Quad::default() }, color);
+    }
+
+    fn text(&mut self, text: iced::advanced::Text<String>, at: Point, color: Color) {
+        self.r.fill_text(text, at, color, self.clip);
+    }
+}
+
+/// How to draw: font, size, cell and whether the terminal has the keyboard.
+struct Look {
+    font: Font,
+    size: f32,
+    cell: Size,
+    focused: bool,
+}
+
+/// Draw `frame` in `bounds`: the background, then per row its background
+/// runs, decorations, the cursor and the text; blank rows are skipped. Within
+/// a layer iced draws all quads before any text.
+fn paint(p: &mut dyn Painter, frame: &Frame, bounds: Rectangle, look: &Look) {
+    let cell = look.cell;
+    p.quad(bounds, color(frame.background));
+    for line in 0..frame.lines {
+        let y = bounds.y + line as f32 * cell.height;
+        if y >= bounds.y + bounds.height {
+            break;
+        }
+        let row = frame.row(line);
+        let cursor = frame.cursor.filter(|c| c.line == line);
+        if cursor.is_none() && row.iter().all(Cell::is_empty) {
+            continue;
+        }
+        backgrounds(p, row, bounds.x, y, cell);
+        decorations(p, row, bounds.x, y, cell);
+        if let Some(c) = cursor {
+            draw_cursor(p, c, look.focused, bounds.x, y, cell);
+        }
+        let block = cursor.filter(|c| look.focused && c.shape == CursorShape::Block);
+        texts(p, row, bounds.x, y, look, block.map(|c| (c.col, c.text)));
+    }
+    if let Some(thumb) = history_thumb(frame, bounds) {
+        p.rounded(thumb, Color { a: 0.6, ..crate::theme::p().line_no }, 2.0);
+    }
+}
+
+/// Scrolled back into the history: where in it, as a thumb at the right edge.
+fn history_thumb(frame: &Frame, bounds: Rectangle) -> Option<Rectangle> {
+    if frame.display_offset == 0 || frame.history == 0 {
+        return None;
+    }
+    let total = (frame.history + frame.lines) as f32;
+    let h = (bounds.height * frame.lines as f32 / total).clamp(24.0_f32.min(bounds.height), bounds.height);
+    // 0 at the oldest line, 1 at the bottom.
+    let at = 1.0 - frame.display_offset.min(frame.history) as f32 / frame.history as f32;
+    let y = bounds.y + (bounds.height - h) * at;
+    Some(Rectangle::new(Point::new(bounds.x + bounds.width - 5.0, y), Size::new(4.0, h)))
+}
+
+fn rect(x: f32, y: f32, w: f32, h: f32) -> Rectangle {
+    Rectangle::new(Point::new(x, y), Size::new(w, h))
 }
 
 /// One quad per run of cells with the same (non-default) background.
-fn backgrounds(r: &mut iced::Renderer, row: &[Cell], x0: f32, y: f32, cell: Size) {
+fn backgrounds(p: &mut dyn Painter, row: &[Cell], x0: f32, y: f32, cell: Size) {
     for (start, len, bg) in bg_runs(row) {
-        let x = x0 + start as f32 * cell.width;
-        fill(r, Rectangle::new(Point::new(x, y), Size::new(len as f32 * cell.width, cell.height)), color(bg));
+        p.quad(rect(x0 + start as f32 * cell.width, y, len as f32 * cell.width, cell.height), color(bg));
     }
 }
 
@@ -502,7 +555,7 @@ fn bg_runs(row: &[Cell]) -> Vec<(usize, usize, Rgb)> {
 }
 
 /// Underlines and strike-through, under the text.
-fn decorations(r: &mut iced::Renderer, row: &[Cell], x0: f32, y: f32, cell: Size) {
+fn decorations(p: &mut dyn Painter, row: &[Cell], x0: f32, y: f32, cell: Size) {
     let thick = (cell.height / 16.0).round().max(1.0);
     for (col, c) in row.iter().enumerate() {
         if c.hidden || c.spacer || (c.underline == Underline::None && !c.strike) {
@@ -512,15 +565,13 @@ fn decorations(r: &mut iced::Renderer, row: &[Cell], x0: f32, y: f32, cell: Size
         let w = cell.width * if c.wide { 2.0 } else { 1.0 };
         let line_color = color(c.underline_color.unwrap_or(c.fg));
         let base = y + cell.height - thick * 2.0;
-        let bar = |r: &mut iced::Renderer, x: f32, y: f32, w: f32, col: Color| {
-            fill(r, Rectangle::new(Point::new(x, y), Size::new(w, thick)), col);
-        };
+        let mut bar = |x: f32, y: f32, w: f32, col: Color| p.quad(rect(x, y, w, thick), col);
         match c.underline {
             Underline::None => {}
-            Underline::Single => bar(r, x, base, w, line_color),
+            Underline::Single => bar(x, base, w, line_color),
             Underline::Double => {
-                bar(r, x, base, w, line_color);
-                bar(r, x, base - thick * 2.0, w, line_color);
+                bar(x, base, w, line_color);
+                bar(x, base - thick * 2.0, w, line_color);
             }
             // A curl at this size reads as a raised dashed line; dots and dashes as such.
             Underline::Curl | Underline::Dashed | Underline::Dotted => {
@@ -533,39 +584,30 @@ fn decorations(r: &mut iced::Renderer, row: &[Cell], x0: f32, y: f32, cell: Size
                 let mut up = false;
                 while dx < w {
                     let rise = if c.underline == Underline::Curl && up { thick } else { 0.0 };
-                    bar(r, x + dx, base - rise, on.min(w - dx), line_color);
+                    bar(x + dx, base - rise, on.min(w - dx), line_color);
                     dx += on + gap;
                     up = !up;
                 }
             }
         }
         if c.strike {
-            bar(r, x, y + (cell.height / 2.0).round(), w, color(c.fg));
+            bar(x, y + (cell.height / 2.0).round(), w, color(c.fg));
         }
     }
 }
 
-fn draw_cursor(r: &mut iced::Renderer, c: super::frame::Cursor, focused: bool, x0: f32, y: f32, cell: Size) {
+fn draw_cursor(p: &mut dyn Painter, c: super::frame::Cursor, focused: bool, x0: f32, y: f32, cell: Size) {
     let x = x0 + c.col as f32 * cell.width;
     let w = cell.width * if c.wide { 2.0 } else { 1.0 };
     let thick = (cell.width / 8.0).round().max(2.0);
-    let at = |x: f32, y: f32, w: f32, h: f32| Rectangle::new(Point::new(x, y), Size::new(w, h));
     let col = color(c.color);
     match (c.shape, focused) {
         (CursorShape::Hidden, _) => {}
         // Unfocused, any shape shows as an outline, as in other terminals.
-        (CursorShape::HollowBlock, _) | (CursorShape::Block, false) => r.fill_quad(
-            Quad {
-                bounds: at(x, y, w, cell.height),
-                border: iced::Border { color: col, width: 1.0, radius: 0.0.into() },
-                snap: true,
-                ..Quad::default()
-            },
-            Color::TRANSPARENT,
-        ),
-        (CursorShape::Block, true) => fill(r, at(x, y, w, cell.height), col),
-        (CursorShape::Beam, _) => fill(r, at(x, y, thick, cell.height), col),
-        (CursorShape::Underline, _) => fill(r, at(x, y + cell.height - thick, w, thick), col),
+        (CursorShape::HollowBlock, _) | (CursorShape::Block, false) => p.outline(rect(x, y, w, cell.height), col),
+        (CursorShape::Block, true) => p.quad(rect(x, y, w, cell.height), col),
+        (CursorShape::Beam, _) => p.quad(rect(x, y, thick, cell.height), col),
+        (CursorShape::Underline, _) => p.quad(rect(x, y + cell.height - thick, w, thick), col),
     }
 }
 
@@ -573,66 +615,55 @@ fn is_plain(c: &Cell) -> bool {
     c.extra.is_none() && !c.wide && (' '..='~').contains(&c.c)
 }
 
-impl<M> View<'_, M> {
-    fn text(
-        &self,
-        content: String,
-        font: Font,
-        shaping: text::Shaping,
-        width: f32,
-        cell: Size,
-    ) -> iced::advanced::Text<String> {
-        iced::advanced::Text {
-            content,
-            bounds: Size::new(width, cell.height),
-            size: Pixels(self.size),
-            line_height: text::LineHeight::Absolute(Pixels(cell.height)),
-            font,
-            align_x: text::Alignment::Left,
-            align_y: Vertical::Top,
-            shaping,
-            wrapping: text::Wrapping::None,
-        }
+fn text_spec(
+    content: String,
+    font: Font,
+    shaping: text::Shaping,
+    width: f32,
+    look: &Look,
+) -> iced::advanced::Text<String> {
+    iced::advanced::Text {
+        content,
+        bounds: Size::new(width, look.cell.height),
+        size: Pixels(look.size),
+        line_height: text::LineHeight::Absolute(Pixels(look.cell.height)),
+        font,
+        align_x: text::Alignment::Left,
+        align_y: Vertical::Top,
+        shaping,
+        wrapping: text::Wrapping::None,
     }
+}
 
-    /// Draw a row's text (see [`glyphs`]).
-    fn texts(
-        &self,
-        r: &mut iced::Renderer,
-        row: &[Cell],
-        bounds: Rectangle,
-        y: f32,
-        cell: Size,
-        block: Option<(usize, Rgb)>,
-    ) {
-        for g in glyphs(row, block) {
-            let x = bounds.x + g.col as f32 * cell.width;
-            let fg = color(g.fg);
-            let font = Font {
-                weight: if g.bold { iced::font::Weight::Bold } else { self.font.weight },
-                style: if g.italic { iced::font::Style::Italic } else { self.font.style },
-                ..self.font
-            };
-            match g.kind {
-                GlyphKind::Run(run) => {
-                    let width = (run.len() + 1) as f32 * cell.width;
-                    r.fill_text(self.text(run, font, text::Shaping::Basic, width, cell), Point::new(x, y), fg, bounds);
+/// Draw a row's text (see [`glyphs`]).
+fn texts(p: &mut dyn Painter, row: &[Cell], x0: f32, y: f32, look: &Look, block: Option<(usize, Rgb)>) {
+    let cell = look.cell;
+    for g in glyphs(row, block) {
+        let x = x0 + g.col as f32 * cell.width;
+        let fg = color(g.fg);
+        let font = Font {
+            weight: if g.bold { iced::font::Weight::Bold } else { look.font.weight },
+            style: if g.italic { iced::font::Style::Italic } else { look.font.style },
+            ..look.font
+        };
+        match g.kind {
+            GlyphKind::Run(run) => {
+                let width = (run.len() + 1) as f32 * cell.width;
+                p.text(text_spec(run, font, text::Shaping::Basic, width, look), Point::new(x, y), fg);
+            }
+            GlyphKind::Shape(c) => {
+                for piece in boxdraw::pieces(c, cell.width, cell.height).unwrap_or_default() {
+                    p.quad(rect(x + piece.x, y + piece.y, piece.w, piece.h), Color { a: fg.a * piece.alpha, ..fg });
                 }
-                GlyphKind::Shape(c) => {
-                    for p in boxdraw::pieces(c, cell.width, cell.height).unwrap_or_default() {
-                        let rect = Rectangle::new(Point::new(x + p.x, y + p.y), Size::new(p.w, p.h));
-                        fill(r, rect, Color { a: fg.a * p.alpha, ..fg });
-                    }
-                }
-                GlyphKind::Single { content, wide } => {
-                    let span = if wide { 2.0 } else { 1.0 };
-                    let t = iced::advanced::Text {
-                        align_x: text::Alignment::Center,
-                        align_y: Vertical::Center,
-                        ..self.text(content, font, text::Shaping::Advanced, cell.width * span, cell)
-                    };
-                    r.fill_text(t, Point::new(x + cell.width * span / 2.0, y + cell.height / 2.0), fg, bounds);
-                }
+            }
+            GlyphKind::Single { content, wide } => {
+                let span = if wide { 2.0 } else { 1.0 };
+                let t = iced::advanced::Text {
+                    align_x: text::Alignment::Center,
+                    align_y: Vertical::Center,
+                    ..text_spec(content, font, text::Shaping::Advanced, cell.width * span, look)
+                };
+                p.text(t, Point::new(x + cell.width * span / 2.0, y + cell.height / 2.0), fg);
             }
         }
     }
@@ -918,6 +949,130 @@ mod tests {
         let row = row_of("a\x1b[41mbcd\x1b[42mef\x1b[0mg\x1b[41mh");
         let runs: Vec<(usize, usize)> = bg_runs(&row).iter().map(|(s, l, _)| (*s, *l)).collect();
         assert_eq!(runs, [(1, 3), (4, 2), (7, 1)]);
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Op {
+        Quad(Rectangle, Color),
+        Outline(Rectangle, Color),
+        Rounded(Rectangle),
+        Text(String, Point, Color, bool),
+    }
+
+    #[derive(Default)]
+    struct Recorder(Vec<Op>);
+
+    impl Painter for Recorder {
+        fn quad(&mut self, rect: Rectangle, color: Color) {
+            self.0.push(Op::Quad(rect, color));
+        }
+        fn outline(&mut self, rect: Rectangle, color: Color) {
+            self.0.push(Op::Outline(rect, color));
+        }
+        fn rounded(&mut self, rect: Rectangle, _color: Color, _radius: f32) {
+            self.0.push(Op::Rounded(rect));
+        }
+        fn text(&mut self, text: iced::advanced::Text<String>, at: Point, color: Color) {
+            self.0.push(Op::Text(text.content, at, color, text.font.weight == iced::font::Weight::Bold));
+        }
+    }
+
+    fn frame_of(cols: usize, lines: usize, input: &str) -> Frame {
+        use alacritty_terminal::event::VoidListener;
+        use alacritty_terminal::term::{Config, Term, test::TermSize};
+        let mut term = Term::new(Config::default(), &TermSize::new(cols, lines), VoidListener);
+        let mut parser: alacritty_terminal::vte::ansi::Processor = alacritty_terminal::vte::ansi::Processor::new();
+        parser.advance(&mut term, input.as_bytes());
+        super::super::frame::build(&term, &crate::theme::PALETTES[0], &[])
+    }
+
+    const CELL: Size = Size { width: 8.0, height: 20.0 };
+
+    fn painted(f: &Frame, focused: bool) -> Vec<Op> {
+        let look = Look { font: Font::MONOSPACE, size: 14.0, cell: CELL, focused };
+        let bounds = rect(100.0, 10.0, f.cols as f32 * 8.0, f.lines as f32 * 20.0);
+        let mut r = Recorder::default();
+        paint(&mut r, f, bounds, &look);
+        r.0
+    }
+
+    #[test]
+    fn paints_background_runs_cursor_then_text_and_skips_blank_rows() {
+        let f = frame_of(10, 3, "\x1b[48;2;1;2;3m> hi\x1b[K\r\n\r\n\x1b[1mok");
+        let ops = painted(&f, true);
+        let bg = color(f.background);
+        let line_bg = Color::from_rgb8(1, 2, 3);
+        // The terminal's background, then row 0's own background over the whole line.
+        assert_eq!(ops[0], Op::Quad(rect(100.0, 10.0, 80.0, 60.0), bg));
+        assert_eq!(ops[1], Op::Quad(rect(100.0, 10.0, 80.0, 20.0), line_bg));
+        // Row 1 is blank: nothing for it. The cursor is on row 2, after "ok".
+        let cursor =
+            ops.iter().position(|o| matches!(o, Op::Quad(r, _) if *r == rect(116.0, 50.0, 8.0, 20.0))).unwrap();
+        let ok = ops.iter().position(|o| matches!(o, Op::Text(t, _, _, true) if t == "ok")).unwrap();
+        assert!(cursor < ok, "the cursor is drawn before the text over it: {ops:?}");
+        assert!(
+            ops.iter().any(|o| matches!(o, Op::Text(t, p, _, false) if t == "> hi" && *p == Point::new(100.0, 10.0)))
+        );
+        assert!(!ops.iter().any(|o| matches!(o, Op::Rounded(_))), "no history thumb at the bottom");
+    }
+
+    #[test]
+    fn the_block_cursor_shows_on_a_colored_line_and_its_letter_takes_the_line_color() {
+        // The cursor on the 'x' of a line with its own background (Codex's prompt, moved left).
+        let f = frame_of(10, 1, "\x1b[48;2;229;236;237m> xy\x1b[K\x1b[2D");
+        let ops = painted(&f, true);
+        let c = f.cursor.unwrap();
+        assert_eq!(c.col, 2);
+        let at = rect(116.0, 10.0, 8.0, 20.0);
+        let line_bg = Op::Quad(rect(100.0, 10.0, 80.0, 20.0), Color::from_rgb8(229, 236, 237));
+        let line = ops.iter().position(|o| *o == line_bg).unwrap();
+        let cursor = ops.iter().position(|o| *o == Op::Quad(at, color(c.color))).unwrap();
+        assert!(line < cursor, "the cursor is painted over the line's background");
+        assert!(ops.contains(&Op::Text("x".into(), Point::new(116.0, 10.0), Color::from_rgb8(229, 236, 237), false)));
+        // Unfocused: an outline, and the letter keeps its color.
+        let ops = painted(&f, false);
+        assert!(ops.contains(&Op::Outline(at, color(c.color))));
+        assert!(ops.iter().any(|o| matches!(o, Op::Text(t, _, _, _) if t == "> xy")));
+    }
+
+    #[test]
+    fn cursor_shapes_and_decorations() {
+        let beam = painted(&frame_of(4, 1, "\x1b[6 q"), true);
+        assert!(
+            beam.contains(&Op::Quad(rect(100.0, 10.0, 2.0, 20.0), color(frame_of(4, 1, "").cursor.unwrap().color)))
+        );
+        let under = painted(&frame_of(4, 1, "\x1b[4 q"), true);
+        assert!(under.iter().any(|o| matches!(o, Op::Quad(r, _) if *r == rect(100.0, 28.0, 8.0, 2.0))));
+        // Underline and strike: bars at the bottom and the middle of the cell.
+        let deco = painted(&frame_of(4, 1, "\x1b[4;9mu\x1b[0m\x1b[?25l"), true);
+        let bars: Vec<Rectangle> = deco
+            .iter()
+            .filter_map(|o| match o {
+                Op::Quad(r, _) if r.height == 1.0 => Some(*r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bars, [rect(100.0, 28.0, 8.0, 1.0), rect(100.0, 20.0, 8.0, 1.0)]);
+        // Box lines are quads, not text.
+        let boxed = painted(&frame_of(4, 1, "─\x1b[?25l"), true);
+        assert!(!boxed.iter().any(|o| matches!(o, Op::Text(..))));
+        assert_eq!(boxed.iter().filter(|o| matches!(o, Op::Quad(..))).count(), 3);
+    }
+
+    #[test]
+    fn the_history_thumb_tracks_the_scroll() {
+        let mut f = frame_of(4, 2, "");
+        f.history = 8;
+        f.display_offset = 8;
+        let b = rect(0.0, 0.0, 32.0, 100.0);
+        let top = history_thumb(&f, b).unwrap();
+        assert_eq!((top.x, top.y, top.width), (27.0, 0.0, 4.0));
+        assert_eq!(top.height, 24.0, "a minimum height");
+        f.display_offset = 4;
+        let mid = history_thumb(&f, b).unwrap();
+        assert_eq!(mid.y, 38.0);
+        f.display_offset = 0;
+        assert_eq!(history_thumb(&f, b), None);
     }
 
     #[test]
