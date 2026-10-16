@@ -34,13 +34,14 @@ impl App {
                     Ok((agents, focus)) => {
                         self.herdr_error = None;
                         let follow = focus.map_or_else(Task::none, |f| self.follow(f));
-                        return Task::batch([follow, self.on_agents(agents)]);
+                        return Task::batch([follow, self.on_agents(agents, true)]);
                     }
                     // No server: its agents are gone (or the client in the
-                    // terminal is still starting it). Close what was open.
+                    // terminal is still starting it). Close what was open; the
+                    // workspace is asked for once the server answers.
                     Err(herdr::Error::NotRunning) => {
                         self.herdr_error = None;
-                        return self.on_agents(Vec::new());
+                        return self.on_agents(Vec::new(), false);
                     }
                     Err(e) => self.herdr_error = Some(e.to_string()),
                 }
@@ -54,6 +55,8 @@ impl App {
                 self.ensuring_workspace = false;
                 match result {
                     Ok(ws) => self.workspace = Some(ws),
+                    // The server stopped in between: the next poll that reaches it asks again.
+                    Err(herdr::Error::NotRunning) => {}
                     Err(e) => {
                         self.workspace_retry = Instant::now() + Duration::from_secs(30);
                         self.set_status(format!("herdr workspace: {e}"), true);
@@ -158,8 +161,7 @@ impl App {
         // A refresh of the old folder may still hold the old cache; it's dropped with it.
         self.git_cache = Default::default();
         self.refreshing = false;
-        self.snapshot_queue.clear();
-        self.snapshot_running = false;
+        // Snapshots queued or in flight for the old folder still land in its saved state.
         self.snapshots_off = false;
         self.selected_run = None;
         // Undo of a discard belongs to the old folder's files.
@@ -194,7 +196,9 @@ impl App {
         Task::batch([self.refresh_git(), self.load_all_run_files()])
     }
 
-    fn on_agents(&mut self, agents: Vec<Agent>) -> Task<Msg> {
+    /// herdr's agents, as polled (`server`: herdr answered; with no server
+    /// there is no workspace to ask for).
+    fn on_agents(&mut self, agents: Vec<Agent>, server: bool) -> Task<Msg> {
         let root = self.root.clone();
         let here: Vec<Agent> = agents.into_iter().filter(|a| a.dir().is_some_and(|d| d.starts_with(&root))).collect();
         let seen: Vec<Seen> = here
@@ -214,7 +218,8 @@ impl App {
             self.state_dirty = true;
         }
         let mut tasks: Vec<Task<Msg>> = effects.into_iter().map(|e| self.run_effect(e)).collect();
-        if self.workspace.is_none()
+        if server
+            && self.workspace.is_none()
             && !self.adopt_focused
             && !self.ensuring_workspace
             && Instant::now() >= self.workspace_retry

@@ -114,19 +114,19 @@ impl App {
                         } else if let Some(kept) = kept {
                             self.git.ignored = kept;
                         }
-                        // Snapshots queued before it was known whether this is a repository.
-                        if self.git.root.is_some() {
-                            tasks.push(self.next_snapshot());
-                        } else {
-                            self.snapshot_queue.clear();
+                        // Snapshots queued before it was known whether this is a repository
+                        // (another folder's queued ones go on either way).
+                        if self.git.root.is_none() {
+                            self.drop_snapshots_here();
                         }
+                        tasks.push(self.next_snapshot());
                         return Task::batch(tasks);
                     }
                     Err(e) => {
                         // Loaded, if unhappily: don't keep showing "Loading changes…".
                         self.git_loaded = true;
                         if self.git.root.is_none() {
-                            self.snapshot_queue.clear();
+                            self.drop_snapshots_here();
                         }
                         self.set_error_detail(git::error_summary(&e), e);
                     }

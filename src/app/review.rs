@@ -14,21 +14,33 @@ const NOT_A_REPO: &str = "not a git repository";
 impl App {
     pub(super) fn update_review(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
-            Msg::RunSnapshot(id, after, result) => {
+            Msg::RunSnapshot(root, id, after, result) => {
                 self.snapshot_running = false;
+                // Taken for a folder shown before: its saved state gets it, so the
+                // run stays reviewable there (its files load when it's shown again).
+                if root != self.root {
+                    if let Ok(tree) = result
+                        && let Err(e) = persist::edit_runs(&root, |runs| {
+                            runs.iter_mut().find(|r| r.id == id).is_some_and(|r| r.store_tree(after, tree))
+                        })
+                    {
+                        self.set_status(format!("Could not save review state: {e}"), true);
+                    }
+                    return self.next_snapshot();
+                }
                 let tree = match result {
                     Ok(t) => t,
                     Err(e) if e.starts_with(git::SNAPSHOT_TIMED_OUT) => {
                         // Too big to track: stop instead of piling up git processes.
                         self.snapshots_off = true;
-                        self.snapshot_queue.clear();
+                        self.drop_snapshots_here();
                         self.set_status(format!("{e}: agent change tracking is off for this folder"), true);
-                        return Task::none();
+                        return self.next_snapshot();
                     }
                     Err(e) if e == NOT_A_REPO => {
                         // Not a repository after all: nothing to track.
-                        self.snapshot_queue.clear();
-                        return Task::none();
+                        self.drop_snapshots_here();
+                        return self.next_snapshot();
                     }
                     Err(e) => {
                         self.set_status(format!("snapshot: {e}"), true);
@@ -37,17 +49,8 @@ impl App {
                 };
                 let next = self.next_snapshot();
                 let stored = self.runs.edit(id, |run| {
-                    // A late "after" of a run that reopened (quick follow-up) is stale.
-                    if after && run.running() {
-                        return None;
-                    }
-                    if after {
-                        run.after = Some(tree)
-                    } else {
-                        run.before = Some(tree)
-                    }
                     // The two snapshots race; whichever lands second computes the files.
-                    Some((after || run.files.is_none()) && run.trees().is_some())
+                    run.store_tree(after, tree).then(|| (after || run.files.is_none()) && run.trees().is_some())
                 });
                 let Some(Some(load_files)) = stored else { return next };
                 self.state_dirty = true;
@@ -56,15 +59,17 @@ impl App {
                 }
                 return next;
             }
-            Msg::RunFiles(id, Ok(files)) => {
+            Msg::RunFiles(id, trees, Ok(files)) => {
                 self.runs.edit(id, |run| {
-                    if !run.running() {
+                    // Computed for trees the run still has: a reopened and closed
+                    // again run has a newer "after", and its own files coming.
+                    if !run.running() && run.trees() == Some((trees.0.as_str(), trees.1.as_str())) {
                         run.files = Some(files);
                     }
                 });
             }
             // Leave `files` unknown: an empty list would hide the run (and trim it first).
-            Msg::RunFiles(_, Err(e)) => self.set_status(format!("Agent run files: {e}"), true),
+            Msg::RunFiles(_, _, Err(e)) => self.set_status(format!("Agent run files: {e}"), true),
             Msg::RunPrompt(id, prompt) => {
                 // The first title wins: a reopened run keeps the prompt that started it.
                 if prompt.is_some() && self.runs.get(id).is_some_and(|r| r.prompt.is_none()) {
@@ -208,7 +213,7 @@ impl App {
         // Before the first snapshot of the folder it isn't known whether it
         // is a repository: queue, and `GitLoaded` starts or drops the queue.
         if !self.snapshots_off && (self.git.root.is_some() || !self.git_loaded) {
-            self.snapshot_queue.push_back((id, after));
+            self.snapshot_queue.push_back((self.root.clone(), id, after));
             tasks.push(self.next_snapshot());
         }
         if after
@@ -227,22 +232,32 @@ impl App {
 
     /// Start the next queued snapshot unless one is running. Before the first
     /// git refresh the repository is resolved in the task itself, so an agent
-    /// starting right after launch still gets an accurate "before" tree.
+    /// starting right after launch still gets an accurate "before" tree. A
+    /// folder shown before resolves its own repository; its reply isn't
+    /// dropped with the folder (see `RunSnapshot`).
     pub(super) fn next_snapshot(&mut self) -> Task<Msg> {
-        if self.snapshot_running || self.snapshots_off || (self.git_loaded && self.git.root.is_none()) {
+        if self.snapshot_running {
             return Task::none();
         }
-        let Some((id, after)) = self.snapshot_queue.pop_front() else { return Task::none() };
+        // This folder's snapshots are dropped when it can't have any (see `drop_snapshots_here`).
+        let Some((root, id, after)) = self.snapshot_queue.pop_front() else { return Task::none() };
         self.snapshot_running = true;
-        let known = self.git.root.clone();
-        let dir = self.root.clone();
-        self.for_root(Task::perform(
+        let known = if root == self.root { self.git.root.clone() } else { None };
+        let dir = root.clone();
+        Task::perform(
             blocking(move || match known.or_else(|| git::repo_root(&dir)) {
                 Some(repo) => git::snapshot_tree(&repo),
                 None => Err(NOT_A_REPO.to_string()),
             }),
-            move |r| Msg::RunSnapshot(id, after, r),
-        ))
+            move |r| Msg::RunSnapshot(root, id, after, r),
+        )
+    }
+
+    /// Forget the queued snapshots of the folder shown (it isn't a repository,
+    /// or it's too large to track); other folders' still run.
+    pub(super) fn drop_snapshots_here(&mut self) {
+        let root = self.root.clone();
+        self.snapshot_queue.retain(|(r, ..)| *r != root);
     }
 
     /// Changed files of every run whose trees are known (after a restore).
@@ -254,8 +269,9 @@ impl App {
     fn load_run_files(&self, id: RunId) -> Task<Msg> {
         let Some((from, to)) = self.runs.get(id).and_then(|r| r.trees()) else { return Task::none() };
         let (root, from, to) = (self.repo_root(), from.to_string(), to.to_string());
+        let trees = (from.clone(), to.clone());
         self.for_root(Task::perform(blocking(move || git::diff_trees(&root, &from, &to)), move |f| {
-            Msg::RunFiles(id, f)
+            Msg::RunFiles(id, trees, f)
         }))
     }
 

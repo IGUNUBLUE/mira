@@ -86,8 +86,9 @@ pub struct App {
 
     // review
     pub runs: Tracker,
-    /// Snapshots waiting for the one in flight (git is never run in parallel).
-    snapshot_queue: std::collections::VecDeque<(RunId, bool)>,
+    /// Snapshots waiting for the one in flight (git is never run in parallel):
+    /// folder, run, "after". A folder no longer shown still gets its snapshots.
+    snapshot_queue: std::collections::VecDeque<(PathBuf, RunId, bool)>,
     snapshot_running: bool,
     /// Set when a snapshot timed out: the tree is too large to track runs.
     snapshots_off: bool,
@@ -238,8 +239,10 @@ pub enum Msg {
     /// A result computed for folder epoch `.0`; dropped if the folder changed since.
     ForRoot(u64, Box<Msg>),
     WorkspaceReady(Result<String, herdr::Error>),
-    RunSnapshot(RunId, bool, Result<String, String>),
-    RunFiles(RunId, Result<Vec<Change>, String>),
+    /// A snapshot of folder `.0` for run `.1` (`.2`: its "after") finished.
+    RunSnapshot(PathBuf, RunId, bool, Result<String, String>),
+    /// Run `.0`'s files between trees `.1` (from, to).
+    RunFiles(RunId, (String, String), Result<Vec<Change>, String>),
     RunPrompt(RunId, Option<String>),
     /// Select a run in the "by run" view (for its actions); again to clear.
     SelectRun(RunId),

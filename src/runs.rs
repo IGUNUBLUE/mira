@@ -77,6 +77,18 @@ impl Run {
     pub fn trees(&self) -> Option<(&str, &str)> {
         Some((self.before.as_deref()?, self.after.as_deref()?))
     }
+
+    /// Store a snapshot as the run's "after" (`after`) or "before". A late
+    /// "after" of a run that reopened (quick follow-up) is stale: dropped,
+    /// `false`.
+    pub fn store_tree(&mut self, after: bool, tree: String) -> bool {
+        match after {
+            true if self.running() => return false,
+            true => self.after = Some(tree),
+            false => self.before = Some(tree),
+        }
+        true
+    }
 }
 
 /// One agent as seen in one poll, already filtered to this folder.
@@ -103,6 +115,8 @@ struct PaneTrack {
     status: AgentStatus,
     seq: Option<u64>,
     open: Option<RunId>,
+    /// `open` was restored from disk: mira didn't watch its end.
+    restored: bool,
 }
 
 #[derive(Debug, Default)]
@@ -120,15 +134,19 @@ pub struct Tracker {
 }
 
 impl Tracker {
-    /// Restore saved runs. A run that was still open when mira closed stays
-    /// open on its pane: herdr kept the agent running, so the next poll
-    /// closes it normally (or right away if the pane is gone).
+    /// Restore saved runs. A run that was still open when mira closed (or
+    /// showed another folder) closes on the first poll: nobody watched its
+    /// agent meanwhile, which may have finished long ago and be on another
+    /// turn now. If it's busy, that turn starts a new run.
     pub fn from_runs(runs: Vec<Run>) -> Self {
         let next = runs.iter().map(|r| r.id.0 + 1).max().unwrap_or(0);
         let panes = runs
             .iter()
             .filter(|r| r.running())
-            .map(|r| (r.pane.clone(), PaneTrack { status: AgentStatus::Working, seq: None, open: Some(r.id) }))
+            .map(|r| {
+                let track = PaneTrack { status: AgentStatus::Working, seq: None, open: Some(r.id), restored: true };
+                (r.pane.clone(), track)
+            })
             .collect();
         let mut t = Self { runs, panes, next, ..Self::default() };
         t.reindex();
@@ -221,6 +239,7 @@ impl Tracker {
                 status: AgentStatus::Unknown,
                 seq: s.seq,
                 open: None,
+                restored: false,
             });
             // `unknown` is a detection gap, not a transition.
             let status = if s.status == AgentStatus::Unknown { track.status } else { s.status };
@@ -231,10 +250,11 @@ impl Tracker {
             let replaced = open.and_then(|id| self.get(id)).is_some_and(
                 |r| matches!((r.kind.as_deref(), s.kind.as_deref()), (Some(was), Some(now)) if was != now),
             );
+            let restored = track.restored && open.is_some();
             // Finished and immediately busy again within one poll: same turn.
-            let continued = seq_moved && status.busy() && !replaced;
+            let continued = seq_moved && status.busy() && !replaced && !restored;
             if let Some(id) = open
-                && (status.ready() || seq_moved || replaced)
+                && (status.ready() || seq_moved || replaced || restored)
                 && !continued
             {
                 self.close(id, now);
@@ -242,7 +262,9 @@ impl Tracker {
                 open = None;
             }
             if open.is_none() && status.busy() {
-                let id = match self.recent(&s.pane, s.kind.as_deref(), now) {
+                // A restored run just closed isn't this turn's: it doesn't reopen.
+                let recent = if restored { None } else { self.recent(&s.pane, s.kind.as_deref(), now) };
+                let id = match recent {
                     // Reopen: its "before" still holds, a new "after" comes at the end.
                     Some(id) => {
                         self.reopen(id);
@@ -257,7 +279,7 @@ impl Tracker {
                 };
                 open = Some(id);
             }
-            self.panes.insert(s.pane.clone(), PaneTrack { status, seq: s.seq.or(track.seq), open });
+            self.panes.insert(s.pane.clone(), PaneTrack { status, seq: s.seq.or(track.seq), open, restored: false });
         }
         // Agents that left (exited, closed, moved out of this folder).
         let gone: Vec<PaneId> = self.panes.keys().filter(|p| !seen.iter().any(|s| &s.pane == *p)).cloned().collect();
@@ -461,6 +483,32 @@ mod tests {
         assert_eq!(back.observe(&[seen("w1:p1", Idle, Some(6))], 9), vec![Effect::After(RunId(0))]);
         // New ids continue after the restored ones.
         assert_eq!(back.observe(&[seen("w1:p1", Working, Some(6))], 30), vec![Effect::Before(RunId(1))]);
+    }
+
+    #[test]
+    fn a_restored_run_found_busy_closes_instead_of_absorbing_the_new_turn() {
+        let mut t = Tracker::default();
+        t.observe(&[seen("w1:p1", Working, Some(5))], 1);
+        // Hours later (mira showed another folder), the agent is busy again.
+        let mut back = Tracker::from_runs(t.runs.clone());
+        let busy = [seen("w1:p1", Working, Some(9))];
+        assert_eq!(back.observe(&busy, 9000), vec![Effect::After(RunId(0)), Effect::Before(RunId(1))]);
+        assert_eq!(back.get(RunId(0)).and_then(|r| r.finished), Some(9000));
+        // From then on it's tracked as usual.
+        assert_eq!(back.observe(&busy, 9002), vec![]);
+        assert_eq!(back.observe(&[seen("w1:p1", Idle, Some(10))], 9010), vec![Effect::After(RunId(1))]);
+    }
+
+    #[test]
+    fn a_late_after_of_a_reopened_run_is_not_stored() {
+        let mut t = Tracker::default();
+        t.observe(&[seen("w1:p1", Working, None)], 1);
+        let mut run = t.get(RunId(0)).cloned().unwrap();
+        assert!(run.store_tree(false, "b".into()));
+        assert!(!run.store_tree(true, "a".into()), "still running");
+        run.finished = Some(2);
+        assert!(run.store_tree(true, "a".into()));
+        assert_eq!(run.trees(), Some(("b", "a")));
     }
 
     #[test]

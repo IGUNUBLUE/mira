@@ -84,6 +84,17 @@ fn save_to(path: &Path, state: &StateRef<'_>) -> Result<(), String> {
     write_private(path, &json)
 }
 
+/// Change the saved runs of folder `root` (one no longer shown) through `f`,
+/// which says whether it changed anything to write.
+pub fn edit_runs(root: &Path, f: impl FnOnce(&mut [Run]) -> bool) -> Result<(), String> {
+    edit_runs_at(&state_path(root).ok_or("no state directory")?, root, f)
+}
+
+fn edit_runs_at(path: &Path, root: &Path, f: impl FnOnce(&mut [Run]) -> bool) -> Result<(), String> {
+    let Some(mut state) = load_from(path, root) else { return Ok(()) };
+    if f(&mut state.runs) { save_to(path, &StateRef { root, runs: &state.runs }) } else { Ok(()) }
+}
+
 /// Write `bytes` to `path` readable only by the user (0600), atomically.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     write_atomic(path, bytes, 0o600)
@@ -276,6 +287,21 @@ mod tests {
         assert_eq!(back.runs[0].id, RunId(3));
         assert_eq!(back.runs[0].prompt.as_deref(), Some("hola"));
         assert!(load_from(&path, Path::new("/tmp/other")).is_none());
+
+        // A snapshot landing after the folder was left goes into its file.
+        let mut finished = runs[0].clone();
+        finished.finished = Some(20);
+        save_to(&path, &StateRef { root: Path::new("/tmp/p"), runs: &[finished] }).expect("save");
+        let store = |runs: &mut [Run]| {
+            runs.iter_mut().find(|r| r.id == RunId(3)).is_some_and(|r| r.store_tree(true, "def".into()))
+        };
+        edit_runs_at(&path, Path::new("/tmp/p"), store).expect("edit");
+        let back = load_from(&path, Path::new("/tmp/p")).expect("load");
+        assert_eq!(back.runs[0].trees(), Some(("abc", "def")));
+        // Nothing for another folder's file, or a file that isn't there.
+        assert!(edit_runs_at(&path, Path::new("/tmp/other"), |_| panic!("not its runs")).is_ok());
+        assert!(edit_runs_at(&dir.join("none.json"), Path::new("/tmp/p"), |_| true).is_ok());
+        assert!(!dir.join("none.json").exists());
 
         // A state file from the sessions era loads with no runs.
         std::fs::write(&path, r#"{"root":"/tmp/p","active":0,"sessions":[{"name":"kiro"}]}"#).expect("write");
