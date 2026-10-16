@@ -117,7 +117,7 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - Destructive actions are two-step (`set_confirm`, `theme::danger` label, cleared with the status or Escape:
   `clear_confirms`); icon-only buttons get a `tip`; git buttons are disabled while `git_busy`.
 - Diff rows: content row is the stack base layer, backgrounds go `push_under` so wrapped lines stay aligned.
-- App shortcuts are `Ctrl+Shift+<letter>` and are swallowed in the terminal (`SHORTCUT_LETTERS` in app/terminal.rs).
+- App shortcuts are `Ctrl+Shift+<letter>`; the terminal widget leaves those in `APP_LETTERS` (term/widget.rs) to the app.
   Never take `C`/`V` (terminal copy/paste) or plain `Ctrl+B` (herdr's prefix).
 - Code, comments and docs in English.
 
