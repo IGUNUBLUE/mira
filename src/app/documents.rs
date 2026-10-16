@@ -120,6 +120,8 @@ pub struct DiffTab {
     pub loaded_mtime: Option<SystemTime>,
     /// The file exists in the working tree (checked when the diff loads), for "Open file".
     pub on_disk: bool,
+    /// The latest load asked for: an older one finishing later is dropped.
+    pub load: u64,
 }
 
 /// An image, shown with zoom and pan (raster) or scaled to fit (SVG).
@@ -230,12 +232,7 @@ impl App {
             Msg::OpenImage(path) => self.open_image(path),
             Msg::SelectTab(i) => {
                 if i < self.tabs.len() {
-                    if self.autosave == AutoSave::OnFocusChange
-                        && let Some(prev) = self.active_tab.filter(|p| *p != i)
-                    {
-                        self.save_tab(prev, false);
-                    }
-                    self.active_tab = Some(i);
+                    self.activate(i);
                     return self.reload_active_diff();
                 }
             }
@@ -311,17 +308,13 @@ impl App {
                     }
                 }
             }
-            Msg::DiffLoaded(rel, source, full, diff) => {
-                let on_disk = self.repo_root().join(&rel).is_file();
-                for tab in &mut self.tabs {
-                    if let Tab::Diff(d) = tab
-                        && d.rel == rel
-                        && d.source == source
-                        && d.full == full
-                    {
-                        d.diff = Some(Arc::clone(&diff));
-                        d.on_disk = on_disk;
-                    }
+            Msg::DiffLoaded(load, on_disk, diff) => {
+                if let Some(d) = self.tabs.iter_mut().find_map(|t| match t {
+                    Tab::Diff(d) if d.load == load => Some(d),
+                    _ => None,
+                }) {
+                    d.diff = Some(diff);
+                    d.on_disk = on_disk;
                 }
             }
             Msg::DiffFull(full) => {
@@ -383,6 +376,17 @@ impl App {
         self.tabs.len() - 1
     }
 
+    /// Make tab `i` the active one. Every switch goes through here, so
+    /// `OnFocusChange` saves the tab being left however it's left.
+    pub(super) fn activate(&mut self, i: usize) {
+        if self.autosave == AutoSave::OnFocusChange
+            && let Some(prev) = self.active_tab.filter(|p| *p != i)
+        {
+            self.save_tab(prev, false);
+        }
+        self.active_tab = Some(i);
+    }
+
     pub(super) fn open_file(&mut self, path: PathBuf, line: Option<usize>) {
         if imagefile::kind(&path) == Some(imagefile::Kind::Raster) {
             self.open_image(path);
@@ -425,7 +429,7 @@ impl App {
             t.go_to_line(line, view);
             t.reveal = true;
         }
-        self.active_tab = Some(idx);
+        self.activate(idx);
         self.focus_mode = false;
         self.sync_center();
     }
@@ -443,7 +447,7 @@ impl App {
                 }
             },
         };
-        self.active_tab = Some(idx);
+        self.activate(idx);
         self.focus_mode = false;
         self.sync_center();
     }
@@ -459,6 +463,7 @@ impl App {
                 anchor: None,
                 loaded_mtime: None,
                 on_disk: false,
+                load: 0,
             })
         };
         let idx = match idx {
@@ -479,7 +484,7 @@ impl App {
             }
             None => self.open_tab(tab(rel, source)),
         };
-        self.active_tab = Some(idx);
+        self.activate(idx);
         self.focus_mode = false;
         self.sync_center();
         self.reload_active_diff()
@@ -491,14 +496,17 @@ impl App {
             return Task::none();
         };
         d.loaded_mtime = mtime(&root.join(&d.rel));
-        let (rel, source, full) = (d.rel.clone(), d.source.clone(), d.full);
-        Task::perform(
+        d.load = diff::next_id();
+        let (rel, source, full, load) = (d.rel.clone(), d.source.clone(), d.full, d.load);
+        let task = Task::perform(
             blocking(move || {
                 let diff = Arc::new(load_diff(&root, &rel, &source, full));
-                (rel, source, full, diff)
+                (root.join(&rel).is_file(), diff)
             }),
-            |(rel, source, full, diff)| Msg::DiffLoaded(rel, source, full, diff),
-        )
+            move |(on_disk, diff)| Msg::DiffLoaded(load, on_disk, diff),
+        );
+        // A reply for another folder's repo is dropped too.
+        self.for_root(task)
     }
 
     /// The active diff compares against the working tree and the file changed
@@ -695,6 +703,18 @@ fn manual_save(dirty: bool, conflict: bool, disk_changed: bool, confirmed: bool)
     }
 }
 
+/// The active tab after keeping only the tabs marked in `keep`: the same tab
+/// if it stays, else the one that takes its place (or the last one left).
+pub(super) fn active_after_retain(active: Option<usize>, keep: &[bool]) -> Option<usize> {
+    let left = keep.iter().filter(|k| **k).count();
+    let a = active?;
+    if left == 0 {
+        return None;
+    }
+    let before = keep.iter().take(a).filter(|k| **k).count();
+    Some(before.min(left - 1))
+}
+
 /// The active tab after removing tab `removed`; `len` tabs are left.
 fn active_after_remove(active: Option<usize>, removed: usize, len: usize) -> Option<usize> {
     match active {
@@ -767,6 +787,18 @@ mod tests {
         assert_eq!(active_after_remove(Some(0), 1, 1), Some(0));
         assert_eq!(active_after_remove(Some(0), 0, 0), None);
         assert_eq!(active_after_remove(None, 0, 3), None);
+    }
+
+    #[test]
+    fn switching_folders_keeps_the_active_tab_when_it_stays() {
+        // Diff tabs (false) close: the active file tab keeps being shown.
+        assert_eq!(active_after_retain(Some(2), &[false, true, true]), Some(1));
+        assert_eq!(active_after_retain(Some(0), &[true, false, true]), Some(0));
+        // The active diff closes: the next tab left, or the last one.
+        assert_eq!(active_after_retain(Some(1), &[true, false, true]), Some(1));
+        assert_eq!(active_after_retain(Some(2), &[true, true, false]), Some(1));
+        assert_eq!(active_after_retain(Some(0), &[false, false]), None);
+        assert_eq!(active_after_retain(None, &[true]), None);
     }
 
     #[test]

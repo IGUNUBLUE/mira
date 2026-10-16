@@ -47,6 +47,10 @@ impl App {
     pub(super) fn update_layout(&mut self, msg: Msg) -> Task<Msg> {
         let files_before = self.files_visible();
         let task = self.layout_msg(msg);
+        // A name being typed goes with the Files tree it's typed in.
+        if !self.files_visible() {
+            self.name_edit = None;
+        }
         if !files_before && self.files_visible() {
             // The tree and ignored files are only kept fresh while shown:
             // catch up now instead of at the next tick. A refresh in flight

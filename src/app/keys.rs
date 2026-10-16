@@ -1,6 +1,6 @@
 //! Global keyboard shortcuts.
 
-use super::{App, Inspector, Msg, NAME_INPUT, Tab};
+use super::{App, Inspector, Msg, Tab};
 
 use iced::{Task, keyboard};
 
@@ -26,26 +26,46 @@ impl App {
             if self.explorer_menu.is_some() {
                 return self.update(Msg::ExplorerMenuClose);
             }
+            // A name being typed in Files: Escape cancels it. Its input has already
+            // dropped the keyboard by now (text inputs unfocus on Escape), so this
+            // doesn't ask which widget had it; a name left behind (the editor was
+            // clicked) goes with one Escape too, and Files hidden drops it (layout).
             if self.name_edit.is_some() {
-                let cancel = |typing: bool| if typing { Task::done(Msg::ExplorerNameCancel) } else { Task::none() };
-                return iced::widget::operation::is_focused(NAME_INPUT).then(cancel);
+                return self.update(Msg::ExplorerNameCancel);
             }
-            // Escape that no widget took: the terminal (it writes ESC and
-            // captures it) and a focused text input (it unfocuses and captures)
-            // keep theirs. The editors unfocus without capturing, so it lands here.
-            if !captured {
-                return self.escape();
-            }
-            // Captured with the find bar open: from its input, unless the terminal took it.
-            if self.active_find().is_some() {
-                let close = |terminal: bool| if terminal { Task::none() } else { Task::done(Msg::FindClose) };
-                return match &self.term {
-                    Some(t) => iced::widget::operation::is_focused(t.widget_id().clone()).then(close),
-                    None => close(false),
-                };
-            }
-            return Task::none();
+            self.on_escape(captured)
+        } else {
+            self.on_other_key(key, modifiers, physical_key, captured)
         }
+    }
+
+    /// Escape past the menus, dialogs and name input (`captured`: a widget took it).
+    fn on_escape(&mut self, captured: bool) -> Task<Msg> {
+        // Escape that no widget took: the terminal (it writes ESC and
+        // captures it) and a focused text input (it unfocuses and captures)
+        // keep theirs. The editors unfocus without capturing, so it lands here.
+        if !captured {
+            return self.escape();
+        }
+        // Captured with the find bar open: from its input, unless the terminal took it.
+        if self.active_find().is_some() {
+            let close = |terminal: bool| if terminal { Task::none() } else { Task::done(Msg::FindClose) };
+            return match &self.term {
+                Some(t) => iced::widget::operation::is_focused(t.widget_id().clone()).then(close),
+                None => close(false),
+            };
+        }
+        Task::none()
+    }
+
+    fn on_other_key(
+        &mut self,
+        key: keyboard::Key,
+        modifiers: keyboard::Modifiers,
+        physical_key: keyboard::key::Physical,
+        captured: bool,
+    ) -> Task<Msg> {
+        use keyboard::key::Named;
         if !modifiers.command() {
             match key {
                 // The palette's input leaves Up/Down alone.

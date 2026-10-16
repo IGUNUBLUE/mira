@@ -274,7 +274,9 @@ pub enum Msg {
     Redo,
     /// Save the tabs whose edits paused long enough (`AutoSave::AfterDelay`).
     AutoSaveTick,
-    DiffLoaded(String, DiffSource, bool, std::sync::Arc<FileDiff>),
+    /// The diff load `.0` finished (dropped unless it's its tab's latest): the
+    /// file exists on disk (`.1`), and the diff.
+    DiffLoaded(u64, bool, std::sync::Arc<FileDiff>),
     DiffFull(bool),
     DiffAnchor(usize),
     /// Open the active diff's file at the anchored line.

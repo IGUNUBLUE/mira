@@ -176,8 +176,13 @@ impl App {
                 self.dialog = Some(d);
             }
             Msg::CloseDialog => {
+                // A typed value that can't be saved keeps the dialog open with its
+                // error; closing again (the error seen) drops it.
                 if self.dialog == Some(Dialog::Settings) {
-                    self.save_drafts();
+                    let seen = self.settings_error.is_some();
+                    if !self.save_drafts() && !seen {
+                        return Task::none();
+                    }
                 }
                 self.dialog = None;
             }
@@ -187,8 +192,14 @@ impl App {
                 self.drafts.values[field as usize] = value;
                 self.settings_error = None;
             }
-            Msg::SettingSubmit => self.save_drafts(),
+            Msg::SettingSubmit => {
+                self.save_drafts();
+            }
             Msg::OpenConfigFile => {
+                // What was typed is saved first, as when the dialog closes.
+                if !self.save_drafts() {
+                    return Task::none();
+                }
                 let Some(path) = persist::config_dir().map(|d| d.join("config")) else { return Task::none() };
                 if !path.exists() {
                     // An empty file to edit; mira works without one.
@@ -268,8 +279,9 @@ impl App {
         Task::none()
     }
 
-    /// Save the typed fields that changed (a bad value stops there).
-    fn save_drafts(&mut self) {
+    /// Save the typed fields that changed (a bad value stops there, with
+    /// `settings_error` set). Returns whether everything was saved.
+    fn save_drafts(&mut self) -> bool {
         for f in Field::ALL {
             let value = self.drafts.get(f).trim().to_string();
             if value == persist::config_get(f.key()).unwrap_or_default().trim() {
@@ -277,13 +289,14 @@ impl App {
             }
             if let Err(e) = f.check(&value) {
                 self.settings_error = Some(e);
-                return;
+                return false;
             }
             if !self.save(f.key(), &value) {
-                return;
+                return false;
             }
         }
         self.autosave = AutoSave::from_config();
+        true
     }
 
     /// What About shows, as text for a bug report.

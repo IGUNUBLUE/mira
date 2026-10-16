@@ -179,8 +179,8 @@ impl App {
         self.explorer_menu = None;
         self.name_edit = None;
         self.explorer_target = None;
-        let before = self.tabs.len();
-        let active = self.active_tab.and_then(|i| self.tabs.get(i)).map(|t| t.file_path().is_some());
+        let keep: Vec<bool> = self.tabs.iter().map(|t| t.file_path().is_some()).collect();
+        self.active_tab = super::documents::active_after_retain(self.active_tab, &keep);
         self.tabs.retain(|t| t.file_path().is_some());
         for tab in &mut self.tabs {
             match tab {
@@ -188,9 +188,6 @@ impl App {
                 Tab::Image(t) => t.crumbs = super::documents::crumbs(&self.root, &t.path),
                 Tab::Diff(_) => {}
             }
-        }
-        if self.tabs.len() != before || active == Some(false) {
-            self.active_tab = (!self.tabs.is_empty()).then_some(0);
         }
         self.sync_center();
         self.set_status(format!("Workspace: {}", file_name(&self.root)), false);

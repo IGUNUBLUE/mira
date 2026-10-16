@@ -2,7 +2,7 @@
 //! new file or folder and rename (typed in place, as in VSCodium), delete to
 //! the trash with Undo, copy the path, send it to the agent.
 
-use super::{App, Msg, Tab, blocking, file_name};
+use super::{App, DiffSource, Msg, Tab, blocking, file_name};
 use crate::fileops::{self, Trashed};
 
 use iced::{Point, Task};
@@ -219,17 +219,34 @@ impl App {
         self.rel(&dir.join(name.trim()))
     }
 
-    /// Tabs and expanded folders follow a renamed entry.
+    /// Tabs, pending confirmations and expanded folders follow a renamed entry.
     fn after_rename(&mut self, from: &Path, to: &Path) {
+        let repo = self.repo_root();
         for tab in &mut self.tabs {
             let (path, crumbs) = match tab {
                 Tab::File(t) => (&mut t.path, &mut t.crumbs),
                 Tab::Image(t) => (&mut t.path, &mut t.crumbs),
-                Tab::Diff(_) => continue,
+                // A working-tree diff follows the file (a run's diff shows its snapshots).
+                Tab::Diff(d) => {
+                    if matches!(d.source, DiffSource::Index { .. })
+                        && let Some(rel) = moved(&repo.join(&d.rel), from, to)
+                            .and_then(|new| new.strip_prefix(&repo).ok().map(|r| r.to_string_lossy().into_owned()))
+                    {
+                        d.rel = rel;
+                        // Recomputed at the next tick if it's shown.
+                        d.loaded_mtime = None;
+                    }
+                    continue;
+                }
             };
             if let Some(new) = moved(path, from, to) {
                 *crumbs = super::documents::crumbs(&self.root, &new);
                 *path = new;
+            }
+        }
+        for pending in [&mut self.pending_close, &mut self.pending_overwrite].into_iter().flatten() {
+            if let Some(new) = moved(pending, from, to) {
+                *pending = new;
             }
         }
         let expanded: Vec<PathBuf> =
