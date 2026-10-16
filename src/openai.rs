@@ -48,15 +48,33 @@ fn tokens_path() -> Option<PathBuf> {
 }
 
 pub fn load_tokens() -> Option<Tokens> {
+    // Rotated but not written yet: newer than the file (which the server no longer takes).
+    let kept = unsaved().clone();
+    if let Some(t) = kept {
+        let _ = save_tokens(&t);
+        return Some(t);
+    }
     serde_json::from_str(&std::fs::read_to_string(tokens_path()?).ok()?).ok()
+}
+
+/// Tokens a refresh got but couldn't write (disk full, permissions). The
+/// server already retired the old refresh token, so losing these would end
+/// the session: they're kept in memory and written when the disk allows.
+static UNSAVED: std::sync::Mutex<Option<Tokens>> = std::sync::Mutex::new(None);
+
+fn unsaved() -> std::sync::MutexGuard<'static, Option<Tokens>> {
+    UNSAVED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn save_tokens(tokens: &Tokens) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(tokens).map_err(|e| e.to_string())?;
-    crate::persist::write_private(&tokens_path().ok_or("no state directory")?, &json)
+    crate::persist::write_private(&tokens_path().ok_or("no state directory")?, &json)?;
+    *unsaved() = None;
+    Ok(())
 }
 
 pub fn sign_out() -> Result<(), String> {
+    *unsaved() = None;
     match tokens_path().map(std::fs::remove_file) {
         Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
         _ => Ok(()),
@@ -127,7 +145,10 @@ pub fn refresh(tokens: &Tokens, cancel: &AtomicBool) -> Result<Tokens, String> {
         let _ = sign_out();
         return Err("the refreshed session belongs to another ChatGPT account — sign in again".into());
     }
-    save_tokens(&fresh)?;
+    // A failed write mustn't lose the rotated refresh token (see `UNSAVED`).
+    if save_tokens(&fresh).is_err() {
+        *unsaved() = Some(fresh.clone());
+    }
     Ok(fresh)
 }
 
@@ -246,12 +267,18 @@ fn callback(mut stream: TcpStream, state: &str) -> Option<Result<String, String>
     }
     let params = parse_query(query);
     let get = |k: &str| params.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+    // Only this sign-in's redirect may end it (an error carries `state` too,
+    // RFC 6749 §4.1.2.1): another page or process can't abort the wait.
+    if get("state") != Some(state) {
+        respond("400 Bad Request", "Invalid sign-in callback.");
+        return None;
+    }
     if let Some(error) = get("error") {
         respond("200 OK", "Sign-in failed. You can close this window.");
         return Some(Err(format!("sign-in failed: {}", get("error_description").unwrap_or(error))));
     }
-    match (get("code"), get("state")) {
-        (Some(code), Some(got)) if got == state && !code.is_empty() => {
+    match get("code") {
+        Some(code) if !code.is_empty() => {
             respond("200 OK", SUCCESS_HTML);
             Some(Ok(code.to_string()))
         }
@@ -952,6 +979,8 @@ mod tests {
         let (r, _) = hit("/auth/callback?code=c&state=other");
         assert!(r.is_none());
         let (r, _) = hit("/auth/callback?error=access_denied&error_description=Nope");
+        assert!(r.is_none(), "an error without this sign-in's state doesn't end it");
+        let (r, _) = hit("/auth/callback?error=access_denied&error_description=Nope&state=s1");
         assert_eq!(r, Some(Err("sign-in failed: Nope".into())));
         let (r, reply) = hit("/auth/callback?code=c%2D1&state=s1");
         assert_eq!(r, Some(Ok("c-1".into())));

@@ -297,8 +297,7 @@ fn chatgpt(model: &str, input: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(E
 
 /// Run `commit_command` with the prompt on stdin, streaming its stdout.
 fn run_command(line: &str, prompt: &str, cancel: &AtomicBool, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
-    let child = Command::new("sh")
-        .args(["-c", line])
+    let child = crate::proc::own_group(Command::new("sh").args(["-c", line]))
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -100,10 +100,26 @@ pub fn stream(
 }
 
 fn kill(child: &mut Child, why: &str) -> String {
+    // A pipeline or `a; b` under `sh -c` leaves sh's children running (and
+    // holding the pipes) if only sh dies: the whole group goes when the
+    // child leads one (spawned with `process_group(0)`, see `own_group`).
+    let group = format!("-{}", child.id());
+    let _ = std::process::Command::new("kill")
+        .args(["-KILL", "--", &group])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
     // Errors here mean the child already exited; `wait` still reaps it.
     let _ = child.kill();
     let _ = child.wait();
     why.to_string()
+}
+
+/// Start `cmd` in a process group of its own, so cancel and the timeout of
+/// [`stream`] stop everything it started.
+pub fn own_group(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0)
 }
 
 #[cfg(test)]
@@ -169,5 +185,31 @@ mod tests {
         .unwrap();
         assert!(done.status.success());
         assert!(done.stdin_error.is_some());
+    }
+
+    #[test]
+    fn cancel_stops_what_the_command_started_too() {
+        let child = own_group(Command::new("sh").args(["-c", "sleep 30 & echo $!; wait"]))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut pid = String::new();
+        let err = stream(child, Vec::new(), &cancel, Duration::from_secs(10), &mut |c| {
+            pid.push_str(String::from_utf8_lossy(c).trim());
+            cancel.store(true, Ordering::Relaxed);
+        })
+        .err();
+        assert_eq!(err.as_deref(), Some(CANCELLED));
+        // The background `sleep` went with sh (gone, or a zombie until init reaps it).
+        let stat = format!("/proc/{pid}/stat");
+        let alive = || std::fs::read_to_string(&stat).is_ok_and(|s| !s.contains(") Z "));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while alive() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!pid.is_empty() && !alive(), "sleep {pid} still running");
     }
 }
