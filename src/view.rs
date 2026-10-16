@@ -230,10 +230,11 @@ impl App {
             body = body.push(divider(Divider::Inspector, active)).push(self.view_inspector());
         }
         let base: Element<'_, Msg> = column![body.height(Length::Fill), self.view_status_bar()].into();
-        if let Some(menu) = &self.explorer_menu {
+        // Always the same two layers: changing the root's shape when a dialog opens would
+        // make iced drop every widget's state (the terminal's focus, scroll positions).
+        let overlay: Element<'_, Msg> = if let Some(menu) = &self.explorer_menu {
             // Any click outside closes it, like a desktop menu.
-            return iced::widget::stack![
-                base,
+            iced::widget::stack![
                 iced::widget::opaque(
                     mouse_area(space().width(Length::Fill).height(Length::Fill))
                         .on_press(Msg::ExplorerMenuClose)
@@ -241,43 +242,36 @@ impl App {
                 ),
                 self.view_explorer_menu(menu),
             ]
-            .into();
-        }
-        if let Some(palette) = &self.palette {
+            .into()
+        } else if let Some(palette) = &self.palette {
             // Near the top like VSCodium's, so the input stays put while the list
             // grows. A click outside closes it; `opaque` keeps it from what is behind
             // (and, inside, keeps clicks on the palette from closing it).
             let panel = iced::widget::opaque(self.view_palette(palette));
-            return iced::widget::stack![
-                base,
-                iced::widget::opaque(
-                    mouse_area(
-                        container(panel)
-                            .width(Length::Fill)
-                            .height(Length::Fill)
-                            .align_x(Alignment::Center)
-                            .padding(Padding { top: 56.0, right: 16.0, bottom: 16.0, left: 16.0 })
-                            .style(|_| container::Style {
-                                background: Some(p().bg.scale_alpha(0.35).into()),
-                                ..Default::default()
-                            })
-                    )
-                    .on_press(Msg::PaletteClose)
+            iced::widget::opaque(
+                mouse_area(
+                    container(panel)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .align_x(Alignment::Center)
+                        .padding(Padding { top: 56.0, right: 16.0, bottom: 16.0, left: 16.0 })
+                        .style(|_| container::Style {
+                            background: Some(p().bg.scale_alpha(0.35).into()),
+                            ..Default::default()
+                        }),
                 )
-            ]
-            .into();
-        }
-        match &self.signin {
+                .on_press(Msg::PaletteClose),
+            )
+        } else if let Some(signin) = &self.signin {
             // Modal: `opaque` keeps clicks and the wheel from reaching what is behind.
-            Some(signin) => iced::widget::stack![
-                base,
-                iced::widget::opaque(iced::widget::center(self.view_signin(&signin.stage)).style(|_| {
-                    container::Style { background: Some(p().bg.scale_alpha(0.75).into()), ..Default::default() }
-                }))
-            ]
-            .into(),
-            None => base,
-        }
+            iced::widget::opaque(iced::widget::center(self.view_signin(&signin.stage)).style(|_| container::Style {
+                background: Some(p().bg.scale_alpha(0.75).into()),
+                ..Default::default()
+            }))
+        } else {
+            space().into()
+        };
+        iced::widget::stack![base, overlay].into()
     }
 
     /// The ChatGPT sign-in dialog: what will happen before it happens, then
