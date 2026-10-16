@@ -23,6 +23,8 @@ All notable changes to mira are listed here. The format follows
 
 - The cursor was invisible on lines with their own background, such as Codex's prompt.
 - `Ctrl+U` sent `Q` instead of deleting the line.
+- Opening quick open (or another dialog) reset the panels: the terminal lost the keyboard after
+  `Escape` and scroll positions jumped back.
 
 ## [0.2.0]
 
