@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0]
+
 ### Added
 
 - Settings (`Ctrl+,`, or the gear in the status bar): theme, window controls, autosave, terminal,
