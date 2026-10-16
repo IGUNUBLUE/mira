@@ -1,6 +1,6 @@
 # mira
 
-Lightweight, terminal-first workspace for agent-driven development, in Rust (iced 0.14 + iced_term 0.8).
+Lightweight, terminal-first workspace for agent-driven development, in Rust (iced 0.14 + alacritty_terminal 0.26, drawn by mira's own widget).
 The user talks to coding agents (codex, kiro-cli, claude, …) in a terminal running herdr; mira is what
 sits around that loop: review what the agents changed, edit, search, commit.
 
@@ -15,9 +15,9 @@ sits around that loop: review what the agents changed, edit, search, commit.
   keeps it fully offline. Network goes through `curl` (no HTTP/TLS crates), secrets on curl's stdin.
 - **Integrate, don't re-implement.** herdr owns agents, workspaces, panes, status and persistence; mira uses it
   through its socket API and runs it in the terminal. Don't rebuild what a tool in the stack already does well.
-- **Never patch or monkey-patch dependencies.** No forks, no `[patch]`, no vendored copies of iced_term or
-  others. Work through public APIs (wrappers, composition); fix bugs upstream with issues/PRs.
-- **Don't invent.** Before using any API (herdr, iced, iced_term, git, agent CLIs) read its docs, schema or
+- **Never patch or monkey-patch dependencies.** No forks, no `[patch]`, no vendored copies of
+  dependencies. Work through public APIs (wrappers, composition); fix bugs upstream with issues/PRs.
+- **Don't invent.** Before using any API (herdr, iced, alacritty_terminal, git, agent CLIs) read its docs, schema or
   source and verify against the installed version. State what was verified and what was not.
 - **Best UX, familiar where it helps.** Many users come from VSCodium / VS Code: keep their good workflows (edit, side-by-side
   diff, search & replace, AI commit messages, file icons, resizable panels) without its weight.
@@ -39,7 +39,7 @@ sits around that loop: review what the agents changed, edit, search, commit.
   wildcard that hands each `Msg` group to a child module's `update_<module>`. Each child adds an `impl App` block
   (helpers shared across children are `pub(super)`):
   `layout.rs` (inspector, focus mode, dividers, window, theme, `sync_center`), `terminal.rs` (`TermKind`, spawn,
-  `term_send`/`term_write`, `SHORTCUT_LETTERS`), `follow.rs` (herdr polling, `follow`/`switch_root`, `for_root`,
+  `term_write`, terminal events and actions), `follow.rs` (herdr polling, `follow`/`switch_root`, `for_root`,
   `send_to_agent`), `review.rs` (run snapshots/files/prompts, review actions, `save_state`), `documents.rs`
   (`Tab`/`FileTab`/`DiffTab`, `AutoSave`, open/save/close, diffs, `active_diff`), `scm.rs` (git ops, commit,
   `CommitGen`), `find.rs` (`SearchState`, search & replace), `navigate.rs` (find bar per file tab in
@@ -50,15 +50,22 @@ sits around that loop: review what the agents changed, edit, search, commit.
   `GitLoaded(gen, ..)` drops replies of an older refresh (`git_gen`) and is a no-op when the snapshot is unchanged;
   it also sets `repo_prefix`, the explorer's `Marks`, and says whether the folder is a repo (`has_repo` never runs git). `GitDone(epoch, GitOutcome)`
   always clears `git_busy` but only touches the commit box for the current folder. Dividers (`Divider::Inspector`, `Divider::History`) persist
-  `inspector_width` / `history_height`. Every terminal command goes through `termio::Gate` (see Gotchas).
+  `inspector_width` / `history_height`.
 - `src/view.rs` — all views. Layout: pane_grid(document / terminal) | inspector (Changes · Search · Files) + status bar.
-  `view` runs after every message batch (the terminal sends one per PTY event): no IO, no per-row formatting or
+  `view` runs after every message batch (the terminal sends one per batch of PTY output): no IO, no per-row formatting or
   cloning; precompute in update/models and borrow. Diff rows are built once per diff/anchor/palette (`lazy`).
 - `src/herdr.rs` — blocking client of herdr's socket (NDJSON); `launch_command` strips `HERDR_*`. Facts: `herdr-client` skill.
 - `src/runs.rs` — pure run state machine (`Tracker::observe` → `Effect::Before/After`), tested without IO. A derived
   index makes `origin`/`is_new`/`new_files` O(1); runs change only through `Tracker` methods (`edit`), which reindex.
 - `src/agentlog.rs` — run titles from kiro/codex/Claude Code conversation logs.
-- `src/termio.rs` — `TermInput` wrapper (wheel, right/middle, Alt, bracketed paste), `Gate`, color-query answers.
+- `src/term/` — the terminal. `mod.rs`: `Terminal` (alacritty `Term` + PTY event loop), its `Listener` answers
+  `PtyWrite`/color/size queries on the PTY thread without blocking and sends `Wakeup`/clipboard/exit through an
+  unbounded channel drained in batches (`subscription`); `apply(Action) -> Effect` (input, resize, scroll,
+  selection, links). `frame.rs`: snapshot of the visible rows only, colors resolved against `theme::p()` and the
+  program's OSC overrides, cursor. `input.rs`: pure xterm key/mouse/paste encoding. `widget.rs`: the iced widget
+  (keys incl. `APP_LETTERS` passed to the app, mouse modes, Shift bypasses mouse reporting, selection, wheel,
+  Ctrl+click links, draw: background runs as quads, cursor, `boxdraw.rs` lines/blocks, text runs).
+- `src/termio.rs` — light/dark report for herdr (`color_scheme_report`, `is_dark`).
 - `src/persist.rs` — per-folder runs (`$XDG_STATE_HOME/mira/<fnv>.json`, 0600) and `~/.config/mira/config`.
 - `src/git.rs` — `git` CLI wrapper (no stdin, no prompts; status scoped to opened folder, capped at `MAX_CHANGES`;
   push/pull under a timeout); tree snapshots via a temporary `GIT_INDEX_FILE` in `$XDG_STATE_HOME/mira/index` (0700),
@@ -124,9 +131,11 @@ sits around that loop: review what the agents changed, edit, search, commit.
   session with `HERDR_*` unset (see the `herdr-client` skill): inside a pane `HERDR_SOCKET_PATH` overrides
   `--session` and `XDG_CONFIG_HOME`.
 
-- iced_term 0.8 sends PTY events with `blocking_send` into a channel of 100 while holding the terminal lock.
-  Calling `Terminal::handle` during an event burst deadlocks the UI (herdr asks for 256 colors at startup).
-  Never call `handle` directly: use `App::term_send` / `term_write`, which go through `termio::Gate`.
+- The PTY thread holds the terminal lock while it parses and calls `Listener::send_event`: never block or take
+  the lock there (no bounded channel sends). Replies the program waits for (color queries, size, DA) are answered
+  right there, not via the UI. The UI locks only to snapshot (`Terminal::frame`, once per change) and to apply input.
+- Within one layer iced draws every quad before any text: the terminal relies on it (cursor and backgrounds never
+  cover glyphs). Text runs must stay ASCII-only with the measured advance as cell width, or columns drift.
 - herdr's `terminal` theme maps tokens to ANSI colors and assumes a dark terminal: `overlay1` is White (15), which
   is the background color in mira's light palettes (tab labels vanished), and the active tab is DarkGray (8) on
   Blue (4). mira reports light/dark like Ghostty (`CSI ? 997 ; 1|2 n`, `termio::color_scheme_report`) at start,

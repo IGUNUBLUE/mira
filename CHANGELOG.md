@@ -6,6 +6,19 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- mira draws its terminal itself (over Alacritty's terminal emulation) instead of using
+  iced_term: only the visible rows are copied per frame, box-drawing lines join without gaps,
+  cursor shapes (bar, underline) and an outline cursor when unfocused, curly/double/dotted
+  underlines, Ctrl+click links, `Shift`-drag selection over herdr, `Shift+Insert` and middle
+  click paste.
+
+### Fixed
+
+- The cursor was invisible on lines with their own background, such as Codex's prompt.
+- `Ctrl+U` sent `Q` instead of deleting the line.
+
 ## [0.2.0]
 
 ### Added

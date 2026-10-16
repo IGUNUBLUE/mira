@@ -34,7 +34,6 @@ use crate::herdr::{self, Agent, PaneId};
 use crate::persist;
 use crate::runs::{RunId, Tracker};
 use crate::search::FileMatches;
-use crate::termio;
 use crate::theme;
 use follow::focused_root;
 use layout::MIN_HISTORY;
@@ -58,17 +57,9 @@ pub struct App {
     pub window_focused: bool,
     autosave: AutoSave,
     // terminal
-    pub term: Option<iced_term::Terminal>,
+    pub term: Option<crate::term::Terminal>,
     pub term_kind: TermKind,
-    /// Cell size the terminal measured (for mouse reports).
-    pub term_cell: Option<iced::Size>,
-    /// Bumped whenever mira moves keyboard focus itself.
-    pub focus_epoch: u64,
-    /// Whether that last move focused the terminal (else an input, e.g. Search).
-    pub term_focus: bool,
     next_term_id: u64,
-    gate: termio::Gate,
-    flush_scheduled: bool,
 
     // herdr
     herdr: Option<herdr::Client>,
@@ -208,11 +199,11 @@ pub enum Msg {
     StatusTick,
 
     // terminal
-    Term(iced_term::Event),
-    TermInput(termio::Input),
+    /// A batch of the terminal's events.
+    Term(Vec<crate::term::Event>),
+    /// Input from the terminal widget (keys, mouse, selection, resize).
+    TermAction(crate::term::Action),
     RestartTerminal,
-    /// Flush terminal commands queued by the gate after a quiet moment.
-    TermFlush,
     /// Tell herdr light/dark once its client has started (see `report_color_scheme`).
     ReportColorScheme,
 
@@ -415,12 +406,7 @@ impl App {
             autosave: AutoSave::from_config(),
             term: None,
             term_kind: if use_herdr { TermKind::Herdr } else { TermKind::Shell },
-            term_cell: None,
-            focus_epoch: 0,
-            term_focus: true,
             next_term_id: 0,
-            gate: termio::Gate::default(),
-            flush_scheduled: false,
             herdr: herdr_client,
             herdr_session,
             herdr_missing,
@@ -645,7 +631,7 @@ impl App {
             | Msg::WindowSize(_)
             | Msg::DismissStatus
             | Msg::CycleTheme) => self.update_layout(m),
-            m @ (Msg::Term(_) | Msg::TermInput(_) | Msg::TermFlush | Msg::ReportColorScheme | Msg::RestartTerminal) => {
+            m @ (Msg::Term(_) | Msg::TermAction(_) | Msg::ReportColorScheme | Msg::RestartTerminal) => {
                 self.update_terminal(m)
             }
             m @ (Msg::StatusTick

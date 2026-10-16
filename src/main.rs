@@ -20,6 +20,7 @@ mod proc;
 mod quickopen;
 mod runs;
 mod search;
+mod term;
 mod termio;
 mod textfind;
 mod theme;

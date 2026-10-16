@@ -442,46 +442,6 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
-fn hex(c: Color) -> String {
-    let [r, g, b, _] = c.into_rgba8();
-    format!("#{r:02X}{g:02X}{b:02X}")
-}
-
-pub fn terminal_palette() -> iced_term::ColorPalette {
-    let c = p();
-    let s = |i: usize| c.ansi[i].to_string();
-    iced_term::ColorPalette {
-        foreground: hex(c.fg),
-        background: hex(c.bg),
-        black: s(0),
-        red: s(1),
-        green: s(2),
-        yellow: s(3),
-        blue: s(4),
-        magenta: s(5),
-        cyan: s(6),
-        white: s(7),
-        bright_black: s(8),
-        bright_red: s(9),
-        bright_green: s(10),
-        bright_yellow: s(11),
-        bright_blue: s(12),
-        bright_magenta: s(13),
-        bright_cyan: s(14),
-        bright_white: s(15),
-        bright_foreground: None,
-        dim_foreground: hex(c.muted),
-        dim_black: s(0),
-        dim_red: s(1),
-        dim_green: s(2),
-        dim_yellow: s(3),
-        dim_blue: s(4),
-        dim_magenta: s(5),
-        dim_cyan: s(6),
-        dim_white: s(7),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

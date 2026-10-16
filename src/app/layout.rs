@@ -1,6 +1,6 @@
 //! Layout: inspector, focus mode, the center split, dividers, window and theme.
 
-use super::{App, AutoSave, Msg, TermKind};
+use super::{App, AutoSave, Msg};
 use crate::persist;
 use crate::theme;
 
@@ -67,15 +67,11 @@ impl App {
                 self.focus_mode = false;
                 self.sync_center();
                 if i == Inspector::Search {
-                    self.focus_epoch += 1;
-                    self.term_focus = false;
                     return iced::widget::operation::focus(SEARCH_INPUT)
                         .chain(iced::widget::operation::select_all(SEARCH_INPUT));
                 }
                 // Like VSCodium's Ctrl+Shift+G: straight to the commit message.
                 if i == Inspector::Changes && self.git.root.is_some() {
-                    self.focus_epoch += 1;
-                    self.term_focus = false;
                     return iced::widget::operation::focus(COMMIT_INPUT);
                 }
             }
@@ -101,8 +97,8 @@ impl App {
                     self.save_dirty_tabs();
                 }
                 // herdr enables focus reporting (mode 1004) and redraws on focus.
-                if self.term_kind == TermKind::Herdr {
-                    self.term_write(if f { b"\x1b[I".to_vec() } else { b"\x1b[O".to_vec() });
+                if let Some(t) = &self.term {
+                    t.focus_changed(f);
                 }
                 // Cheap and idempotent: also covers the herdr client just started.
                 if f {
@@ -166,7 +162,9 @@ impl App {
     /// Activate the palette of the current choice; recolor the terminal if it changed.
     pub(super) fn apply_theme(&mut self) {
         if theme::set_current(self.theme.resolve()) {
-            self.term_send(iced_term::Command::ChangeTheme(Box::new(theme::terminal_palette())));
+            if let Some(t) = &self.term {
+                t.redraw();
+            }
             self.report_color_scheme();
         }
     }

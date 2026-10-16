@@ -1,6 +1,6 @@
 ---
 name: iced-ui
-description: iced 0.14 and iced_term UI patterns for mira (Elm architecture, Msg/update/view, Task, Subscription, pane_grid, terminal widget, theming, icons, shortcuts). Use when adding views, messages, panels, shortcuts or async work, or when fixing UI bugs, lag or layout in mira.
+description: iced 0.14 UI patterns for mira (Elm architecture, Msg/update/view, Task, Subscription, pane_grid, terminal widget, theming, icons, shortcuts). Use when adding views, messages, panels, shortcuts or async work, or when fixing UI bugs, lag or layout in mira.
 ---
 
 # iced UI in mira
@@ -21,10 +21,13 @@ For the iced 0.14 API itself (widgets, Task, Subscription, pane_grid, theming, c
 - Diff rows: the content row is the stack base layer; backgrounds go `push_under` so wrapped lines stay aligned.
 - The inspector width is state (`inspector_width`), dragged via `Divider` and saved to config.
 
-## Terminal (iced_term 0.8 over alacritty_terminal 0.25)
-- mira sees every `iced_term::Event::BackendCall` before forwarding it (`Msg::Term`), so it can intercept writes and alacritty events.
-- Known gaps in iced_term 0.8, covered from mira without patching: wheel/right/middle/Alt/bracketed paste in `termio::TermInput` (only while herdr runs), focus in/out written on `Msg::WindowFocus`, `ColorRequest`/`ClipboardStore` answered in `App::on_term_event`. Still missing: kitty keyboard protocol. Never fork or patch dependencies; contribute upstream instead.
-- App shortcuts that must work while the terminal has focus are swallowed with `AddBindings` (`SHORTCUT_LETTERS` in app/terminal.rs).
+## Terminal (mira's widget over alacritty_terminal 0.26, `src/term/`)
+- `Terminal` owns the alacritty `Term` and PTY loop. Its `Listener` runs on the PTY thread with the lock held: answer queries there, never block (unbounded channel to the UI, drained in batches → `Msg::Term(Vec<Event>)`).
+- The widget publishes `Msg::TermAction(Action)`; `Terminal::apply` returns an `Effect` (clipboard, open link) for the app.
+- Key/mouse/paste encoding is pure in `term/input.rs` (tested); add new sequences there with a test.
+- The widget reads `Terminal::frame()` (visible rows only, rebuilt when dirty); call `redraw()` after a palette change.
+- Still missing: kitty keyboard protocol, IME preedit. Never fork or patch dependencies.
+- App shortcuts that must work while the terminal has focus are listed in `APP_LETTERS` (term/widget.rs): the widget leaves them uncaptured.
 
 ## Shortcuts
 - App shortcuts are `Ctrl+Shift+<letter>`; check app/keys.rs `on_key` and the swallow list first.

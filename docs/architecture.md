@@ -1,13 +1,13 @@
 # Architecture
 
 mira is a single Rust binary built on [iced](https://iced.rs) 0.14 (GPU rendering through
-wgpu) and [iced_term](https://github.com/Harzu/iced_term) 0.8 (an Alacritty terminal
-widget). It follows the Elm architecture: state in `App`, one `Msg` enum, `update` changes
+wgpu) and [alacritty_terminal](https://crates.io/crates/alacritty_terminal) 0.26 (Alacritty's
+terminal emulation and PTY), drawn by mira's own terminal widget. It follows the Elm architecture: state in `App`, one `Msg` enum, `update` changes
 the state, `view` draws it.
 
 ```text
 ┌───────────────────────── mira ─────────────────────────┐
-│  terminal (iced_term) ── runs ──▶ herdr client         │
+│  terminal (src/term) ─── runs ──▶ herdr client         │
 │        ▲                              │                │
 │        │ socket API (NDJSON)          ▼                │
 │  App ◀── polls agents, panes ── herdr server ── agents │
@@ -31,11 +31,13 @@ the state, `view` draws it.
   `spawn_blocking` and come back as messages. Results for a folder mira has since left are
   dropped (an epoch counter), as are stale git refreshes and searches (generation counters).
 - **`view` is cheap.** iced rebuilds the view after every batch of messages, and the terminal
-  sends one per output event, so the view only reads precomputed data. Diff rows are cached
+  sends one per batch of output, so the view only reads precomputed data. Diff rows are cached
   with `lazy`.
-- **No patched dependencies.** Gaps in iced_term are handled from outside: `termio.rs` wraps
-  its input (mouse wheel, Alt, bracketed paste) and gates terminal commands to avoid a
-  deadlock in its event channel.
+- **The terminal is mira's.** alacritty_terminal parses on its own thread; what the program
+  asks of the terminal is answered there without blocking, and the UI only snapshots the
+  visible rows when something changed. The widget draws backgrounds and the cursor as quads
+  and text in runs, so the cursor shows on lines with their own background (Codex's prompt).
+- **No patched dependencies.** Bugs in dependencies are fixed upstream, never with forks.
 
 ## Source map
 
@@ -52,7 +54,8 @@ the state, `view` draws it.
 | `src/search.rs` | Search & replace (`ignore` + `regex`) |
 | `src/explorer.rs` | File tree |
 | `src/commitgen.rs`, `src/openai.rs` | Commit messages: prompt, providers, streaming over `curl` |
-| `src/termio.rs` | Terminal input wrapper and command gate |
+| `src/term/` | Terminal: session, screen snapshot, key/mouse encoding, widget |
+| `src/termio.rs` | Light/dark report for herdr |
 | `src/agentlog.rs` | Prompt titles from agents' logs |
 | `src/persist.rs` | Config file and per-folder state |
 | `src/theme.rs`, `src/icons.rs` | Palettes, styles, Nerd Font icons |

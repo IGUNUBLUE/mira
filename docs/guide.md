@@ -28,11 +28,17 @@ running in herdr when mira closes and are there again when it opens.
 - The header lists the agents working in this folder with their status. Click one to jump
   to its pane, even in another workspace.
 - "need you" in the status bar jumps to an agent that is waiting for you.
-- Text is copied on selection; the mouse wheel, right/middle clicks and Alt+key reach herdr.
+- Text is copied on selection; the mouse wheel, clicks and Alt+key reach herdr. Hold `Shift`
+  to select with mira instead (`Ctrl+Shift+C` copies it, middle click pastes the selection).
+  `Ctrl`+click opens a link.
 - **Scrolling long output** (an agent's diff, a test run): drag the scrollbar at the right
   edge of the pane, or click its track to jump. From the keyboard, `Ctrl+B [` enters herdr's
   copy mode: `PageUp`/`PageDown`, `Ctrl+U`/`Ctrl+D`, `/` to search, `q` to leave.
-- `Ctrl+Shift+V` pastes (bracketed paste).
+  Programs that take the whole screen (Codex, vim) keep no history to scroll: Codex scrolls its
+  own conversation (`Ctrl+T` shows the transcript).
+- `Ctrl+Shift+V` (or `Shift+Insert`) pastes, bracketed when the program asks for it.
+- With a plain shell (`terminal = "shell"`), `Shift+PageUp`/`PageDown` and the wheel scroll
+  mira's own history.
 
 ### herdr settings
 

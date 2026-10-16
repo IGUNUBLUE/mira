@@ -322,8 +322,6 @@ impl App {
                         stage: SignInStage::Ask,
                         cancel: Arc::new(AtomicBool::new(false)),
                     });
-                    self.focus_epoch += 1;
-                    self.term_focus = false;
                     return iced::widget::operation::focus(DIALOG_FOCUS);
                 }
                 let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

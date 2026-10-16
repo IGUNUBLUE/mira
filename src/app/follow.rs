@@ -6,7 +6,6 @@ use crate::git::{self, Snapshot};
 use crate::herdr::{self, Agent, PaneId};
 use crate::persist;
 use crate::runs::{RunId, Seen, Tracker};
-use crate::termio;
 
 use iced::Task;
 use iced::widget::text_editor::Content;
@@ -242,8 +241,11 @@ impl App {
                 Task::batch([task, focus])
             }
             _ => {
-                let bytes =
-                    if self.term_kind == TermKind::Herdr { termio::bracketed(&text) } else { text.into_bytes() };
+                let bytes = if self.term_kind == TermKind::Herdr {
+                    crate::term::input::bracketed(&text)
+                } else {
+                    text.into_bytes()
+                };
                 self.term_write(bytes);
                 let msg = if target.is_some() {
                     "That agent is gone — typed into the focused pane instead"

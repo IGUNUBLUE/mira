@@ -16,7 +16,7 @@ impl App {
             if self.palette.is_some() {
                 return self.update(Msg::PaletteClose);
             }
-            // Escape that no widget took: the terminal (iced_term writes ESC and
+            // Escape that no widget took: the terminal (it writes ESC and
             // captures it) and a focused text input (it unfocuses and captures)
             // keep theirs. The editors unfocus without capturing, so it lands here.
             if !captured {

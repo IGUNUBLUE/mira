@@ -12,7 +12,6 @@ use crate::git::Change;
 use crate::herdr::AgentStatus;
 use crate::icons::{self, Icon};
 use crate::search;
-use crate::termio;
 use crate::theme::{self, *};
 
 use iced::keyboard::{Key, key::Named};
@@ -506,16 +505,10 @@ impl App {
             ));
         }
         let body: Element<'_, Msg> = match &self.term {
-            Some(t) => container(termio::TermInput::new(
-                iced_term::TerminalView::show(t).map(Msg::Term),
-                herdr,
-                self.term_cell,
-                (self.focus_epoch, self.term_focus),
-                Msg::TermInput,
-            ))
-            .padding(Padding { left: 8.0, ..Padding::ZERO })
-            .style(theme::panel(p().bg))
-            .into(),
+            Some(t) => container(crate::term::view(t, theme::mono_font(), CODE_SIZE as f32, Msg::TermAction))
+                .padding(Padding { left: 8.0, ..Padding::ZERO })
+                .style(theme::panel(p().bg))
+                .into(),
             None => container(
                 column![
                     text(if herdr { "herdr is detached. Your agents keep running." } else { "The shell exited." })

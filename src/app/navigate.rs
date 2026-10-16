@@ -165,8 +165,6 @@ impl App {
                     f.query = s;
                 }
                 t.refind();
-                self.focus_epoch += 1;
-                self.term_focus = false;
                 return operation::focus(FIND_INPUT).chain(operation::select_all(FIND_INPUT));
             }
             Msg::FindQuery(q) => {
@@ -277,8 +275,6 @@ impl App {
             }
         }
         // The input takes the keyboard (the focus also leaves the terminal).
-        self.focus_epoch += 1;
-        self.term_focus = false;
         let focus = move || {
             let caret = if go_to_line {
                 operation::move_cursor_to_end(PALETTE_INPUT)
