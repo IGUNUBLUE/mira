@@ -6,6 +6,44 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Paths with glob characters (`app/[id]/page.tsx`) no longer also stage, discard or revert
+  other files (`app/i/page.tsx`).
+- Discard and Revert keep their Undo when part of them fails, and go on with the other files.
+  Discard refuses a nested repository before touching anything; Revert snapshots first and
+  waits for a running git action instead of doing nothing.
+- A config file mira can't read (not UTF-8, permissions) is no longer replaced when a setting
+  changes.
+- Closing the window with edits autosave couldn't write asks for a second close.
+- A file an agent made too large or binary is no longer overwritten by autosave with the old text.
+- `Ctrl+S` on a file that changed or was deleted on disk asks first (`Ctrl+S` again replaces it);
+  on a clean tab it writes nothing.
+- A review comment stays in its box until it reaches the agent; with no terminal the status says so.
+- A program that copies (OSC 52) right before exiting still reaches the clipboard.
+- Unstaging a staged rename unstages the old path's deletion too, and worktree renames
+  (`git add -N`) no longer show as a bogus extra row.
+- A rejected Commit All (e.g. by a hook) unstages what it staged, and an untracked file deleted
+  since the list no longer fails the whole commit.
+- Git actions right after start or a folder switch run in the repository root, not the opened
+  subfolder.
+- A slow, older diff load no longer replaces a newer one (or another folder's), with its hunks.
+- `onFocusChange` autosave saves on every tab switch (opening a file, a diff, quick open), not
+  only on a tab click.
+- A workspace switch keeps the active tab; a rename in Files moves its open diffs and pending
+  confirmations along.
+- A typed setting that can't be saved keeps Settings open with the reason instead of vanishing.
+- `Escape` in a name being typed in Files cancels it, and a name left behind no longer keeps
+  `Escape` from closing the find bar, confirmations or the status.
+- An agent turn that ends while mira shows another folder is still snapshotted and reviewable
+  there. A turn left open when mira closed ends on the first poll instead of absorbing later
+  turns.
+- With herdr's server not running yet, mira no longer reports a workspace error and stops
+  following herdr for 30 s.
+- Cancelling or timing out a `commit_command` pipeline stops all of it, not just `sh`.
+- The ChatGPT sign-in can only be ended by its own redirect, and rotated tokens that couldn't
+  be written no longer end the session.
+
 ## [0.4.0]
 
 ### Added

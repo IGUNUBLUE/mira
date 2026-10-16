@@ -80,7 +80,9 @@ mira only reloads herdr's client settings (the theme); pane scrollbars belong to
 The Changes panel is your git working tree, and each file says **which agent changed it and
 when** (`codex · 2m`; hover to see what you asked). While an agent works, mira takes snapshots
 of the working tree before and after each of its turns. Snapshots use a temporary git index:
-nothing is committed and your index is not touched.
+nothing is committed and your index is not touched. Switching to another folder doesn't lose a
+turn's snapshots. A turn still running when mira last watched it (it showed another folder, or
+was closed) ends when its folder is shown again; the agent's next turn starts a new one.
 
 - Files changed since you last opened them get a dot; the tab and the status bar count them.
   `✓` marks them all as seen.
@@ -117,7 +119,8 @@ resize it.
   agent changed them.
 
 - With nothing staged, **Commit All** stages every listed change of this folder (the button
-  shows how many; untracked files are counted in its tooltip).
+  shows how many; untracked files are counted in its tooltip). If the commit is rejected (a
+  hook, say), what it staged is unstaged again.
 - Merge conflicts get their own section and block the commit until you fix and stage them.
 - A folder that isn't a repository offers **Initialize repository**.
 - git runs as your own `git`, so hooks, signing and credential helpers behave as in your
@@ -176,7 +179,8 @@ The gear at the right of the status bar opens **Settings** (also `Ctrl+,`), the 
 **Keyboard Shortcuts**, **Check for Updates** (the releases page, in your browser) and **About**
 (version, herdr's version, links and a "Copy info" for bug reports). On desktops that draw no
 title bar (Hyprland and other tiling compositors), set *Window controls* to `on` for mira's own
-close, minimize and maximize buttons.
+close, minimize and maximize buttons. Typed settings save on `Enter` or when the dialog closes;
+one that isn't valid keeps the dialog open with the reason (closing again drops it).
 
 Icons come from any installed [Nerd Font](https://www.nerdfonts.com); without one mira uses
 plain symbols. Fonts default to Inter and JetBrains Mono (medium weight); see
