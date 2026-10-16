@@ -138,6 +138,11 @@ impl App {
                     );
                     return Task::none();
                 }
+                // A push can take a while: keep the confirmation and say why nothing happens.
+                if self.git_busy {
+                    self.set_status("Wait for the running git action to finish, then click Revert again", true);
+                    return Task::none();
+                }
                 self.confirm_revert = None;
                 let Some(run) = self.runs.get(id) else { return Task::none() };
                 let (Some((from, _)), Some(files)) = (run.trees(), run.files.as_ref()) else { return Task::none() };
@@ -146,7 +151,14 @@ impl App {
                 for p in &paths {
                     self.mark_seen(p);
                 }
-                return self.git_op(move |r| git::restore_from_tree(r, &from, &paths));
+                return self.git_task(move |r| {
+                    // As with Discard: a snapshot first is the Undo (later edits come back too).
+                    let tree = git::snapshot_tree(r)
+                        .map_err(|e| format!("couldn't back the files up, nothing was reverted: {e}"))?;
+                    let error = git::restore_from_tree(r, &from, &paths).err();
+                    let done = format!("Reverted {} file{}", paths.len(), if paths.len() == 1 { "" } else { "s" });
+                    Ok(super::GitOutcome::Discarded { tree, paths, done, close_diffs: false, error })
+                });
             }
             Msg::StageRun(id) => {
                 let Some(paths) = self

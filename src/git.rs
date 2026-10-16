@@ -323,27 +323,51 @@ pub fn staged_outside(root: &Path, prefix: &str) -> Result<Vec<String>, String> 
     Ok(out.split('\0').filter(|p| !p.is_empty() && !p.starts_with(prefix)).map(String::from).collect())
 }
 
+/// `path` as a pathspec git matches exactly: without `:(literal)` it is also a
+/// glob, so `app/[id]/page.tsx` would match `app/i/page.tsx` too (and `*`, `?`).
+pub fn literal(path: &str) -> String {
+    format!(":(literal){path}")
+}
+
+/// `git <args> -- <paths, literally>`.
+fn git_paths<S: AsRef<str>>(root: &Path, args: &[&str], paths: &[S]) -> Result<String, String> {
+    let specs: Vec<String> = paths.iter().map(|p| literal(p.as_ref())).collect();
+    let mut all: Vec<&str> = args.to_vec();
+    all.push("--");
+    all.extend(specs.iter().map(String::as_str));
+    git(root, &all)
+}
+
 pub fn stage(root: &Path, paths: &[String]) -> Result<String, String> {
-    let mut args = vec!["add", "-A", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    git(root, &args)
+    git_paths(root, &["add", "-A"], paths)
 }
 
 /// Discard unstaged changes, like VSCodium's Discard: tracked files go back to
 /// the index (`git restore --worktree`), untracked files (`U`) are deleted.
 /// Paths are relative to the repository root, with their status letter.
 pub fn discard(root: &Path, files: &[(String, char)]) -> Result<String, String> {
+    // Checked before touching anything: an untracked folder is a nested repository (git
+    // lists it as `sub/`), and deleting it here would take its history with it.
+    if let Some((path, _)) = files.iter().find(|(p, c)| *c == 'U' && (p.ends_with('/') || root.join(p).is_dir())) {
+        return Err(format!(
+            "{path} is a folder (a nested repository?): nothing was discarded; remove it in a terminal"
+        ));
+    }
     let tracked: Vec<&str> = files.iter().filter(|(_, code)| *code != 'U').map(|(p, _)| p.as_str()).collect();
     if !tracked.is_empty() {
-        let mut args = vec!["restore", "--worktree", "--"];
-        args.extend(tracked);
-        git(root, &args)?;
+        git_paths(root, &["restore", "--worktree"], &tracked)?;
     }
-    for (path, _) in files.iter().filter(|(_, code)| *code == 'U') {
-        match std::fs::remove_file(root.join(path)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{path}: {e}")),
-            _ => {}
-        }
+    // Every untracked file is tried; the failures are reported together.
+    let failed: Vec<String> = files
+        .iter()
+        .filter(|(_, code)| *code == 'U')
+        .filter_map(|(path, _)| match std::fs::remove_file(root.join(path)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Some(format!("{path}: {e}")),
+            _ => None,
+        })
+        .collect();
+    if !failed.is_empty() {
+        return Err(failed.join("; "));
     }
     Ok(format!("Discarded {} file{}", files.len(), if files.len() == 1 { "" } else { "s" }))
 }
@@ -366,7 +390,8 @@ pub fn file_patch(root: &Path, rel: &str, staged: bool) -> Result<String, String
     if staged {
         args.push("--cached");
     }
-    args.extend(["--", rel]);
+    let spec = literal(rel);
+    args.extend(["--", spec.as_str()]);
     git(root, &args)
 }
 
@@ -393,13 +418,9 @@ pub fn apply(root: &Path, patch: &str, flags: &[&str]) -> Result<String, String>
 }
 
 pub fn unstage(root: &Path, paths: &[String]) -> Result<String, String> {
-    let mut args = vec!["restore", "--staged", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    git(root, &args).or_else(|_| {
+    git_paths(root, &["restore", "--staged"], paths).or_else(|_| {
         // Repository without commits: `restore --staged` has no HEAD to restore from.
-        let mut args = vec!["rm", "--cached", "-r", "-q", "--"];
-        args.extend(paths.iter().map(String::as_str));
-        git(root, &args)
+        git_paths(root, &["rm", "--cached", "-r", "-q"], paths)
     })
 }
 
@@ -566,15 +587,21 @@ pub fn restore_from_tree(root: &Path, tree: &str, paths: &[String]) -> Result<St
     if git(root, &["cat-file", "-e", &format!("{tree}^{{tree}}")]).is_err() {
         return Err(format!("the snapshot {tree} is no longer in the repository: nothing was reverted"));
     }
+    // Every path is tried: stopping at the first failure would leave the rest unrestored.
+    let mut failed = Vec::new();
     for path in paths {
-        if git(root, &["cat-file", "-e", &format!("{tree}:{path}")]).is_ok() {
-            git(root, &["restore", &format!("--source={tree}"), "--worktree", "--", path])?;
+        let result = if git(root, &["cat-file", "-e", &format!("{tree}:{path}")]).is_ok() {
+            git_paths(root, &["restore", &format!("--source={tree}"), "--worktree"], &[path]).map(drop)
         } else {
             let file = root.join(path);
-            if file.exists() {
-                std::fs::remove_file(&file).map_err(|e| format!("{path}: {e}"))?;
-            }
+            if file.exists() { std::fs::remove_file(&file).map_err(|e| format!("{path}: {e}")) } else { Ok(()) }
+        };
+        if let Err(e) = result {
+            failed.push(e);
         }
+    }
+    if !failed.is_empty() {
+        return Err(failed.join("; "));
     }
     Ok(format!("Reverted {} file(s)", paths.len()))
 }
@@ -817,6 +844,89 @@ mod snapshot_tests {
         assert!(apply(&dir, &unstaged.single(1).unwrap(), &["-R"]).is_err());
         assert_eq!(patch(false).unwrap().hunks.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discard_refuses_nested_repositories_and_reports_every_failure() {
+        let dir = repo();
+        std::fs::create_dir_all(dir.join("sub/.git")).unwrap();
+        std::fs::write(dir.join("loose.txt"), "x").unwrap();
+        let err = discard(&dir, &[("loose.txt".into(), 'U'), ("sub/".into(), 'U')]).unwrap_err();
+        assert!(err.contains("nested repository"), "{err}");
+        assert!(dir.join("loose.txt").exists() && dir.join("sub/.git").exists(), "nothing was touched");
+        // A file that can't be removed doesn't stop the others.
+        std::fs::create_dir_all(dir.join("ro")).unwrap();
+        std::fs::write(dir.join("ro/f.txt"), "x").unwrap();
+        let mut perms = std::fs::metadata(dir.join("ro")).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
+        std::fs::set_permissions(dir.join("ro"), perms.clone()).unwrap();
+        let err = discard(&dir, &[("ro/f.txt".into(), 'U'), ("loose.txt".into(), 'U')]);
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(dir.join("ro"), perms).unwrap();
+        // (As root a read-only folder doesn't stop the removal.)
+        if let Err(e) = err {
+            assert!(e.contains("ro/f.txt"), "{e}");
+        }
+        assert!(!dir.join("loose.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn paths_with_glob_characters_only_touch_themselves() {
+        let dir = repo();
+        let id = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
+        for d in ["app/[id]", "app/i", "app/d"] {
+            std::fs::create_dir_all(dir.join(d)).unwrap();
+            std::fs::write(dir.join(d).join("page.tsx"), "base\n").unwrap();
+        }
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &[&id[..], &["commit", "-qm", "base"]].concat()).unwrap();
+        for d in ["app/[id]", "app/i", "app/d"] {
+            std::fs::write(dir.join(d).join("page.tsx"), "edited\n").unwrap();
+        }
+        let bracket = "app/[id]/page.tsx".to_string();
+        let read = |d: &str| std::fs::read_to_string(dir.join(d).join("page.tsx")).unwrap();
+        // Stage only the bracketed one: `[id]` as a glob would also match `i` and `d`.
+        stage(&dir, std::slice::from_ref(&bracket)).unwrap();
+        let staged = git(&dir, &["diff", "--cached", "--name-only"]).unwrap();
+        assert_eq!(staged.trim(), "app/[id]/page.tsx");
+        unstage(&dir, std::slice::from_ref(&bracket)).unwrap();
+        assert!(git(&dir, &["diff", "--cached", "--name-only"]).unwrap().trim().is_empty());
+        assert_eq!(
+            crate::hunks::parse(&file_patch(&dir, &bracket, false).unwrap(), false).map(|p| p.hunks.len()),
+            Some(1)
+        );
+        discard(&dir, &[(bracket.clone(), 'M')]).unwrap();
+        assert_eq!(
+            (read("app/[id]").as_str(), read("app/i").as_str(), read("app/d").as_str()),
+            ("base\n", "edited\n", "edited\n")
+        );
+        let backup = snapshot_tree_in(&dir, &test_dir("git-index")).unwrap();
+        std::fs::write(dir.join("app/[id]/page.tsx"), "again\n").unwrap();
+        restore_from_tree(&dir, &backup, std::slice::from_ref(&bracket)).unwrap();
+        assert_eq!(read("app/[id]"), "base\n");
+        assert_eq!(read("app/i"), "edited\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_goes_on_past_a_failing_path() {
+        let dir = repo();
+        let scratch = test_dir("git-index");
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "one\n").unwrap();
+        let before = snapshot_tree_in(&dir, &scratch).unwrap();
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "two\n").unwrap();
+        // `new` was added later and is now a folder: removing it as a file fails.
+        std::fs::create_dir_all(dir.join("new")).unwrap();
+        let paths: Vec<String> = ["a.txt", "new", "b.txt"].map(String::from).to_vec();
+        let err = restore_from_tree(&dir, &before, &paths).unwrap_err();
+        assert!(err.contains("new"), "{err}");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "one\n", "the path after the failure too");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     #[test]

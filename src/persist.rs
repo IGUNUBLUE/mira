@@ -151,10 +151,22 @@ pub fn config_get(key: &str) -> Option<String> {
 /// is replaced atomically; its mode is kept (0644 for a new one), and a
 /// symlinked config (dotfiles managers) stays a symlink.
 pub fn config_set(key: &str, value: &str) -> Result<(), String> {
+    set_at(&config_path().ok_or("no config directory")?, key, value)
+}
+
+/// `config_set` on the file at `path`. Only a missing file starts empty: a
+/// file mira can't read (permissions, bytes that aren't UTF-8) is left alone,
+/// or writing would replace everything in it with this one key.
+fn set_at(path: &Path, key: &str, value: &str) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
-    let path = config_path().ok_or("no config directory")?;
-    let path = std::fs::canonicalize(&path).unwrap_or(path);
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = match std::fs::read(&path) {
+        Ok(bytes) => {
+            String::from_utf8(bytes).map_err(|_| format!("{} is not valid UTF-8: not changed", path.display()))?
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
     let mode = std::fs::metadata(&path).map_or(0o644, |m| m.permissions().mode() & 0o7777);
     write_atomic(&path, set_in(&text, key, value)?.as_bytes(), mode)
 }
@@ -195,6 +207,25 @@ mod tests {
     use super::*;
     use crate::herdr::PaneId;
     use crate::runs::RunId;
+
+    #[test]
+    fn an_unreadable_config_is_never_replaced() {
+        let dir = crate::files::test_dir("persist-config");
+        let path = dir.join("config");
+        // A Latin-1 comment: not UTF-8.
+        let latin1 = b"# caf\xe9\ntheme = \"auto\"\n".to_vec();
+        std::fs::write(&path, &latin1).unwrap();
+        assert!(set_at(&path, "theme", "x").unwrap_err().contains("not valid UTF-8"));
+        assert_eq!(std::fs::read(&path).unwrap(), latin1);
+        // Missing: created with the key.
+        let new = dir.join("new");
+        set_at(&new, "theme", "x").unwrap();
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "theme = \"x\"\n");
+        // Unreadable (a directory where the file should be): an error, nothing written.
+        std::fs::create_dir(dir.join("adir")).unwrap();
+        assert!(set_at(&dir.join("adir"), "theme", "x").is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn config_set_keeps_other_lines() {

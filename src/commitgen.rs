@@ -77,7 +77,9 @@ pub enum Event {
 /// `root` is the repository root; only paths under `prefix` (the opened
 /// folder, `""` for the whole repository) count, as "Commit All" stages only those.
 pub fn changes(root: &Path, staged: bool, prefix: &str) -> Result<(String, String), String> {
-    let scope = if prefix.is_empty() { "." } else { prefix };
+    // The folder, literally (a `[id]` folder is not a glob); excludes stay globs.
+    let literal = crate::git::literal(prefix);
+    let scope = if prefix.is_empty() { "." } else { literal.as_str() };
     let mut common = vec!["diff", "--no-ext-diff", "--no-color"];
     if staged {
         common.push("--cached");

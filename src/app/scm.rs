@@ -28,7 +28,11 @@ pub enum GitOutcome {
     Info(String),
     /// Files were discarded; `tree` is the snapshot taken just before (Undo).
     /// `whole`: the files' changes are gone (their diffs close), else one hunk.
-    Discarded { tree: String, paths: Vec<String>, whole: bool },
+    /// Files were thrown away (Discard, a hunk's Discard, Revert of a run). `tree`
+    /// is the snapshot taken just before (Undo); `done` says what happened
+    /// ("Discarded main.rs"); `close_diffs`: the files' unstaged diffs are empty
+    /// now. `error`: it stopped partway; the snapshot still undoes what was done.
+    Discarded { tree: String, paths: Vec<String>, done: String, close_diffs: bool, error: Option<String> },
 }
 
 /// What to do with one hunk of an index diff.
@@ -148,8 +152,14 @@ impl App {
                     // The snapshot is the Undo: without it, nothing is discarded.
                     let tree = git::snapshot_tree(r)
                         .map_err(|e| format!("couldn't back the files up, nothing was discarded: {e}"))?;
-                    git::discard(r, &files)?;
-                    Ok(GitOutcome::Discarded { tree, paths: files.into_iter().map(|(p, _)| p).collect(), whole: true })
+                    // From here on, a failure still hands back the snapshot: some files may be discarded.
+                    let error = git::discard(r, &files).err();
+                    let paths: Vec<String> = files.into_iter().map(|(p, _)| p).collect();
+                    let done = match paths.as_slice() {
+                        [one] => format!("Discarded {}", one.rsplit('/').next().unwrap_or(one)),
+                        many => format!("Discarded {} files", many.len()),
+                    };
+                    Ok(GitOutcome::Discarded { tree, paths, done, close_diffs: true, error })
                 });
             }
             Msg::Hunk(op, id, i) if !self.git_busy => {
@@ -169,7 +179,8 @@ impl App {
                         let tree = git::snapshot_tree(r)
                             .map_err(|e| format!("couldn't back the file up, nothing was discarded: {e}"))?;
                         git::apply(r, &text, &["-R"])?;
-                        Ok(GitOutcome::Discarded { tree, paths: vec![rel], whole: false })
+                        let done = format!("Discarded a change in {name}");
+                        Ok(GitOutcome::Discarded { tree, paths: vec![rel], done, close_diffs: false, error: None })
                     }),
                 };
             }
@@ -488,24 +499,23 @@ impl App {
                             self.set_status(line.to_string(), false);
                         }
                     }
-                    Ok(GitOutcome::Discarded { tree, paths, whole }) => {
-                        let n = paths.len();
-                        let name = |p: &String| p.rsplit('/').next().unwrap_or("").to_string();
-                        let what = match (whole, n) {
-                            (false, _) => format!("a change in {}", paths.first().map(name).unwrap_or_default()),
-                            (true, 1) => name(&paths[0]),
-                            _ => format!("{n} files"),
-                        };
+                    Ok(GitOutcome::Discarded { tree, paths, done, close_diffs, error }) => {
                         // Their diffs would only say "No changes" now.
                         for i in (0..self.tabs.len()).rev() {
-                            if whole
+                            if close_diffs
                                 && matches!(&self.tabs[i], Tab::Diff(d) if matches!(d.source, DiffSource::Index { staged: false }) && paths.contains(&d.rel))
                             {
                                 self.close_tab(i);
                             }
                         }
                         self.undo_discard = Some((tree, paths));
-                        self.set_status_action(format!("Discarded {what}"), "Undo", Msg::UndoDiscard);
+                        let msg = match error {
+                            None => done,
+                            Some(e) => {
+                                format!("Stopped partway: {} — Undo puts back what was changed", git::error_summary(&e))
+                            }
+                        };
+                        self.set_status_action(msg, "Undo", Msg::UndoDiscard);
                     }
                     Err(e) => self.set_error_detail(git::error_summary(&e), e),
                 }
@@ -557,7 +567,7 @@ impl App {
     }
 
     /// Run one git action at a time in the repository, off the UI thread.
-    fn git_task(&mut self, op: impl FnOnce(&Path) -> Result<GitOutcome, String> + Send + 'static) -> Task<Msg> {
+    pub(super) fn git_task(&mut self, op: impl FnOnce(&Path) -> Result<GitOutcome, String> + Send + 'static) -> Task<Msg> {
         if self.git_busy {
             return Task::none();
         }
