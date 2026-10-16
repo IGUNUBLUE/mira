@@ -43,6 +43,30 @@ All notable changes to mira are listed here. The format follows
 - Cancelling or timing out a `commit_command` pipeline stops all of it, not just `sh`.
 - The ChatGPT sign-in can only be ended by its own redirect, and rotated tokens that couldn't
   be written no longer end the session.
+- Shortcuts of the file editor and the commit box acted even when they didn't have the keyboard:
+  `Ctrl+Enter` in the terminal committed, `Ctrl+Z` there undid the open file and the message.
+- A turn mira didn't watch (another folder shown, or a restart) is no longer split in two when
+  herdr reports nothing happened in its pane meanwhile.
+- Discard removes untracked links to folders, leaves nested repositories alone while discarding
+  the rest, and a worktree rename (`git add -N`) goes back to the old file instead of emptying the
+  new one. A rejected Commit All restores the index exactly.
+- With `autocrlf` or `eol=crlf`, unstaged diffs no longer show every line as changed.
+- Some hunks had no Stage/Discard bar when git placed the change a line away from mira's view.
+- Saves and Replace All write through a temporary file and a rename: a full disk no longer leaves
+  half a file. A failed save says so and `Ctrl+S` retries it at once.
+- Opening a FIFO or a device file no longer hangs.
+- `file://` links in the terminal open the file in mira instead of being handed to `xdg-open`.
+- A folder name that isn't UTF-8 no longer crashes mira at start; unknown options are reported.
+- Commit messages: textconv filters no longer run, and files with thousands of changed lines stay
+  in the summary but out of the diff sent to the model.
+- `Backspace` at the start or `Delete` at the end of a file no longer marks it edited or drops redo.
+- Regex replace reads `$1a` as group 1 followed by `a`, as VSCodium does.
+- The status bar's column counts characters; search counts matches per file like its summary.
+
+### Changed
+
+- Changes rows show their whole path on hover; the side panel narrows on a small window.
+- Placeholders and hints use the muted text colour, for contrast.
 
 ## [0.4.0]
 

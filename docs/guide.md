@@ -30,7 +30,7 @@ running in herdr when mira closes and are there again when it opens.
 - "need you" in the status bar jumps to an agent that is waiting for you.
 - Text is copied on selection; the mouse wheel, clicks and Alt+key reach herdr. Hold `Shift`
   to select with mira instead (`Ctrl+Shift+C` copies it, middle click pastes the selection).
-  `Ctrl`+click opens a link.
+  `Ctrl`+click opens a link (a `file://` link opens the file in mira).
 - **Scrolling long output** (an agent's diff, a test run): drag the scrollbar at the right
   edge of the pane, or click its track to jump. From the keyboard, `Ctrl+B [` enters herdr's
   copy mode: `PageUp`/`PageDown`, `Ctrl+U`/`Ctrl+D`, `/` to search, `q` to leave.
@@ -130,7 +130,8 @@ resize it.
 
 Click ✦ next to the commit box. mira writes a [Conventional Commits](https://www.conventionalcommits.org)
 message from the staged diff (or from all changes, when nothing is staged). Lockfiles are left
-out and the diff is capped at 12k characters. The text streams into the box; click ✦ again to
+out, so are the contents of files with over 2000 changed lines (they're still listed), and the
+diff is capped at 12k characters. The text streams into the box; click ✦ again to
 stop and get back what you had. `Ctrl+Z` after it finishes also brings that back.
 
 Pick a provider with `commit_provider` in the [config](configuration.md):
