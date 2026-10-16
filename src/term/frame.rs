@@ -317,6 +317,35 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "benchmark: cargo test --release -- --ignored bench_snapshot --nocapture"]
+    fn bench_snapshot() {
+        // A 200×50 screen with a full 10k-line history of colored text.
+        let mut text = String::new();
+        for i in 0..10_050 {
+            text.push_str(&format!(
+                "\x1b[3{}m{i:>6} lorem ipsum dolor sit amet \x1b[44m consectetur \x1b[0m adipiscing\r\n",
+                i % 8
+            ));
+        }
+        let mut t = Term::new(Config::default(), &TermSize::new(200, 50), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut t, text.as_bytes());
+        let n = 1000;
+        let start = std::time::Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(build(&t, p(), &[]));
+        }
+        let ours = start.elapsed() / n;
+        let start = std::time::Instant::now();
+        for _ in 0..n {
+            // What iced_term did on every sync.
+            std::hint::black_box(t.grid().clone());
+        }
+        let clone = start.elapsed() / n;
+        println!("snapshot of the visible rows: {ours:?}; whole-grid clone (iced_term): {clone:?}");
+    }
+
+    #[test]
     fn text_colors_and_the_default_background() {
         let t = term(10, 3, "ab\x1b[31mc\x1b[0m\r\n\x1b[44m \x1b[0m");
         let f = build(&t, p(), &[]);

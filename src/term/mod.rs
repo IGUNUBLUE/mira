@@ -451,6 +451,74 @@ mod tests {
         assert_eq!(t.apply(Action::Copy), Effect::Copy { primary: false, text: "hello".into() });
     }
 
+    /// Run `script` in a 40×6 terminal and wait until `ready` holds.
+    fn run(script: &str, ready: impl Fn(&Terminal) -> bool) -> Terminal {
+        let mut t = Terminal::spawn(
+            3,
+            Options {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), script.into()],
+                env: HashMap::new(),
+                cwd: std::env::temp_dir(),
+            },
+        )
+        .expect("spawn");
+        t.apply(Action::Resize { cols: 40, lines: 6, cell_width: 8.0, cell_height: 16.0 });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready(&t) {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            t.redraw();
+        }
+        t
+    }
+
+    fn line(t: &Terminal, n: usize) -> String {
+        t.frame().row(n).iter().map(|c| c.c).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn osc8_links_hover_and_open_and_modes_are_seen() {
+        let script = "printf 'see \\033]8;;https://a.b/c\\033\\\\the docs\\033]8;;\\033\\\\ ok\\033[?2004h\\033[?1004h'; sleep 5";
+        let mut t = run(script, |t| line(t, 0) == "see the docs ok" && t.mode().contains(TermMode::BRACKETED_PASTE));
+        assert!(t.mode().contains(TermMode::FOCUS_IN_OUT));
+        assert!(!t.hovered_link());
+        t.apply(Action::Hover(Some(Pos { line: 0, col: 6 })));
+        assert!(t.hovered_link());
+        // The whole link is underlined, nothing else.
+        let underlined: Vec<usize> = t
+            .frame()
+            .row(0)
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.underline != frame::Underline::None)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(underlined, (4..12).collect::<Vec<_>>());
+        assert_eq!(t.apply(Action::Open(Pos { line: 0, col: 4 })), Effect::Open("https://a.b/c".into()));
+        assert_eq!(t.apply(Action::Open(Pos { line: 0, col: 1 })), Effect::None);
+        t.apply(Action::Hover(None));
+        assert!(!t.hovered_link());
+    }
+
+    #[test]
+    fn the_history_scrolls_and_input_returns_to_the_bottom() {
+        let mut t = run("seq 1 30; sleep 5", |t| line(t, 4) == "30");
+        t.apply(Action::Scroll(3));
+        assert_eq!((t.frame().display_offset, line(&t, 0)), (3, "23".to_string()));
+        t.apply(Action::ScrollToTop);
+        assert_eq!(line(&t, 0), "1");
+        // A selection in the history copies what is shown there.
+        t.apply(Action::Select(SelectionType::Lines, Pos { line: 1, col: 0 }, Side::Left));
+        t.apply(Action::SelectDone);
+        assert_eq!(t.apply(Action::Copy), Effect::Copy { primary: false, text: "2\n".into() });
+        t.apply(Action::Input(Vec::new()));
+        assert_eq!((t.frame().display_offset, line(&t, 4)), (0, "30".to_string()));
+        t.apply(Action::Scroll(2));
+        t.apply(Action::ScrollToBottom);
+        assert_eq!(t.frame().display_offset, 0);
+    }
+
     #[test]
     fn answers_color_queries_on_the_pty_thread() {
         // The program asks for color 1 and the background, then prints the replies' length.
