@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0]
+
 ### Added
 
 - Right-click menu in Files: new file or folder, rename in place, delete to the trash (with
