@@ -13,6 +13,14 @@ pub struct Change {
     pub path: String,
     /// Status letter: M, A, D, R, C, T, U (untracked) or `!` (conflict).
     pub code: char,
+    /// A rename's or copy's original path.
+    pub orig: Option<String>,
+}
+
+impl Change {
+    pub fn new(path: impl Into<String>, code: char) -> Self {
+        Self { path: path.into(), code, orig: None }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -256,23 +264,25 @@ fn parse_status(status: &str, snap: &mut Snapshot) {
         if path.is_empty() {
             continue;
         }
-        if x == 'R' || x == 'C' {
-            parts.next(); // original path of a rename/copy
-        }
+        // A rename or copy, staged (X) or in the worktree (Y, e.g. after
+        // `git add -N`), is followed by its original path.
+        let orig = if matches!(x, 'R' | 'C') || matches!(y, 'R' | 'C') { parts.next().map(String::from) } else { None };
         let conflict = x == 'U' || y == 'U' || (x == 'A' && y == 'A') || (x == 'D' && y == 'D');
         if conflict {
-            snap.unstaged.push(Change { path, code: '!' });
+            snap.unstaged.push(Change::new(path, '!'));
             continue;
         }
         if x == '?' {
-            snap.unstaged.push(Change { path, code: 'U' });
+            snap.unstaged.push(Change::new(path, 'U'));
             continue;
         }
         if x != ' ' {
-            snap.staged.push(Change { path: path.clone(), code: x });
+            let orig = orig.clone().filter(|_| matches!(x, 'R' | 'C'));
+            snap.staged.push(Change { path: path.clone(), code: x, orig });
         }
         if y != ' ' {
-            snap.unstaged.push(Change { path, code: y });
+            let orig = orig.filter(|_| matches!(y, 'R' | 'C'));
+            snap.unstaged.push(Change { path, code: y, orig });
         }
     }
     for list in [&mut snap.staged, &mut snap.unstaged] {
@@ -574,7 +584,7 @@ pub fn diff_trees(root: &Path, from: &str, to: &str) -> Result<Vec<Change>, Stri
     let mut changes = Vec::new();
     while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
         let code = status.chars().next().unwrap_or('M');
-        changes.push(Change { path: path.to_string(), code });
+        changes.push(Change::new(path, code));
     }
     Ok(changes)
 }
@@ -652,6 +662,17 @@ mod tests {
             ]
         );
         assert!(!s.truncated);
+        assert_eq!(s.staged[0].orig.as_deref(), Some("old.txt"), "a rename keeps where it came from");
+    }
+
+    #[test]
+    fn worktree_renames_consume_their_original_path() {
+        // `git add -N new.txt; mv old.txt new.txt` reports ` R new.txt\0old.txt\0`.
+        let mut s = Snapshot::default();
+        parse_status(" R new.txt\0old.txt\0 M other.txt\0", &mut s);
+        let list = s.unstaged.iter().map(|c| (c.code, c.path.as_str(), c.orig.as_deref())).collect::<Vec<_>>();
+        assert_eq!(list, [('R', "new.txt", Some("old.txt")), ('M', "other.txt", None)]);
+        assert!(s.staged.is_empty());
     }
 }
 
@@ -906,6 +927,23 @@ mod snapshot_tests {
         restore_from_tree(&dir, &backup, std::slice::from_ref(&bracket)).unwrap();
         assert_eq!(read("app/[id]"), "base\n");
         assert_eq!(read("app/i"), "edited\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_staged_rename_unstages_with_its_original_path() {
+        let dir = repo();
+        let id = ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"];
+        std::fs::write(dir.join("old.txt"), "some text long enough to be a rename\n").unwrap();
+        git(&dir, &["add", "-A"]).unwrap();
+        git(&dir, &[&id[..], &["commit", "-qm", "base"]].concat()).unwrap();
+        git(&dir, &["mv", "old.txt", "new.txt"]).unwrap();
+        let s = snapshot(&dir, &mut Cache::default(), false).unwrap();
+        let rename = &s.staged[0];
+        assert_eq!((rename.code, rename.path.as_str(), rename.orig.as_deref()), ('R', "new.txt", Some("old.txt")));
+        // Both paths: only the new one would leave `D old.txt` staged.
+        unstage(&dir, &["new.txt".to_string(), "old.txt".to_string()]).unwrap();
+        assert!(git(&dir, &["diff", "--cached", "--name-only"]).unwrap().trim().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -239,7 +239,13 @@ impl App {
             Msg::HoverChange(key, true) => self.hovered_change = Some(key),
             Msg::HoverChange(key, false) if self.hovered_change == Some(key) => self.hovered_change = None,
             Msg::HoverChange(..) => {}
-            Msg::Unstage(paths) => return self.git_op(move |r| git::unstage(r, &paths)),
+            Msg::Unstage(mut paths) => {
+                // A staged rename also staged its old path's deletion: both go back.
+                let origs: Vec<String> =
+                    self.git.staged.iter().filter(|c| paths.contains(&c.path)).filter_map(|c| c.orig.clone()).collect();
+                paths.extend(origs);
+                return self.git_op(move |r| git::unstage(r, &paths));
+            }
             // The box is the stream's output while generating: allow selecting, not editing.
             Msg::CommitEdit(action) if self.commit_gen.is_some() && action.is_edit() => {}
             Msg::CommitEdit(action) => self.commit_history.perform(&mut self.commit_msg, action),
@@ -279,8 +285,15 @@ impl App {
                     );
                     return Task::none();
                 }
-                let stage_all: Vec<String> = if commit_all {
-                    self.git.unstaged.iter().filter(|c| c.code != '!').map(|c| c.path.clone()).collect()
+                let stage_all: Vec<(String, bool)> = if commit_all {
+                    let listed = self.git.unstaged.iter().filter(|c| c.code != '!');
+                    // A worktree rename stages its old path's deletion too.
+                    listed
+                        .flat_map(|c| {
+                            let orig = c.orig.clone().map(|o| (o, false));
+                            std::iter::once((c.path.clone(), c.code == 'U')).chain(orig)
+                        })
+                        .collect()
                 } else {
                     Vec::new()
                 };
@@ -289,24 +302,8 @@ impl App {
                     return Task::none();
                 }
                 let prefix = self.repo_prefix.clone();
-                return self.spinning(BusyOp::Commit, |a| {
-                    a.git_task(move |r| {
-                        // `git commit` takes the whole index: files staged outside
-                        // this folder are not on screen and must not ride along.
-                        let outside = git::staged_outside(r, &prefix)?;
-                        if let Some(first) = outside.first() {
-                            return Err(format!(
-                                "{} file(s) outside this folder are staged ({first}…): commit or unstage them first",
-                                outside.len()
-                            ));
-                        }
-                        if !stage_all.is_empty() {
-                            git::stage(r, &stage_all)?;
-                        }
-                        let out = git::commit(r, &message)?;
-                        Ok(GitOutcome::Committed(first_line(&out).unwrap_or("Committed").to_string()))
-                    })
-                });
+                return self
+                    .spinning(BusyOp::Commit, |a| a.git_task(move |r| commit_in(r, &message, &prefix, stage_all)));
             }
             Msg::GitInit => return self.git_op(git::init),
             // The dialog asks first; ✦ does nothing while it is open.
@@ -575,8 +572,14 @@ impl App {
             return Task::none();
         }
         self.git_busy = true;
-        let (root, epoch) = (self.repo_root(), self.root_epoch);
-        Task::perform(blocking(move || op(&root)), move |r| Msg::GitDone(epoch, r))
+        // Before the folder's first snapshot the repository root isn't known yet:
+        // ask git, or paths relative to it would resolve in a subfolder.
+        let (known, root, epoch) = (self.git.root.clone(), self.root.clone(), self.root_epoch);
+        let run = move || {
+            let repo = known.or_else(|| git::repo_root(&root)).unwrap_or(root);
+            op(&repo)
+        };
+        Task::perform(blocking(run), move |r| Msg::GitDone(epoch, r))
     }
 
     /// Replace the commit box's text, cursor at the end (where streaming writes).
@@ -590,6 +593,48 @@ impl App {
 fn append(content: &mut Content, text: String) {
     content.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
     content.perform(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(text))));
+}
+
+/// Commit in the repository at `repo`: what's staged, or with `stage_all`
+/// (Commit All: path, untracked) those changes staged first. `prefix` is the
+/// opened folder inside the repository.
+fn commit_in(repo: &Path, message: &str, prefix: &str, stage_all: Vec<(String, bool)>) -> Result<GitOutcome, String> {
+    // `git commit` takes the whole index: files staged outside
+    // this folder are not on screen and must not ride along.
+    let outside = git::staged_outside(repo, prefix)?;
+    if let Some(first) = outside.first() {
+        return Err(format!(
+            "{} file(s) outside this folder are staged ({first}…): commit or unstage them first",
+            outside.len()
+        ));
+    }
+    // The list is up to a refresh old: an untracked file deleted
+    // since would fail `git add` and with it the whole commit.
+    let stage_all = still_there(repo, stage_all);
+    if !stage_all.is_empty() {
+        git::stage(repo, &stage_all)?;
+    }
+    match git::commit(repo, message) {
+        Ok(out) => Ok(GitOutcome::Committed(first_line(&out).unwrap_or("Committed").to_string())),
+        Err(e) => {
+            // A rejected Commit All (e.g. by a hook) leaves the index as it was:
+            // left staged, the next Commit would commit only those, a different one.
+            if !stage_all.is_empty() {
+                let _ = git::unstage(repo, &stage_all);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// The paths of `listed` (path, untracked) still to stage: an untracked file
+/// that's gone has nothing to add (a tracked one's deletion is staged).
+fn still_there(repo: &Path, listed: Vec<(String, bool)>) -> Vec<String> {
+    listed
+        .into_iter()
+        .filter(|(p, untracked)| !untracked || repo.join(p).symlink_metadata().is_ok())
+        .map(|(p, _)| p)
+        .collect()
 }
 
 /// `root` relative to the repository at `repo`, with a trailing slash ("" at
@@ -622,5 +667,56 @@ mod tests {
         assert_eq!(prefix_in(Path::new("/r"), Path::new("/r")), "");
         assert_eq!(prefix_in(Path::new("/r/a/b"), Path::new("/r")), "a/b/");
         assert_eq!(prefix_in(Path::new("/elsewhere"), Path::new("/r")), "");
+    }
+
+    /// A repository with one commit of `a.txt`; commits as a local test identity.
+    fn repo(tag: &str) -> std::path::PathBuf {
+        let dir = crate::files::test_dir(tag);
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "t"],
+            &["config", "user.email", "t@t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            git::git(&dir, args).unwrap();
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git::git(&dir, &["add", "-A"]).unwrap();
+        git::git(&dir, &["commit", "-qm", "base"]).unwrap();
+        dir
+    }
+
+    fn staged(dir: &Path) -> String {
+        git::git(dir, &["diff", "--cached", "--name-only"]).unwrap().trim().to_string()
+    }
+
+    #[test]
+    fn commit_all_skips_untracked_files_deleted_since_the_list() {
+        let dir = repo("commit-gone");
+        std::fs::write(dir.join("a.txt"), "edited\n").unwrap();
+        // Listed as untracked, then deleted by an agent before the click.
+        let listed = vec![("a.txt".to_string(), false), ("gone.txt".to_string(), true)];
+        assert!(matches!(commit_in(&dir, "edit", "", listed), Ok(GitOutcome::Committed(_))));
+        assert_eq!(git::git(&dir, &["log", "-1", "--format=%s"]).unwrap().trim(), "edit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rejected_commit_all_unstages_what_it_staged() {
+        let dir = repo("commit-hook");
+        let hook = dir.join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("a.txt"), "edited\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "new\n").unwrap();
+        let listed = vec![("a.txt".to_string(), false), ("new.txt".to_string(), true)];
+        assert!(commit_in(&dir, "edit", "", listed).is_err());
+        assert_eq!(staged(&dir), "", "the index is as it was");
+        // A plain Commit leaves what you staged yourself alone.
+        git::stage(&dir, &["a.txt".to_string()]).unwrap();
+        assert!(commit_in(&dir, "edit", "", Vec::new()).is_err());
+        assert_eq!(staged(&dir), "a.txt");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

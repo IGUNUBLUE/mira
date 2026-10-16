@@ -218,7 +218,7 @@ mod tests {
 
     fn snap(changes: &[(&str, char)], ignored: &[&str]) -> Snapshot {
         Snapshot {
-            unstaged: changes.iter().map(|(p, c)| Change { path: p.to_string(), code: *c }).collect(),
+            unstaged: changes.iter().map(|(p, c)| Change::new(*p, *c)).collect(),
             ignored: ignored.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(m.status("d", true), Some('D'));
         // A file changed in the index and the tree shows the tree's letter.
         let mut both = snap(&[("f", 'M')], &[]);
-        both.staged = vec![Change { path: "f".into(), code: 'A' }];
+        both.staged = vec![Change::new("f", 'A')];
         assert_eq!(Marks::new(&both, "").status("f", false), Some('M'));
     }
 

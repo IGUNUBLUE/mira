@@ -398,7 +398,7 @@ mod tests {
         let mut t = Tracker::default();
         t.observe(&[seen("w1:p1", Working, None)], 1);
         t.observe(&[seen("w1:p1", Idle, None)], 2);
-        let change = |p: &str| Change { path: p.into(), code: 'M' };
+        let change = |p: &str| Change::new(p, 'M');
         t.edit(RunId(0), |r| r.files = Some(vec![change("a.rs"), change("b.rs")]));
         assert_eq!(t.new_files(), 2);
         assert!(t.is_new("a.rs") && !t.is_new("c.rs"));
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn the_index_follows_the_latest_run_of_each_file() {
         let mut t = Tracker::default();
-        let change = |p: &str| Change { path: p.into(), code: 'M' };
+        let change = |p: &str| Change::new(p, 'M');
         for (i, start) in [(0, 1), (1, 100)] {
             t.observe(&[seen("w1:p1", Working, None)], start);
             t.observe(&[seen("w1:p1", Idle, None)], start + 1);
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn keeps_at_most_max_runs_dropping_empty_ones_first() {
         let mut t = Tracker::default();
-        let change = |p: &str| Change { path: p.into(), code: 'M' };
+        let change = |p: &str| Change::new(p, 'M');
         for i in 0..(MAX_RUNS as u64 + 5) {
             t.observe(&[seen("w1:p1", Working, None)], i * 100);
             t.observe(&[seen("w1:p1", Idle, None)], i * 100 + 1);
