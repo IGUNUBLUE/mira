@@ -258,7 +258,7 @@ fn agent_style(status: AgentStatus) -> (Color, &'static str) {
         AgentStatus::Working => (p().accent, "working"),
         AgentStatus::Blocked => (p().modified, "needs you"),
         AgentStatus::Done => (p().added, "done"),
-        AgentStatus::Idle => (p().line_no, "idle"),
+        AgentStatus::Idle => (p().muted, "idle"),
         AgentStatus::Unknown => (p().muted, "unknown"),
     }
 }
@@ -591,16 +591,7 @@ impl App {
 
     fn view_about(&self) -> Element<'_, Msg> {
         let link = |label: &'static str, url: String| small_button(label, Some(Msg::OpenLink(url)));
-        let licenses = ["/usr/local/share/doc/mira", "/usr/share/doc/mira"]
-            .iter()
-            .map(std::path::PathBuf::from)
-            .chain(std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share/doc/mira")))
-            .map(|d| d.join("THIRD_PARTY_LICENSES.html"));
-        // Computed once per view from a few stats: About is rarely open.
-        let third_party = licenses
-            .into_iter()
-            .find(|p| p.is_file())
-            .map_or_else(|| format!("{REPO_URL}/releases"), |p| format!("file://{}", p.display()));
+        let third_party = self.licenses_url.clone().unwrap_or_else(|| format!("{REPO_URL}/releases"));
         column![
             row![
                 mira_icon(64.0),
@@ -939,7 +930,7 @@ impl App {
             Inspector::Files => self.view_explorer(),
         };
         container(column![container(tabs).width(Length::Fill).style(theme::panel(p().sidebar)), hrule(), body])
-            .width(self.inspector_width)
+            .width(self.inspector_shown_width())
             .height(Length::Fill)
             .style(theme::panel(p().sidebar))
             .into()
@@ -961,18 +952,26 @@ impl App {
         let (name, dir) = split_path(&c.path);
         let color = theme::status_color(c.code);
         let new = self.runs.is_new(&c.path);
+        // The whole path (clipped in the row), and where a rename came from.
+        let full: Cow<'_, str> = match &c.orig {
+            Some(orig) => format!("{orig} → {}", c.path).into(),
+            None => c.path.as_str().into(),
+        };
         let mut content = row![
             if new { ico(Icon::DotFilled, 8).color(p().modified) } else { text("") }.width(10),
-            container(
-                row![
-                    text(name).size(UI).color(color).wrapping(text::Wrapping::None),
-                    text(dir).size(SMALL).color(p().muted).wrapping(text::Wrapping::None),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center)
-            )
-            .width(Length::Fill)
-            .clip(true),
+            row_tip(
+                container(
+                    row![
+                        text(name).size(UI).color(color).wrapping(text::Wrapping::None),
+                        text(dir).size(SMALL).color(p().muted).wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                )
+                .width(Length::Fill)
+                .clip(true),
+                full,
+            ),
         ]
         .align_y(Alignment::Center)
         .spacing(4);
@@ -1284,7 +1283,7 @@ impl App {
                                         width: 1.0,
                                         radius: 4.0.into(),
                                     },
-                                    placeholder: c.line_no,
+                                    placeholder: c.muted,
                                     value: c.fg,
                                     selection: c.selection,
                                 }
@@ -1573,7 +1572,7 @@ impl App {
                         )
                         .width(Length::Fill)
                         .clip(true),
-                        text(f.lines.len()).size(SMALL).color(p().accent),
+                        text(f.count).size(SMALL).color(p().accent),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center),
@@ -1635,7 +1634,7 @@ impl App {
         // Status and ignored flags are computed in update (see `Explorer::set_marks`).
         for e in &self.explorer.entries {
             let color = match (e.ignored, e.status) {
-                (true, _) => p().line_no.scale_alpha(0.75),
+                (true, _) => p().muted,
                 (_, Some(c)) => theme::status_color(c),
                 _ => p().fg,
             };
@@ -1870,7 +1869,7 @@ impl App {
             text(info.join(" · ")).size(12).color(p().muted),
             t.gone.then(|| text("Deleted on disk").size(12).color(p().warn_text)),
             space::horizontal(),
-            text(hint).size(12).color(p().line_no),
+            text(hint).size(12).color(p().muted),
         ]
         .spacing(12)
         .align_y(Alignment::Center);
@@ -1911,7 +1910,7 @@ impl App {
             .style(|_, _| text_editor::Style {
                 background: p().bg.into(),
                 border: iced::Border::default(),
-                placeholder: p().line_no,
+                placeholder: p().muted,
                 value: p().fg,
                 selection: p().selection,
             })
@@ -2268,8 +2267,16 @@ impl App {
         let mut right = row![].spacing(16).align_y(Alignment::Center);
         if let Some(Tab::File(t)) = self.active_tab.and_then(|i| self.tabs.get(i)) {
             let p = t.content.cursor().position;
+            // iced's column is a byte offset: shown in characters, as editors do.
+            let col = t.content.line(p.line).map_or(p.column, |l| {
+                let mut end = p.column.min(l.text.len());
+                while !l.text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                l.text[..end].chars().count()
+            });
             right = right
-                .push(text(format!("Ln {}, Col {}", p.line + 1, p.column + 1)).size(12))
+                .push(text(format!("Ln {}, Col {}", p.line + 1, col + 1)).size(12))
                 .push(text(t.syntax.as_str()).size(12));
         }
         if self.git_busy || self.search.running {

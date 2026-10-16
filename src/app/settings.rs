@@ -169,6 +169,18 @@ impl App {
                     self.drafts = Drafts::load();
                     self.settings_error = None;
                 }
+                if d == Dialog::About {
+                    // A few stats, here rather than in every frame while it's open.
+                    self.licenses_url = ["/usr/local/share/doc/mira", "/usr/share/doc/mira"]
+                        .iter()
+                        .map(std::path::PathBuf::from)
+                        .chain(
+                            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share/doc/mira")),
+                        )
+                        .map(|d| d.join("THIRD_PARTY_LICENSES.html"))
+                        .find(|p| p.is_file())
+                        .map(|p| format!("file://{}", p.display()));
+                }
                 if d == Dialog::About && self.herdr_version.is_none() {
                     self.dialog = Some(d);
                     return Task::perform(blocking(crate::herdr::version), Msg::HerdrVersion);

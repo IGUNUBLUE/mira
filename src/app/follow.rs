@@ -158,6 +158,7 @@ impl App {
         self.runs = Tracker::from_runs(runs);
         self.root = root;
         self.git = Snapshot::default();
+        self.git_rev += 1;
         // A refresh of the old folder may still hold the old cache; it's dropped with it.
         self.git_cache = Default::default();
         self.refreshing = false;

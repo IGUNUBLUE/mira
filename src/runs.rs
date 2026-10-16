@@ -140,6 +140,8 @@ pub struct Tracker {
     new_count: usize,
     /// An open run's `last_change` moved since [`Tracker::take_touched`].
     touched: bool,
+    /// Bumped by every reindex: what the app derives from `origins` follows it.
+    revision: u64,
 }
 
 impl Tracker {
@@ -195,8 +197,14 @@ impl Tracker {
         Some(out)
     }
 
+    /// Changes whenever [`Tracker::is_new`] or [`Tracker::origin`] may answer differently.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Rebuild `origins` and `new_count` from `runs`.
     fn reindex(&mut self) {
+        self.revision += 1;
         self.origins.clear();
         for (i, r) in self.runs.iter().enumerate().filter(|(_, r)| !r.running()) {
             for c in r.files.iter().flatten() {

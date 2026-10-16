@@ -107,6 +107,7 @@ impl App {
                             self.repo_prefix =
                                 snap.root.as_deref().map(|r| prefix_in(&self.root, r)).unwrap_or_default();
                             self.git = snap;
+                            self.git_rev += 1;
                             self.explorer.set_marks(crate::explorer::Marks::new(&self.git, &self.repo_prefix));
                             if self.active_diff_is_index() {
                                 tasks.push(self.reload_active_diff());

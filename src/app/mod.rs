@@ -134,6 +134,8 @@ pub struct App {
     pub settings_error: Option<String>,
     /// `herdr --version`, asked when About first opens.
     pub herdr_version: Option<String>,
+    /// The installed third-party licenses page, found when About opens.
+    pub licenses_url: Option<String>,
     pub window_controls: WindowControls,
     /// The row a right click was on, until the panel reports where (see `rightclick`).
     explorer_target: Option<(PathBuf, bool)>,
@@ -148,6 +150,9 @@ pub struct App {
     pub refreshing: bool,
     /// Bumped per git refresh; an older refresh's snapshot is dropped.
     git_gen: u64,
+    /// Bumped whenever `git` is replaced (see `fresh_changes`).
+    git_rev: u64,
+    fresh_cache: std::cell::Cell<Option<((u64, u64), usize)>>,
     /// What git refreshes of this folder reuse (repository, log); replaced on a folder switch.
     git_cache: std::sync::Arc<std::sync::Mutex<crate::git::Cache>>,
     /// The latest refresh lists ignored files (only while Files is visible).
@@ -463,6 +468,7 @@ impl App {
             drafts: Drafts::default(),
             settings_error: None,
             herdr_version: None,
+            licenses_url: None,
             window_controls: WindowControls::from_config(),
             explorer_target: None,
             explorer_menu: None,
@@ -516,6 +522,8 @@ impl App {
             repo_prefix: String::new(),
             refreshing: false,
             git_gen: 0,
+            git_rev: 0,
+            fresh_cache: std::cell::Cell::new(None),
             git_cache: Default::default(),
             git_with_ignored: false,
             git_loaded: false,
@@ -608,14 +616,26 @@ impl App {
 
     /// Files in Changes that an agent changed and you haven't opened since.
     /// (Files of older turns that were committed since don't count.)
+    /// The view asks a few times per frame: computed once per change of the
+    /// lists or the runs (staged × unstaged would be millions of compares with
+    /// thousands of files).
     pub fn fresh_changes(&self) -> usize {
+        let key = (self.git_rev, self.runs.revision());
+        if let Some((k, n)) = self.fresh_cache.get()
+            && k == key
+        {
+            return n;
+        }
+        let unstaged_paths: std::collections::HashSet<&str> =
+            self.git.unstaged.iter().map(|c| c.path.as_str()).collect();
         let unstaged = self.git.unstaged.iter().filter(|c| self.runs.is_new(&c.path)).count();
         let staged_only = self
             .git
             .staged
             .iter()
-            .filter(|c| self.runs.is_new(&c.path) && !self.git.unstaged.iter().any(|u| u.path == c.path))
+            .filter(|c| self.runs.is_new(&c.path) && !unstaged_paths.contains(c.path.as_str()))
             .count();
+        self.fresh_cache.set(Some((key, unstaged + staged_only)));
         unstaged + staged_only
     }
 

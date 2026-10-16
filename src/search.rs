@@ -28,6 +28,8 @@ pub struct FileMatches {
     pub path: PathBuf,
     pub rel: String,
     pub lines: Vec<LineMatch>,
+    /// Matches in the file (a line can hold several), as the summary counts them.
+    pub count: usize,
 }
 
 pub const MAX_MATCHES: usize = 5_000;
@@ -89,6 +91,7 @@ pub fn search(
             continue;
         }
         let mut lines = Vec::new();
+        let before = total;
         for (i, line) in content.lines().enumerate() {
             let ranges: Vec<(usize, usize)> =
                 re.find_iter(line).filter(|m| m.end() > m.start()).map(|m| (m.start(), m.end())).collect();
@@ -104,7 +107,7 @@ pub fn search(
         }
         if !lines.is_empty() {
             let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
-            results.push(FileMatches { path, rel, lines });
+            results.push(FileMatches { path, rel, lines, count: total - before });
         }
         if total >= MAX_MATCHES {
             break;

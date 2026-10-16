@@ -18,12 +18,13 @@ pub enum TermKind {
     Shell,
 }
 
-/// Open `url` (a link Ctrl+clicked in the terminal) in the desktop's browser.
-/// `file://` links never go to xdg-open: terminal output is untrusted, and a
-/// `.desktop` file or a script there would be launched (see [`file_link`]).
+/// Open `url` in the desktop's browser. `file://` is for mira's own links
+/// (About's licenses): one Ctrl+clicked in the terminal never comes here, as
+/// terminal output is untrusted and xdg-open would launch a `.desktop` file
+/// or a script (see [`file_link`]).
 pub(super) fn open_url(url: &str) -> Result<(), String> {
     // Only links, never a path or an option for xdg-open.
-    if !["https://", "http://", "ftp://", "ssh://"].iter().any(|s| url.starts_with(s)) {
+    if !["https://", "http://", "file://", "ftp://", "ssh://"].iter().any(|s| url.starts_with(s)) {
         return Err(format!("not a link: {url}"));
     }
     let mut child = std::process::Command::new("xdg-open")
@@ -181,6 +182,5 @@ mod tests {
         assert_eq!(file_link("file://otherhost/x"), None);
         assert_eq!(file_link("file:///bad%zz"), None);
         assert_eq!(file_link("https://x"), None);
-        assert!(open_url("file:///home/u/evil.desktop").is_err());
     }
 }

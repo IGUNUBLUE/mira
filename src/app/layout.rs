@@ -44,6 +44,13 @@ pub enum CenterPane {
 }
 
 impl App {
+    /// The side panel's width as drawn: the saved width, narrowed when the
+    /// window is too small for it and the center's minimum (it comes back when
+    /// the window grows again).
+    pub fn inspector_shown_width(&self) -> f32 {
+        self.inspector_width.min((self.window_width - MIN_CENTER).max(MIN_SIDE))
+    }
+
     pub(super) fn update_layout(&mut self, msg: Msg) -> Task<Msg> {
         let files_before = self.files_visible();
         let task = self.layout_msg(msg);

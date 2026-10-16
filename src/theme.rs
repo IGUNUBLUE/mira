@@ -436,7 +436,7 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
         background: c.bg.into(),
         border: Border { color: if focused { c.accent } else { c.border }, width: 1.0, radius: 4.0.into() },
         icon: c.muted,
-        placeholder: c.line_no,
+        placeholder: c.muted,
         value: c.fg,
         selection: c.selection,
     }
