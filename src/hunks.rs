@@ -1,15 +1,7 @@
 //! git's own hunks of one file (`git diff -U3`), so a single change can be
 //! staged, unstaged or discarded with `git apply`. The side-by-side view is
-//! computed separately (`diff.rs`); its toolbars find their hunk by the line
-//! number of the hunk's first changed line.
-
-/// Where a hunk's first change is: a removed line of the old side, or an
-/// added line of the new side (1-based, as `diff::Side::number`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Anchor {
-    Old(usize),
-    New(usize),
-}
+//! computed separately (`diff.rs`); its toolbars find their hunk by the
+//! lines it spans (see [`Hunk::covers`]).
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hunk {
@@ -17,7 +9,18 @@ pub struct Hunk {
     pub header: String,
     /// The hunk as git printed it, header included (line breaks kept).
     text: String,
-    pub anchor: Anchor,
+    /// The lines it spans on each side (1-based, context included).
+    pub old: std::ops::Range<usize>,
+    pub new: std::ops::Range<usize>,
+}
+
+impl Hunk {
+    /// A changed row (its old-side number if removed, new-side if added) is in
+    /// this hunk. The side-by-side rows and git's hunks don't always pick the
+    /// same lines (git's indent heuristic slides them): a range finds it anyway.
+    pub fn covers(&self, removed: Option<usize>, added: Option<usize>) -> bool {
+        removed.is_some_and(|n| self.old.contains(&n)) || added.is_some_and(|n| self.new.contains(&n))
+    }
 }
 
 /// The hunks of one file's diff, with the file header they apply under.
@@ -37,9 +40,39 @@ impl Patch {
     }
 }
 
-/// `-a,b` or `+c,d` (the count defaults to 1): the start line.
-fn range_start(s: &str) -> Option<usize> {
-    s.get(1..)?.split(',').next()?.parse().ok()
+/// Which hunk's toolbar goes above each row: `rows` gives each row's removed
+/// (old-side) and added (new-side) line numbers, `None` for unchanged sides.
+/// Rows and hunks are both in file order, so one pass places them; a hunk
+/// goes above the first changed row inside it.
+pub fn place(rows: impl IntoIterator<Item = (Option<usize>, Option<usize>)>, hunks: &[Hunk]) -> Vec<Option<usize>> {
+    let mut next = 0;
+    rows.into_iter()
+        .map(|(removed, added)| {
+            if removed.is_none() && added.is_none() {
+                return None;
+            }
+            // Hunks this row is already past (none of their rows changed in them) are skipped.
+            while hunks.get(next).is_some_and(|h| {
+                !h.covers(removed, added)
+                    && (removed.is_some_and(|n| n >= h.old.end) || added.is_some_and(|n| n >= h.new.end))
+            }) {
+                next += 1;
+            }
+            let here = hunks.get(next).is_some_and(|h| h.covers(removed, added)).then_some(next);
+            if here.is_some() {
+                next += 1;
+            }
+            here
+        })
+        .collect()
+}
+
+/// `-a,b` or `+c,d` (the count defaults to 1): the lines it spans.
+fn range(s: &str) -> Option<std::ops::Range<usize>> {
+    let mut parts = s.get(1..)?.split(',');
+    let start: usize = parts.next()?.parse().ok()?;
+    let count: usize = parts.next().map_or(Some(1), |c| c.parse().ok())?;
+    Some(start..start + count)
 }
 
 /// Parse `git diff` output for one file. `None` for anything that is not a
@@ -47,8 +80,6 @@ fn range_start(s: &str) -> Option<usize> {
 pub fn parse(diff: &str, staged: bool) -> Option<Patch> {
     let mut header = String::new();
     let mut hunks: Vec<Hunk> = Vec::new();
-    // Line counters of the current hunk, and whether its first change was seen.
-    let (mut old, mut new, mut anchored) = (0usize, 0usize, false);
     let mut seen_files = false;
     for line in diff.split_inclusive('\n') {
         if line.starts_with("@@ ") {
@@ -57,13 +88,11 @@ pub fn parse(diff: &str, staged: bool) -> Option<Patch> {
             }
             let mut parts = line.split(' ');
             let (_, a, b) = (parts.next(), parts.next()?, parts.next()?);
-            old = range_start(a)?;
-            new = range_start(b)?;
-            anchored = false;
             hunks.push(Hunk {
                 header: line.trim_end_matches(['\n', '\r']).to_string(),
                 text: line.to_string(),
-                anchor: Anchor::Old(old),
+                old: range(a)?,
+                new: range(b)?,
             });
             continue;
         }
@@ -86,28 +115,6 @@ pub fn parse(diff: &str, staged: bool) -> Option<Patch> {
             return None;
         }
         hunk.text.push_str(line);
-        match line.as_bytes().first() {
-            Some(b'-') => {
-                if !anchored {
-                    hunk.anchor = Anchor::Old(old);
-                    anchored = true;
-                }
-                old += 1;
-            }
-            Some(b'+') => {
-                if !anchored {
-                    hunk.anchor = Anchor::New(new);
-                    anchored = true;
-                }
-                new += 1;
-            }
-            // `\ No newline at end of file` counts on neither side.
-            Some(b'\\') => {}
-            _ => {
-                old += 1;
-                new += 1;
-            }
-        }
     }
     (!hunks.is_empty()).then_some(Patch { staged, header, hunks })
 }
@@ -134,12 +141,28 @@ twelve\n\
 \\ No newline at end of file\n";
 
     #[test]
-    fn splits_hunks_and_finds_their_first_change() {
+    fn splits_hunks_and_knows_their_lines() {
         let p = parse(TWO, false).unwrap();
         assert_eq!(p.hunks.len(), 2);
-        assert_eq!(p.hunks[0].anchor, Anchor::Old(2));
-        assert_eq!(p.hunks[1].anchor, Anchor::New(12));
+        assert_eq!((p.hunks[0].old.clone(), p.hunks[0].new.clone()), (1..5, 1..5));
+        assert_eq!((p.hunks[1].old.clone(), p.hunks[1].new.clone()), (10..13, 10..14));
+        // A row removed at old line 2, or added at new line 12, is in its hunk.
+        assert!(p.hunks[0].covers(Some(2), Some(2)) && !p.hunks[0].covers(Some(9), None));
+        assert!(p.hunks[1].covers(None, Some(12)) && !p.hunks[1].covers(None, Some(14)));
         assert_eq!(p.hunks[1].header, "@@ -10,3 +10,4 @@ fn main() {");
+    }
+
+    #[test]
+    fn toolbars_land_on_the_first_changed_row_inside_each_hunk() {
+        let p = parse(TWO, false).unwrap();
+        // The side-by-side rows put the second change a line lower than git does
+        // (a slid insertion): still in its hunk, so it gets the toolbar.
+        let rows = [(None, None), (Some(2), Some(2)), (None, None), (None, None), (None, Some(13)), (None, None)];
+        assert_eq!(place(rows, &p.hunks), [None, Some(0), None, None, Some(1), None]);
+        // A change git doesn't see (outside every hunk) gets none, and doesn't
+        // take the next hunk's.
+        let rows = [(Some(7), None), (None, Some(12))];
+        assert_eq!(place(rows, &p.hunks), [None, Some(1)]);
     }
 
     #[test]
@@ -156,11 +179,12 @@ twelve\n\
     fn counts_default_to_one_and_crlf_is_kept() {
         let d = "diff --git a/w b/w\n--- a/w\n+++ b/w\n@@ -3 +3 @@\r\n-x\r\n+y\r\n";
         let p = parse(d, false).unwrap();
-        assert_eq!(p.hunks[0].anchor, Anchor::Old(3));
+        assert_eq!(p.hunks[0].old, 3..4);
         assert!(p.single(0).unwrap().ends_with("-x\r\n+y\r\n"));
         // A new file: the hunk starts at 0 on the old side, its lines at 1.
         let new = "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,2 @@\n+a\n+b\n";
-        assert_eq!(parse(new, true).unwrap().hunks[0].anchor, Anchor::New(1));
+        let h = &parse(new, true).unwrap().hunks[0];
+        assert_eq!((h.old.clone(), h.new.clone()), (0..0, 1..3));
     }
 
     #[test]

@@ -317,6 +317,29 @@ pub fn show(root: &Path, rev: &str, path: &str) -> String {
     git(root, &["show", &format!("{rev}:{path}")]).unwrap_or_default()
 }
 
+/// git converts `path`'s line endings to CRLF on checkout (and back on add):
+/// `core.autocrlf = true`, an `eol=crlf` attribute, or `text` with `core.eol = crlf`.
+pub fn checks_out_crlf(root: &Path, path: &str) -> bool {
+    let config = |key: &str| git(root, &["config", "--get", key]).map(|v| v.trim().to_ascii_lowercase()).ok();
+    // Paths, not pathspecs: check-attr takes them literally.
+    let attrs = git(root, &["check-attr", "text", "eol", "--", path]).unwrap_or_default();
+    let attr = |name: &str| {
+        attrs
+            .lines()
+            .find_map(|l| l.rsplit_once(": ").filter(|(head, _)| head.ends_with(&format!(": {name}"))))
+            .map(|(_, v)| v.to_string())
+    };
+    let text = attr("text");
+    if text.as_deref() == Some("unset") {
+        return false;
+    }
+    if attr("eol").as_deref() == Some("crlf") {
+        return true;
+    }
+    let text_set = matches!(text.as_deref(), Some("set" | "auto"));
+    config("core.autocrlf").as_deref() == Some("true") || (text_set && config("core.eol").as_deref() == Some("crlf"))
+}
+
 /// Size in bytes of `path` at `rev` (as in [`show`]); `None` if absent.
 pub fn blob_size(root: &Path, rev: &str, path: &str) -> Option<u64> {
     git(root, &["cat-file", "-s", &format!("{rev}:{path}")]).ok()?.trim().parse().ok()
@@ -414,6 +437,8 @@ pub fn file_patch(root: &Path, rel: &str, staged: bool) -> Result<String, String
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "-U3",
+        // One hunk per change, whatever `diff.interHunkContext` says.
+        "--inter-hunk-context=0",
     ];
     if staged {
         args.push("--cached");
@@ -848,16 +873,14 @@ mod snapshot_tests {
         let patch = |staged| crate::hunks::parse(&file_patch(&dir, "f.txt", staged).unwrap(), staged);
         let unstaged = patch(false).unwrap();
         assert_eq!(unstaged.hunks.len(), 2);
-        // Each hunk's first change is a changed row of mira's own diff (its toolbar goes there).
+        // Each hunk covers a changed row of mira's own diff (its toolbar goes there).
         let rows = crate::diff::compute(&base, &edited, Some(3));
         for h in &unstaged.hunks {
-            let found = rows.items.iter().any(|item| match (item, h.anchor) {
-                (crate::diff::Item::Row { left, .. }, crate::hunks::Anchor::Old(n)) => {
-                    left.kind == crate::diff::Kind::Delete && left.number == Some(n)
-                }
-                (crate::diff::Item::Row { right, .. }, crate::hunks::Anchor::New(n)) => {
-                    right.kind == crate::diff::Kind::Insert && right.number == Some(n)
-                }
+            let found = rows.items.iter().any(|item| match item {
+                crate::diff::Item::Row { left, right } => h.covers(
+                    left.number.filter(|_| left.kind == crate::diff::Kind::Delete),
+                    right.number.filter(|_| right.kind == crate::diff::Kind::Insert),
+                ),
                 _ => false,
             });
             assert!(found, "{h:?}");

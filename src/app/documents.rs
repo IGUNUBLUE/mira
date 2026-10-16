@@ -214,7 +214,15 @@ fn load_diff(root: &Path, rel: &str, source: &DiffSource, full: bool) -> FileDif
         DiffSource::Index { staged: false } => {
             let disk =
                 std::fs::read(root.join(rel)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-            (git::show(root, "", rel), disk)
+            let index = git::show(root, "", rel);
+            // With CRLF checkouts (autocrlf, `eol=crlf`) git stores LF: compared as
+            // git does, or every line would show as changed.
+            let disk = if disk.contains("\r\n") && !index.contains('\r') && git::checks_out_crlf(root, rel) {
+                disk.replace("\r\n", "\n")
+            } else {
+                disk
+            };
+            (index, disk)
         }
         DiffSource::Trees { from, to, .. } => (git::show(root, from, rel), git::show(root, to, rel)),
     };
@@ -583,7 +591,7 @@ impl App {
                 return false;
             }
         }
-        match std::fs::write(&t.path, t.content.text()) {
+        match crate::files::rewrite(&t.path, t.content.text().as_bytes()) {
             Ok(()) => {
                 t.history.mark_saved(&t.content);
                 t.dirty = false;
@@ -807,6 +815,21 @@ mod tests {
         assert_eq!(active_after_retain(Some(2), &[true, true, false]), Some(1));
         assert_eq!(active_after_retain(Some(0), &[false, false]), None);
         assert_eq!(active_after_retain(None, &[true]), None);
+    }
+
+    #[test]
+    fn crlf_checkouts_diff_like_git() {
+        let dir = crate::files::test_dir("crlfdiff");
+        assert!(git::git(&dir, &["init", "-q"]).is_ok());
+        std::fs::write(dir.join(".gitattributes"), "*.txt text eol=crlf\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        assert!(git::git(&dir, &["add", "-A"]).is_ok());
+        assert!(git::checks_out_crlf(&dir, "a.txt") && !git::checks_out_crlf(&dir, ".gitattributes"));
+        // One line edited: only it differs, not every CRLF line against the LF blob.
+        std::fs::write(dir.join("a.txt"), "one\r\nTWO\r\nthree\r\n").unwrap();
+        let d = load_diff(&dir, "a.txt", &DiffSource::Index { staged: false }, false);
+        assert_eq!(d.added, 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

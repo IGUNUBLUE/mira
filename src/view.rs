@@ -2331,24 +2331,20 @@ fn diff_rows(diff: &diff::FileDiff, anchor: Option<usize>) -> Element<'static, M
         )));
     }
     let capped = diff.full_capped;
-    // Each git hunk's toolbar goes above the row of its first changed line.
-    let (mut old_at, mut new_at) = (std::collections::HashMap::new(), std::collections::HashMap::new());
-    if let Some(patch) = &diff.patch {
-        for (i, h) in patch.hunks.iter().enumerate() {
-            match h.anchor {
-                crate::hunks::Anchor::Old(n) => old_at.insert(n, i),
-                crate::hunks::Anchor::New(n) => new_at.insert(n, i),
-            };
-        }
-    }
-    for item in diff.items.iter().take(diff::MAX_FULL_ROWS) {
-        if let (Item::Row { left, right }, Some(patch)) = (item, &diff.patch) {
-            let at = |side: &diff::Side, kind, map: &std::collections::HashMap<usize, usize>| {
-                side.number.filter(|_| side.kind == kind).and_then(|n| map.get(&n).copied())
-            };
-            if let Some(i) = at(left, Kind::Delete, &old_at).or_else(|| at(right, Kind::Insert, &new_at)) {
-                rows = rows.push(hunk_bar(&patch.hunks[i].header, patch.staged, diff.id, i));
+    // Each git hunk's toolbar goes above the first changed row inside it.
+    let shown = &diff.items[..diff.items.len().min(diff::MAX_FULL_ROWS)];
+    let bars = diff.patch.as_ref().map(|patch| {
+        let changed = shown.iter().map(|item| match item {
+            Item::Row { left, right } => {
+                (left.number.filter(|_| left.kind == Kind::Delete), right.number.filter(|_| right.kind == Kind::Insert))
             }
+            Item::Gap(_) => (None, None),
+        });
+        crate::hunks::place(changed, &patch.hunks)
+    });
+    for (r, item) in shown.iter().enumerate() {
+        if let (Some(patch), Some(i)) = (&diff.patch, bars.as_ref().and_then(|b| b[r])) {
+            rows = rows.push(hunk_bar(&patch.hunks[i].header, patch.staged, diff.id, i));
         }
         rows = rows.push(match item {
             Item::Gap(n) => Element::from(
