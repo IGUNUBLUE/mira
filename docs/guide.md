@@ -20,6 +20,37 @@ mira never asks for a folder; [herdr](https://herdr.dev) workspaces decide.
 Without herdr installed, mira runs your shell and shows a note in the terminal header. Set
 `terminal = "shell"` to choose that on purpose (the note goes away).
 
+### What herdr brings
+
+mira doesn't detect agents itself: herdr does, and mira asks it. So any agent herdr recognizes
+works in mira with no setup per agent: Claude Code, Codex, GitHub Copilot CLI, Cursor Agent,
+OpenCode, Gemini CLI, Kiro, Amp, Droid, Qwen Code, Pi, Kimi, Kilo and the rest of
+[herdr's list](https://herdr.dev/docs/agents/). Agents that report their own state to herdr
+(Crush, Command Code, …) count too, and when herdr learns a new agent, mira follows.
+
+For each of them you get:
+
+- **Turns with authors.** Every working period becomes a turn in Changes, with a before/after
+  diff, and each changed file says which agent touched it and when.
+- **Status at a glance.** The terminal header lists the agents of this folder (working, done,
+  needs you); "need you" in the status bar jumps to the one waiting for an answer.
+- **Comments that reach the right agent.** A comment on a diff line is typed into the pane of
+  the agent that made the change, even in another workspace.
+- **Agents that outlive mira.** They run in herdr's server: close mira, open it again, and they
+  are still there. Several agents can work side by side in herdr's workspaces and panes.
+
+Two things depend on the agent rather than on herdr:
+
+- The turn's title (your prompt) is read from the agent's own log, which mira knows for Codex,
+  Kiro and Claude Code. Other agents' turns are titled with the agent's name.
+- To get an agent's session back after the herdr *server* restarts (not mira), install its
+  integration: `herdr integration install codex` (or `claude`, `copilot`, `opencode`, …; see
+  [herdr's integrations](https://herdr.dev/docs/integrations/)).
+
+An agent started through a wrapper (a sandbox, a VM) can hide from herdr; `HERDR_AGENT=claude
+<wrapper> -- claude` tells herdr what it is. Without herdr, mira runs your shell: Changes,
+diffs, commits and the rest work, without agents or turns.
+
 ## The terminal
 
 The terminal runs herdr (`Ctrl+B` is herdr's prefix; `Ctrl+B ?` lists its keys). Agents keep

@@ -14,8 +14,14 @@
 
 ![mira: the terminal on the left, the agent's changes on the right](docs/images/mira.png)
 
-*Mira* is Spanish for "look!". You talk to your agents (Codex, Claude Code, Kiro, …) in the
-terminal; mira sits around that loop so you can **see what they did**, fix it, and commit it.
+*Mira* is Spanish for "look!". You talk to your agents in the terminal; mira sits around that
+loop so you can **see what they did**, fix it, and commit it.
+
+mira's terminal runs [herdr](https://herdr.dev), so **every agent herdr recognizes works with
+mira, with nothing to set up per agent**: Claude Code, Codex, GitHub Copilot CLI, Cursor Agent,
+OpenCode, Gemini CLI, Kiro, Amp, Droid, Qwen Code and
+[more than twenty others](https://herdr.dev/docs/agents/). When herdr learns a new agent, mira
+tracks it too.
 
 > [!NOTE]
 > **mira is in early development.** I use it every day, but it is young: expect rough edges,
@@ -31,8 +37,10 @@ with the terminal at the center and the review around it. [The longer story →]
 
 ## Features
 
-- **Terminal first.** The terminal runs [herdr](https://herdr.dev), so agents keep running in
-  their workspaces and panes, even when mira closes. mira follows the herdr workspace you are in.
+- **Any agent, through herdr.** herdr tells mira which agent works in which pane and whether
+  it is working, done or waiting for you; mira turns that into reviewable turns. Run several
+  agents side by side in herdr's workspaces and panes: they keep running when mira closes, and
+  mira follows the workspace you are in. [What herdr brings →](docs/guide.md#what-herdr-brings)
 - **Changes, with authors.** Every changed file says which agent touched it and when. Review
   turn by turn, titled with your prompt; stage or revert a whole turn.
 - **Diffs that talk back.** Side-by-side diffs. Click a line, write a comment, and it is typed
@@ -54,9 +62,10 @@ This installs a release binary (or builds from source with cargo) into `~/.local
 desktop entry and icon. Linux only for now (x86_64, aarch64). Uninstall with
 `… | sh -s -- --uninstall`.
 
-Works best with [herdr](https://herdr.dev) (agent tracking; see the
-[recommended herdr settings](docs/guide.md#herdr-settings)) and a
-[Nerd Font](https://www.nerdfonts.com) (icons). It needs `git` and `curl`.
+Install [herdr](https://herdr.dev) too: it is what lets mira know which agent changed what (see
+the [recommended herdr settings](docs/guide.md#herdr-settings)). Without it, mira runs your shell
+and still shows your git changes, diffs and history, but not who made them. A
+[Nerd Font](https://www.nerdfonts.com) gives the icons. mira needs `git` and `curl`.
 
 From source: `cargo install --git https://github.com/IGUNUBLUE/mira --locked`.
 
