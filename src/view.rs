@@ -38,13 +38,25 @@ fn vrule<'a>() -> Element<'a, Msg> {
     container(space()).width(1).height(Length::Fill).style(theme::bg(p().border)).into()
 }
 
+/// Reserve the same square for icons and activity frames, regardless of font metrics.
+fn icon_glyph<'a>(glyph: impl text::IntoFragment<'a>, size: u32) -> text::Text<'a> {
+    text(glyph)
+        .size(size)
+        .line_height(1.0)
+        .font(icons::font().unwrap_or_else(theme::mono_font))
+        .width(size)
+        .height(size)
+        .center()
+}
+
 /// An icon glyph as text.
 fn ico<'a>(i: Icon, size: u32) -> text::Text<'a> {
-    let t = text(i.glyph()).size(size).line_height(1.0);
-    match icons::font() {
-        Some(f) => t.font(f),
-        None => t.font(theme::mono_font()),
-    }
+    icon_glyph(i.glyph(), size)
+}
+
+/// One frame of the activity indicator, sharing the icon's footprint.
+fn spinner_frame<'a>(frame: usize, size: u32) -> text::Text<'a> {
+    icon_glyph(SPINNER[frame], size).color(p().accent)
 }
 
 fn icon_button<'a>(i: Icon, msg: Msg) -> Element<'a, Msg> {
@@ -853,10 +865,7 @@ impl App {
                     .on_press_maybe(url.is_some().then_some(Msg::SignInCopyLink));
                 (
                     row![
-                        text(SPINNER[self.spin])
-                            .size(18)
-                            .font(icons::font().unwrap_or_else(theme::mono_font))
-                            .color(p().accent),
+                        self.spinner(18),
                         text("Waiting for your browser…").size(18)
                     ]
                     .spacing(10)
@@ -886,11 +895,7 @@ impl App {
 
     /// The spinner's current frame, in the accent color.
     fn spinner<'a>(&self, size: u32) -> text::Text<'a> {
-        text(SPINNER[self.spin])
-            .size(size)
-            .line_height(1.0)
-            .font(icons::font().unwrap_or_else(theme::mono_font))
-            .color(p().accent)
+        spinner_frame(self.spin, size)
     }
 
     fn action_icon<'a>(&self, icon: Icon, msg: &Msg, size: u32) -> text::Text<'a> {
@@ -2756,4 +2761,46 @@ fn diff_side(side: &diff::Side) -> Element<'static, Msg> {
     .width(Length::Fill)
     .padding([0, 4])
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_frames_keep_toolbar_buttons_in_place() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+        use iced::{Pixels, Size};
+        use std::future::Future as _;
+
+        let mut new =
+            std::pin::pin!(<iced::Renderer as Headless>::new(Font::MONOSPACE, Pixels(14.0), Some("tiny-skia")));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Some(renderer)) = new.as_mut().poll(&mut cx) else { panic!("headless renderer") };
+        let bounds = |active: Option<(usize, usize)>| {
+            let mut toolbar = row![button(text("branch")).width(Length::Fill)];
+            for (index, icon) in [Icon::Account, Icon::ArrowDown, Icon::ArrowUp, Icon::Refresh].into_iter().enumerate()
+            {
+                let glyph = match active {
+                    Some((button, frame)) if button == index => spinner_frame(frame, 15),
+                    _ => ico(icon, 15),
+                };
+                toolbar = toolbar.push(button(glyph).padding([3, 5]));
+            }
+            let mut element: Element<'_, Msg> = toolbar.spacing(4).into();
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(400.0, 40.0)),
+            );
+            node.children().iter().map(layout::Node::bounds).collect::<Vec<_>>()
+        };
+        let idle = bounds(None);
+        for button in 0..4 {
+            for frame in 0..SPINNER.len() {
+                assert_eq!(bounds(Some((button, frame))), idle, "button {button}, spinner frame {frame}");
+            }
+        }
+    }
 }
