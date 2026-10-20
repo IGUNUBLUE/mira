@@ -6,10 +6,29 @@ use iced::{Task, keyboard};
 
 impl App {
     pub(super) fn on_key(&mut self, event: keyboard::Event, captured: bool) -> Task<Msg> {
-        let keyboard::Event::KeyPressed { key, modifiers, physical_key, .. } = event else {
+        let keyboard::Event::KeyPressed { key, modifiers, physical_key, repeat, .. } = event else {
             return Task::none();
         };
         use keyboard::key::Named;
+        if self.confirmation.is_some() {
+            if !modifiers.is_empty()
+                && !(key == keyboard::Key::Named(Named::Tab) && modifiers == keyboard::Modifiers::SHIFT)
+            {
+                return Task::none();
+            }
+            return self.confirmation_key(key, repeat);
+        }
+        if self.remote_dialog.is_some() {
+            if captured {
+                return Task::none();
+            }
+            if !modifiers.is_empty()
+                && !(key == keyboard::Key::Named(Named::Tab) && modifiers == keyboard::Modifiers::SHIFT)
+            {
+                return Task::none();
+            }
+            return self.remote_key(key, repeat, modifiers.shift());
+        }
         if key == keyboard::Key::Named(Named::Escape) && modifiers.is_empty() {
             // The palette's input takes Escape (it unfocuses and captures it); the
             // terminal can't have it while the palette is open.

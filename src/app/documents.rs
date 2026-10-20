@@ -250,10 +250,6 @@ impl App {
             Msg::CloseTab(i) => self.close_tab(i),
             Msg::Edit(action) => {
                 let edit = action.is_edit();
-                if edit {
-                    // Editing again: a later Ctrl+W must warn again.
-                    self.pending_close = None;
-                }
                 let view = self.editor_view;
                 if let Some(t) = self.active_file_mut() {
                     let wheel = match action {
@@ -277,6 +273,11 @@ impl App {
             }
             Msg::Save => {
                 if let Some(i) = self.active_tab {
+                    self.save_tab(i, true);
+                }
+            }
+            Msg::SaveFile(path) => {
+                if let Some(i) = self.tabs.iter().position(|t| matches!(t, Tab::File(f) if f.path == path)) {
                     self.save_tab(i, true);
                 }
             }
@@ -309,6 +310,7 @@ impl App {
                     }
                 }
             }
+            Msg::AutoSaveTick if self.confirmation.is_some() => {}
             Msg::AutoSaveTick => {
                 if let AutoSave::AfterDelay(delay) = self.autosave {
                     for i in 0..self.tabs.len() {
@@ -543,13 +545,12 @@ impl App {
         }
         if let Tab::File(t) = &self.tabs[i]
             && t.dirty
-            && self.pending_close.as_ref() != Some(&t.path)
+            && !self.confirm_action(super::ConfirmAction::CloseTab(t.path.clone()), "Close without saving?",
+                "The unsaved edits in this editor tab will be lost. The file on disk will not be changed. You can cancel and save it first.",
+                vec![t.path.to_string_lossy().into_owned()], "Close without saving")
         {
-            self.pending_close = Some(t.path.clone());
-            self.set_confirm("Unsaved changes — close again to discard them (Ctrl+S saves · Esc cancels)");
             return;
         }
-        self.pending_close = None;
         self.tabs.remove(i);
         self.active_tab = active_after_remove(self.active_tab, i, self.tabs.len());
         self.sync_center();
@@ -557,23 +558,24 @@ impl App {
 
     /// Save tab `i`. Autosave (`manual == false`) never overwrites a file that
     /// changed on disk since it was loaded (an agent may have written it): it
-    /// pauses for that tab and says so. Ctrl+S overwrites it only when pressed
-    /// again (see [`manual_save`]).
+    /// pauses for that tab and says so. A manual save replaces it only after
+    /// explicit confirmation (see [`manual_save`]).
     pub(super) fn save_tab(&mut self, i: usize, manual: bool) -> bool {
         let Some(Tab::File(t)) = self.tabs.get_mut(i) else { return false };
         if manual {
             let changed = mtime(&t.path) != t.mtime;
-            let confirmed = self.pending_overwrite.as_ref() == Some(&t.path);
+            let action = super::ConfirmAction::Overwrite(t.path.clone(), mtime(&t.path));
+            let confirmed = self.approval.as_ref() == Some(&action);
             match manual_save(t.dirty, t.conflict, changed, confirmed) {
                 SaveCheck::Skip => return false,
-                SaveCheck::Write => self.pending_overwrite = None,
+                SaveCheck::Write => {}
                 SaveCheck::Confirm => {
                     let name = file_name(&t.path);
                     let what = if mtime(&t.path).is_none() { "was deleted on disk" } else { "changed on disk" };
-                    self.pending_overwrite = Some(t.path.clone());
-                    self.set_confirm(&format!(
-                        "{name} {what} — Ctrl+S again replaces it with your version · Esc cancels"
-                    ));
+                    let path = t.path.to_string_lossy().into_owned();
+                    self.confirm_action(action, "Overwrite the file on disk?",
+                        format!("{name} {what}, possibly by an agent. Saving will replace the current disk contents with the editor's version. The overwritten disk contents have no Undo in the editor. Cancel to review them first."),
+                        vec![path], "Overwrite file");
                     return false;
                 }
             }
@@ -585,7 +587,7 @@ impl App {
                 t.conflict = true;
                 let name = file_name(&t.path);
                 self.set_status(
-                    format!("{name} changed on disk — autosave paused for it; Ctrl+S twice replaces it"),
+                    format!("{name} changed on disk — autosave paused for it; Ctrl+S asks before replacing it"),
                     true,
                 );
                 return false;
@@ -690,7 +692,7 @@ impl App {
         if let Some(first) = deleted.first() {
             let more = if deleted.len() > 1 { format!(" (and {} more)", deleted.len() - 1) } else { String::new() };
             self.set_status(
-                format!("{first}{more} deleted on disk — autosave paused; Ctrl+S twice writes it again"),
+                format!("{first}{more} deleted on disk — autosave paused; Ctrl+S asks before recreating it"),
                 true,
             );
         }
@@ -773,7 +775,7 @@ mod tests {
         assert_eq!(manual_save(true, false, false, false), Write);
         assert_eq!(manual_save(true, false, true, false), Confirm, "changed on disk: ask");
         assert_eq!(manual_save(true, true, false, false), Confirm, "a conflict: ask");
-        assert_eq!(manual_save(true, true, true, true), Write, "asked and pressed again");
+        assert_eq!(manual_save(true, true, true, true), Write, "explicitly approved");
         assert_eq!(manual_save(false, true, true, false), Confirm, "deleted on disk: written back after asking");
     }
 

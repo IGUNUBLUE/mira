@@ -119,7 +119,7 @@ was closed) ends when its folder is shown again; the agent's next turn starts a 
   `✓` marks them all as seen.
 - **By agent run** lists each turn with its files, titled with your prompt (read from the
   agents' own logs; Codex, Kiro and Claude Code are supported). You can stage or revert a whole turn.
-  Revert asks for a second click.
+  Revert opens a confirmation explaining that later edits will be replaced.
 - Turns that changed nothing don't show up. A quick follow-up during a turn stays part of it.
 
 ## Diffs and comments
@@ -141,12 +141,28 @@ Actions show a small spinner at the button while they run and report their resul
 bar. Manual refresh animates too; automatic refresh stays quiet. Stage, unstage, discard and
 hunk actions cannot be clicked again until the current git action finishes.
 
+- **Publishing a branch.** Push opens **Publish branch** when the local branch has no tracking
+  branch. Choose the remote and explicitly publish; mira sets tracking only after success.
+  Existing tracked branches use Git's configured push destination. Pull requires a tracking
+  branch and always uses `--ff-only`.
+- **Git failures stay visible.** Foreground failures open a dialog with the repository, branch,
+  destination, explanation and Git output. Copy the details, retry, or copy the command for a
+  shell to handle authentication, host verification or repository setup. The command is never
+  typed into an agent or executed automatically. Timeout means the remote result is unknown,
+  not that the push definitely failed to reach the server.
+- **Connections.** With Git's default OpenSSH transport, mira uses batch mode and an eight-second
+  connection/handshake timeout per address, letting SSH try its next address when IPv6 is
+  unavailable. Configured SSH commands/variants and environment overrides are preserved.
+  Connection failures also offer **Retry via IPv4**, through Git's own `--ipv4` option. No global
+  Git or SSH configuration is changed and remote writes are never automatically retried.
+  A retry is rejected if the branch, commit or routing configuration changed in the meantime.
 - **Row buttons** appear on hover (or on the open file), as in VSCodium: open the file, discard
   its changes, stage or unstage it. Section headers have the same for every file, plus
   **Review** (⇄), which opens the first diff; `‹ ›` in the diff then walks through the section.
 - **Discard is undoable.** mira snapshots the working tree first (the same snapshots it takes
-  around agent turns), so one file discards with one click and the status bar offers **Undo**.
-  Discard all asks for a second click. New (untracked) files are deleted, and come back with Undo.
+  around agent turns). Discarding a file, a hunk or all changes opens a confirmation dialog
+  listing the affected files and warning that new (untracked) files will be deleted. The status
+  bar then offers **Undo**. Restoring the snapshot also asks, because it replaces later edits.
 - **One change at a time.** In a diff from Changes, each of git's hunks has a bar with its
   `@@` line and **Stage** / **Discard** (unstaged diff) or **Unstage** (staged diff), like
   VSCodium's per-change actions. Discarding a hunk is undoable too.
@@ -161,6 +177,11 @@ hunk actions cannot be clicked again until the current git action finishes.
 - git runs as your own `git`, so hooks, signing and credential helpers behave as in your
   terminal. Errors show the line that matters, with the full output in a tooltip.
 
+Destructive actions use a modal with **Cancel** selected initially. **Escape** or a click outside
+cancels; **Tab** selects the other button and **Enter** activates the selected action. Reverting
+an agent run warns that later edits to its files will also be replaced. A folder switch cancels
+pending confirmations; a changed target or file list requires reviewing the action again.
+
 ## Commit messages
 
 Click ✦ next to the commit box. mira writes a [Conventional Commits](https://www.conventionalcommits.org)
@@ -173,7 +194,7 @@ Pick a provider with `commit_provider` in the [config](configuration.md):
 
 | Provider | What it uses |
 |---|---|
-| `chatgpt` | Your ChatGPT subscription. The first time, a dialog explains the sign-in and asks before opening your browser (the same flow as `codex login`); if the browser doesn't open, copy the link from the dialog. The account icon next to Pull/Push signs out (two clicks). |
+| `chatgpt` | Your ChatGPT subscription. The first time, a dialog explains the sign-in and asks before opening your browser (the same flow as `codex login`); if the browser doesn't open, copy the link from the dialog. The account icon next to Pull/Push asks before signing out. |
 | `openai` | An API key from `OPENAI_API_KEY` or `~/.config/mira/openai_key` (must be `chmod 600`). |
 | `command` | `commit_command`: any command that reads the prompt on stdin and prints the message, for example a local model with ollama. Its output streams too. |
 | `auto` (default) | The ChatGPT session if you are signed in, else an API key, else `commit_command`, else asks you to sign in. |
@@ -194,15 +215,15 @@ command are the stable options. See [privacy](privacy.md) for exactly what is se
   step per word as in VS Code. A reload caused by an agent is undoable too.
 - **Autosave** is on: files save 1 s after you stop typing, and when you leave the window,
   close a tab or quit. It never overwrites a file that changed on disk under your edits (for
-  example, an agent wrote it): it pauses for that tab and tells you; pressing `Ctrl+S` twice
-  replaces the file with your version. Closing the window with edits that couldn't be saved asks
-  for a second close.
+  example, an agent wrote it): it pauses for that tab and tells you. `Ctrl+S` opens a dialog
+  before replacing those disk contents. Closing a tab or the window with unsaved edits also
+  asks before losing them.
 - **Search & replace** respects `.gitignore`, with match case, whole word and regex options.
-  Replace all works line by line, exactly like the results show, and asks for a second click.
+  Replace all works line by line, exactly like the results show, and asks for confirmation before rewriting the files on disk.
 - **Files** shows the tree with git status colors; ignored files are dimmed. Right-click a file
   or folder (or the empty space, for the folder itself) for **New File / New Folder**,
   **Rename** (typed in place: `Enter` saves, `Escape` cancels), **Delete** (to the desktop's
-  trash, with **Undo** in the status bar), **Copy Path**, **Copy Relative Path** and **Send Path
+  trash after confirmation, with **Undo** in the status bar), **Copy Path**, **Copy Relative Path** and **Send Path
   to Agent**.
 
 ## Look

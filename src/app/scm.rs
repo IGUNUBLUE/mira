@@ -1,6 +1,6 @@
 //! Source control: git status, stage/unstage, commit, push/pull and commit-message generation.
 
-use super::{App, DiffSource, Msg, Tab, blocking, first_line};
+use super::{App, ConfirmAction, DiffSource, Msg, Tab, blocking, first_line};
 use crate::git;
 
 use iced::Task;
@@ -212,27 +212,44 @@ impl App {
             }
             Msg::Stage(paths) => return self.git_op(move |r| git::stage(r, &paths)),
             Msg::Discard(paths) if !self.git_busy => {
-                // Only unstaged, non-conflicted changes; the status letter says how.
-                let files: Vec<(String, char)> = paths
+                let requested: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+                let changes: Vec<git::Change> = self
+                    .git
+                    .unstaged
                     .iter()
-                    .filter_map(|p| self.git.unstaged.iter().find(|c| &c.path == p && c.code != '!'))
-                    .flat_map(|c| match (&c.orig, c.code) {
-                        // A worktree rename (after `git add -N`): the new name goes, the old comes back.
-                        (Some(orig), 'R') => vec![(c.path.clone(), 'A'), (orig.clone(), 'D')],
-                        _ => vec![(c.path.clone(), c.code)],
-                    })
+                    .filter(|c| c.code != '!' && requested.contains(c.path.as_str()))
+                    .cloned()
                     .collect();
-                if files.is_empty() {
+                if changes.is_empty() {
                     return Task::none();
                 }
-                self.confirm_discard_all = false;
-                return self.git_task(move |r| discard_in(r, files));
+                let paths: Vec<String> = changes.iter().map(|c| c.path.clone()).collect();
+                let new_files = changes.iter().filter(|c| c.code == 'U').count();
+                let detail = format!(
+                    "All unstaged edits in the listed files will be discarded. {new_files} new file(s) will be deleted. Staged changes stay. A snapshot is kept for Undo, which can restore the discarded files."
+                );
+                if !self.confirm_action(
+                    ConfirmAction::Discard(changes),
+                    "Discard file changes?",
+                    detail,
+                    paths.clone(),
+                    "Discard changes",
+                ) {
+                    return Task::none();
+                }
+                return self.discard_paths(paths);
             }
             Msg::Hunk(op, id, i) if !self.git_busy => {
                 let Some(d) = self.active_diff() else { return Task::none() };
                 let rel = d.rel.clone();
                 let patch = d.diff.as_ref().filter(|diff| diff.id == id).and_then(|diff| diff.patch.as_ref());
                 let Some(text) = patch.and_then(|p| p.single(i)) else { return Task::none() };
+                if op == HunkOp::Discard && !self.confirm_action(
+                    ConfirmAction::Hunk(id, i), "Discard this change?",
+                    "This hunk's unstaged edits will be removed from the file. Other hunks and staged changes stay. A snapshot of the file is kept for Undo; restoring it also replaces any later edits to that file.",
+                    vec![rel.clone()], "Discard change") {
+                    return Task::none();
+                }
                 let name = rel.rsplit('/').next().unwrap_or("").to_string();
                 return match op {
                     HunkOp::Stage => self.git_op(move |r| {
@@ -264,22 +281,22 @@ impl App {
                     );
                     return Task::none();
                 }
-                if !self.confirm_discard_all {
-                    let untracked = self.git.unstaged.iter().filter(|c| c.code == 'U').count();
-                    let deleted =
-                        if untracked > 0 { format!(" ({untracked} untracked deleted)") } else { String::new() };
-                    self.clear_confirms();
-                    self.confirm_discard_all = true;
-                    self.set_confirm(&format!(
-                        "Click again to discard {} changes{deleted} · Undo stays available · Esc cancels",
-                        paths.len()
-                    ));
+                let untracked = self.git.unstaged.iter().filter(|c| c.code == 'U').count();
+                if !self.confirm_action(ConfirmAction::DiscardAll(self.git.unstaged.iter().filter(|c| c.code != '!').cloned().collect()), "Discard all changes?",
+                    format!("All unstaged edits in these {} files will be discarded, and {untracked} new file(s) will be deleted. Staged changes stay. A snapshot is kept for Undo.", paths.len()),
+                    paths.clone(), "Discard all changes") {
                     return Task::none();
                 }
-                return self.update(Msg::Discard(paths));
+                return self.discard_paths(paths);
             }
             Msg::Discard(_) | Msg::DiscardAll => {}
             Msg::UndoDiscard if !self.git_busy => {
+                let Some((tree, paths)) = self.undo_discard.as_ref() else { return Task::none() };
+                if !self.confirm_action(ConfirmAction::UndoDiscard(tree.clone(), paths.clone()), "Restore discarded files?",
+                    "These files will be restored from the snapshot. Any edits made to them after the discard, including edits by an agent, will be replaced.",
+                    paths.clone(), "Restore files") {
+                    return Task::none();
+                }
                 let Some((tree, paths)) = self.undo_discard.take() else { return Task::none() };
                 self.clear_status();
                 return self.git_op(move |r| {
@@ -466,12 +483,12 @@ impl App {
                 }
             }
             Msg::Spin => self.spin = (self.spin + 1) % SPINNER.len(),
-            Msg::ChatGptSignOut if !self.confirm_signout => {
-                self.confirm_signout = true;
-                self.set_confirm("Click again to sign out of ChatGPT · Esc cancels");
-            }
             Msg::ChatGptSignOut => {
-                self.confirm_signout = false;
+                if !self.confirm_action(ConfirmAction::SignOut, "Sign out of ChatGPT?",
+                    "The saved ChatGPT session on this device will be removed. To generate commit messages with this account again, you will need to sign in. Your files and agent sessions are not affected.",
+                    Vec::new(), "Sign out") {
+                    return Task::none();
+                }
                 match crate::openai::sign_out() {
                     Ok(()) => {
                         self.chatgpt_account = None;
@@ -532,15 +549,8 @@ impl App {
                 }
             }
             // Said only once the action really starts (one git action at a time).
-            Msg::Push if !self.git_busy => {
-                self.set_status("Pushing…", false);
-                return self.git_op(|r| git::push(r).map(|_| "Pushed".into()));
-            }
-            Msg::Pull if !self.git_busy => {
-                self.set_status("Pulling…", false);
-                return self.git_op(|r| git::pull(r).map(|o| first_line(&o).unwrap_or("Pulled").into()));
-            }
-            Msg::Push | Msg::Pull => {}
+            Msg::Push if !self.git_busy => return self.start_remote(git::remote::Operation::Push),
+            Msg::Pull if !self.git_busy => return self.start_remote(git::remote::Operation::Pull),
             Msg::GitDone(epoch, result) => {
                 self.git_busy = false;
                 let op = self.busy_op.take();
@@ -585,7 +595,7 @@ impl App {
                         };
                         self.set_status_action(msg, "Undo", Msg::UndoDiscard);
                     }
-                    Err(e) => self.set_error_detail(git::error_summary(&e), e),
+                    Err(e) => return self.git_failure("Git action", e, None, false),
                 }
                 // Start a fresh refresh even if one is running: that one may
                 // predate this action, and its reply is dropped (`git_gen`).
@@ -596,6 +606,23 @@ impl App {
             _ => {}
         }
         Task::none()
+    }
+
+    fn discard_paths(&mut self, paths: Vec<String>) -> Task<Msg> {
+        // Only unstaged, non-conflicted changes; the status letter says how.
+        let files: Vec<(String, char)> = paths
+            .iter()
+            .filter_map(|p| self.git.unstaged.iter().find(|c| &c.path == p && c.code != '!'))
+            .flat_map(|c| match (&c.orig, c.code) {
+                // A worktree rename (after `git add -N`): the new name goes, the old comes back.
+                (Some(orig), 'R') => vec![(c.path.clone(), 'A'), (orig.clone(), 'D')],
+                _ => vec![(c.path.clone(), c.code)],
+            })
+            .collect();
+        if files.is_empty() {
+            return Task::none();
+        }
+        self.git_task(move |r| discard_in(r, files))
     }
 
     pub(super) fn refresh_git(&mut self) -> Task<Msg> {
@@ -836,18 +863,21 @@ mod tests {
         drop(app.update(Msg::Push));
         assert!(app.busy_op.as_ref().unwrap().matches(&stage));
         drop(app.update(Msg::GitDone(app.root_epoch, Err("stage failed".into()))));
+        let error = app.remote_dialog.as_ref().expect("foreground errors persist in a dialog").id;
+        drop(app.update(Msg::RemoteAction(error, super::super::RemoteChoice::Close)));
         assert!(!app.git_busy);
         assert!(app.busy_op.is_none());
         drop(app.update(stage));
         drop(app.update(Msg::GitDone(app.root_epoch, Ok(GitOutcome::Info(String::new())))));
         assert_eq!(app.status.as_ref().map(|s| s.0.as_str()), Some("Changes staged"));
-        // First click only asks. The second click starts the action and animates its section button.
+        // Only the modal's explicit approval starts a discard.
         app.git.unstaged = vec![git::Change::new("a.txt", 'M')];
         drop(app.update(Msg::DiscardAll));
-        assert!(app.confirm_discard_all);
+        assert!(app.confirmation.is_some());
         assert!(!app.git_busy);
         assert!(app.busy_op.is_none());
-        drop(app.update(Msg::DiscardAll));
+        let id = app.confirmation.as_ref().unwrap().id;
+        drop(app.update(Msg::ConfirmProceed(id)));
         assert_eq!(app.busy_op, Some(BusyOp::DiscardAll));
         drop(app.update(Msg::GitDone(app.root_epoch, Ok(GitOutcome::Info("Discarded".into())))));
         assert!(app.busy_op.is_none());
@@ -858,9 +888,8 @@ mod tests {
 
         // Replacement is serialized even when a new query finishes before the disk write.
         app.replacing = true;
-        app.confirm_replace = true;
         drop(app.update(Msg::ReplaceAll));
-        assert!(app.confirm_replace, "a repeated click did not start another write");
+        assert!(app.replacing, "a repeated click did not start another write");
         let old_epoch = app.root_epoch;
         app.root_epoch += 1;
         app.search.query = "new folder query".into();

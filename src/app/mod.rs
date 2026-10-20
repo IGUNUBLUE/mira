@@ -10,6 +10,7 @@
 //! `documents`, `scm` (git and commit messages), `find` (Search), `navigate`
 //! (find in file, go to line, quick open) and `keys`.
 
+mod confirm;
 mod documents;
 mod files;
 mod find;
@@ -17,16 +18,20 @@ mod follow;
 mod keys;
 mod layout;
 mod navigate;
+mod remote;
 mod review;
 mod scm;
 mod settings;
 mod terminal;
 
+use confirm::ConfirmAction;
+pub use confirm::Confirmation;
 pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, ImageData, ImageTab, Tab};
 pub use files::{EditKind, ExplorerMenu, MenuAction, NAME_INPUT, NameEdit};
 pub use find::SearchState;
 pub use layout::{COMMIT_INPUT, CenterPane, Divider, Inspector, SEARCH_INPUT};
 pub use navigate::{EDITOR, FIND_INPUT, FindBar, PALETTE_INPUT, QuickOpen};
+pub use remote::{RemoteChoice, RemoteDialog};
 pub use scm::{BusyOp, CommitGen, GitOutcome, HunkOp, SPINNER, SignIn, SignInEvent, SignInStage};
 pub use settings::{Dialog, Drafts, Field, MenuItem, REPO_URL, SHORTCUTS, Setting, WindowControls};
 pub use terminal::TermKind;
@@ -94,14 +99,6 @@ pub struct App {
     snapshots_off: bool,
     pub selected_run: Option<RunId>,
     pub group_by_run: bool,
-    pub confirm_revert: Option<RunId>,
-    /// "Replace all" was pressed once; the next press replaces.
-    pub confirm_replace: bool,
-    /// The account button was pressed once; the next press signs out.
-    pub confirm_signout: bool,
-    /// "Discard all" waits for its second click.
-    pub confirm_discard_all: bool,
-    /// The last discard: the snapshot taken just before it and the files, for Undo.
     undo_discard: Option<(String, Vec<String>)>,
     /// The Changes row under the mouse (section, index): its buttons show.
     pub hovered_change: Option<(u8, usize)>,
@@ -117,17 +114,16 @@ pub struct App {
     /// Height of the file editor's text area, once laid out (for the line numbers).
     pub editor_view: Option<f32>,
     pub active_tab: Option<usize>,
-    /// The dirty file tab a first close attempt warned about.
-    pub pending_close: Option<PathBuf>,
-    /// A first Ctrl+S on a file that changed on disk (the next one replaces it).
-    pending_overwrite: Option<PathBuf>,
-    /// A first close of the window with unsaved edits (the next one quits).
-    confirm_quit: bool,
 
     // inspectors
     pub explorer: Explorer,
     /// The open dialog (Settings, Shortcuts, About), and the gear menu.
     pub dialog: Option<Dialog>,
+    pub confirmation: Option<Confirmation>,
+    pub remote_dialog: Option<RemoteDialog>,
+    remote_seq: u64,
+    confirm_seq: u64,
+    approval: Option<ConfirmAction>,
     pub gear_menu: bool,
     /// Settings typed but not saved yet, and why the last save failed.
     pub drafts: Drafts,
@@ -231,6 +227,8 @@ pub enum Msg {
     Key(keyboard::Event, bool),
     WindowFocus(bool),
     CloseRequested,
+    ConfirmCancel,
+    ConfirmProceed(u64),
     Tick,
     StatusTick,
 
@@ -282,6 +280,7 @@ pub enum Msg {
     /// The file editor got this size (its line numbers need the height).
     EditorViewport(iced::Size),
     Save,
+    SaveFile(PathBuf),
     Undo,
     Redo,
     /// Save the tabs whose edits paused long enough (`AutoSave::AfterDelay`).
@@ -326,6 +325,7 @@ pub enum Msg {
     ExplorerNameSubmit,
     ExplorerNameCancel,
     TrashDone(Result<files::TrashOutcome, String>),
+    TrashPath(PathBuf, bool),
     UndoTrash,
 
     // git
@@ -337,7 +337,7 @@ pub enum Msg {
     Unstage(Vec<String>),
     /// Throw away the unstaged changes of these files (a snapshot keeps an Undo).
     Discard(Vec<String>),
-    /// Discard every listed change (asks for a second click).
+    /// Discard every listed change after an explicit confirmation.
     DiscardAll,
     UndoDiscard,
     /// A per-change action in the active diff: hunk `.2` of the diff with id `.1`
@@ -366,6 +366,10 @@ pub enum Msg {
     SignInEvent(u64, SignInEvent),
     Push,
     Pull,
+    RemotePrepared(u64, crate::git::remote::Operation, Result<crate::git::remote::Plan, String>),
+    RemoteDone(u64, crate::git::remote::Plan, bool, Result<String, String>),
+    RemoteSelect(u64, String),
+    RemoteAction(u64, RemoteChoice),
     /// A git action started in folder epoch `.0` finished.
     GitDone(u64, Result<GitOutcome, String>),
 
@@ -469,6 +473,11 @@ impl App {
             theme: theme_choice,
             explorer: Explorer::new(root.clone()),
             dialog: None,
+            confirmation: None,
+            remote_dialog: None,
+            remote_seq: 0,
+            confirm_seq: 0,
+            approval: None,
             gear_menu: false,
             drafts: Drafts::default(),
             settings_error: None,
@@ -507,10 +516,6 @@ impl App {
             snapshots_off: false,
             selected_run: None,
             group_by_run: persist::config_get("changes_view").as_deref() == Some("runs"),
-            confirm_revert: None,
-            confirm_replace: false,
-            confirm_signout: false,
-            confirm_discard_all: false,
             undo_discard: None,
             hovered_change: None,
             status_action: None,
@@ -520,9 +525,6 @@ impl App {
             tabs: Vec::new(),
             editor_view: None,
             active_tab: None,
-            pending_close: None,
-            pending_overwrite: None,
-            confirm_quit: false,
             git: Snapshot::default(),
             repo_prefix: String::new(),
             refreshing: false,
@@ -582,7 +584,9 @@ impl App {
             subs.push(iced::time::every(Duration::from_millis(80)).map(|_| Msg::Spin));
         }
         // Autosave timer, only while some tab has unsaved edits.
-        if matches!(self.autosave, AutoSave::AfterDelay(_))
+        if self.confirmation.is_none()
+            && self.remote_dialog.is_none()
+            && matches!(self.autosave, AutoSave::AfterDelay(_))
             && self.tabs.iter().any(|t| matches!(t, Tab::File(f) if f.dirty && !f.conflict && !f.write_failed))
         {
             subs.push(iced::time::every(Duration::from_millis(250)).map(|_| Msg::AutoSaveTick));
@@ -657,12 +661,6 @@ impl App {
         self.show_status(msg.into(), error, if error { 30 } else { 6 });
     }
 
-    /// A two-step action waits for its second click: shown briefly, and the
-    /// pending confirmation goes with it (see `StatusTick`).
-    fn set_confirm(&mut self, msg: &str) {
-        self.show_status(msg.to_string(), true, 10);
-    }
-
     /// An error shortened to `summary`; the whole text goes in the tooltip.
     fn set_error_detail(&mut self, summary: String, detail: String) {
         self.set_status(summary, true);
@@ -687,27 +685,11 @@ impl App {
         self.status = None;
         self.status_detail = None;
         self.status_action = None;
-        self.clear_confirms();
     }
 
-    /// Drop every pending two-step confirmation (revert, replace, sign out, discard tab).
-    /// Returns whether one was pending.
+    /// Cancel a pending destructive action (for example, when switching folders).
     pub(super) fn clear_confirms(&mut self) -> bool {
-        let any = self.confirm_revert.is_some()
-            || self.confirm_replace
-            || self.confirm_signout
-            || self.confirm_discard_all
-            || self.pending_close.is_some()
-            || self.pending_overwrite.is_some()
-            || self.confirm_quit;
-        self.pending_overwrite = None;
-        self.confirm_quit = false;
-        self.confirm_revert = None;
-        self.confirm_replace = false;
-        self.confirm_signout = false;
-        self.confirm_discard_all = false;
-        self.pending_close = None;
-        any
+        self.confirmation.take().is_some()
     }
 
     /// The status expired.
@@ -720,6 +702,16 @@ impl App {
     /// Hand each message to the module that owns it. No wildcard: a new `Msg`
     /// variant must be routed here.
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
+        if self.confirmation.is_some() && !confirm::allowed_during_confirmation(&msg) {
+            return Task::none();
+        }
+        if self.remote_dialog.is_some()
+            && !confirm::allowed_during_confirmation(&msg)
+            && !matches!(msg, Msg::RemoteAction(..) | Msg::RemoteSelect(..))
+        {
+            return Task::none();
+        }
+        let had_confirmation = self.confirmation.is_some();
         let was_busy = self.git_busy;
         let op = (!was_busy).then(|| BusyOp::from_message(&msg)).flatten();
         let task = self.dispatch(msg);
@@ -730,7 +722,11 @@ impl App {
             self.set_status(op.label(), false);
             self.busy_op = Some(op);
         }
-        task
+        if !had_confirmation && self.confirmation.is_some() {
+            Task::batch([task, iced::widget::operation::focus(confirm::CONFIRM_FOCUS)])
+        } else {
+            task
+        }
     }
 
     fn dispatch(&mut self, msg: Msg) -> Task<Msg> {
@@ -739,8 +735,7 @@ impl App {
                 if self.autosave != AutoSave::Off {
                     self.save_dirty_tabs();
                 }
-                // What autosave couldn't write (it's off, or the file changed on disk) is
-                // only lost after a second close.
+                // Ask before losing anything autosave could not write.
                 let unsaved: Vec<String> = self
                     .tabs
                     .iter()
@@ -749,18 +744,27 @@ impl App {
                         _ => None,
                     })
                     .collect();
-                if !unsaved.is_empty() && !self.confirm_quit {
-                    self.clear_confirms();
-                    self.confirm_quit = true;
-                    let what = match unsaved.as_slice() {
-                        [one] => format!("{one} has unsaved edits"),
-                        many => format!("{} files have unsaved edits", many.len()),
-                    };
-                    self.set_confirm(&format!("{what} — close again to discard them · Ctrl+S saves · Esc cancels"));
-                    return Task::none();
+                if !unsaved.is_empty() {
+                    let paths = self
+                        .tabs
+                        .iter()
+                        .filter_map(|t| match t {
+                            Tab::File(f) if f.dirty => Some(f.path.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !self.confirm_action(ConfirmAction::Quit(paths), "Close without saving?",
+                        "The unsaved edits in these files will be lost. Files on disk will not be changed. You can cancel and save them first.",
+                        unsaved, "Close without saving") {
+                        return Task::none();
+                    }
                 }
                 self.save_state();
                 iced::exit()
+            }
+            m @ (Msg::ConfirmCancel | Msg::ConfirmProceed(_)) => self.update_confirmation(m),
+            m @ (Msg::RemotePrepared(..) | Msg::RemoteDone(..) | Msg::RemoteSelect(..) | Msg::RemoteAction(..)) => {
+                self.update_remote(m)
             }
             Msg::Tick => self.on_tick(),
             Msg::Key(event, captured) => self.on_key(event, captured),
@@ -807,6 +811,7 @@ impl App {
             | Msg::Edit(_)
             | Msg::EditorViewport(_)
             | Msg::Save
+            | Msg::SaveFile(_)
             | Msg::Undo
             | Msg::Redo
             | Msg::AutoSaveTick
@@ -838,6 +843,7 @@ impl App {
             | Msg::ExplorerNameSubmit
             | Msg::ExplorerNameCancel
             | Msg::TrashDone(_)
+            | Msg::TrashPath(..)
             | Msg::UndoTrash) => self.update_files(m),
             m @ (Msg::RefreshChanges
             | Msg::GitLoaded(..)

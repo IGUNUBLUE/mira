@@ -93,6 +93,32 @@ impl App {
             }
             Msg::ExplorerNameSubmit => return self.submit_name(),
             Msg::ExplorerNameCancel => self.name_edit = None,
+            Msg::TrashPath(path, is_dir) => {
+                if path == self.root {
+                    return Task::none();
+                }
+                let detail = if is_dir {
+                    "This folder and everything inside it will be moved to the trash. Unsaved editor tabs stay open. You can restore the folder with Undo while the status action is available, or from the system trash."
+                } else {
+                    "This file will be moved to the trash. An unsaved editor tab stays open. You can restore the file with Undo while the status action is available, or from the system trash."
+                };
+                if !self.confirm_action(
+                    super::ConfirmAction::Trash(path.clone(), is_dir),
+                    "Move to trash?",
+                    detail,
+                    vec![path.to_string_lossy().into_owned()],
+                    "Move to trash",
+                ) {
+                    return Task::none();
+                }
+                return Task::perform(
+                    blocking(move || {
+                        let t = fileops::trash(&path, &fileops::home_trash()?)?;
+                        Ok(TrashOutcome::Trashed(vec![t]))
+                    }),
+                    Msg::TrashDone,
+                );
+            }
             Msg::TrashDone(result) => {
                 match result {
                     Ok(TrashOutcome::Trashed(items)) => {
@@ -159,16 +185,7 @@ impl App {
                 return iced::widget::operation::focus(NAME_INPUT)
                     .chain(iced::widget::operation::select_range(NAME_INPUT, 0, end));
             }
-            MenuAction::Delete if !menu.is_root => {
-                let path = menu.path;
-                return Task::perform(
-                    blocking(move || {
-                        let t = fileops::trash(&path, &fileops::home_trash()?)?;
-                        Ok(TrashOutcome::Trashed(vec![t]))
-                    }),
-                    Msg::TrashDone,
-                );
-            }
+            MenuAction::Delete if !menu.is_root => return self.update(Msg::TrashPath(menu.path, menu.is_dir)),
             MenuAction::Rename | MenuAction::Delete => {}
             MenuAction::CopyPath => return iced::clipboard::write(menu.path.to_string_lossy().into_owned()),
             MenuAction::CopyRelativePath => return iced::clipboard::write(self.rel(&menu.path)),
@@ -243,11 +260,6 @@ impl App {
             if let Some(new) = moved(path, from, to) {
                 *crumbs = super::documents::crumbs(&self.root, &new);
                 *path = new;
-            }
-        }
-        for pending in [&mut self.pending_close, &mut self.pending_overwrite].into_iter().flatten() {
-            if let Some(new) = moved(pending, from, to) {
-                *pending = new;
             }
         }
         let expanded: Vec<PathBuf> =

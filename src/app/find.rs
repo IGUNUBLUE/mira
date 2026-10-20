@@ -28,20 +28,13 @@ pub struct SearchState {
 }
 
 impl SearchState {
-    fn current(&self) -> u64 {
+    pub(super) fn current(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }
 }
 
 impl App {
     pub(super) fn update_find(&mut self, msg: Msg) -> Task<Msg> {
-        // Any change to what would be replaced asks for the confirmation again.
-        if matches!(
-            msg,
-            Msg::SearchQuery(_) | Msg::SearchReplace(_) | Msg::SearchToggle(_) | Msg::SearchRun | Msg::SearchDone(..)
-        ) {
-            self.confirm_replace = false;
-        }
         match msg {
             Msg::SearchQuery(q) => {
                 self.search.query = q;
@@ -99,16 +92,17 @@ impl App {
                 if self.replacing || self.search.running || self.search.results.is_empty() {
                     return Task::none();
                 }
-                // Files not open in a tab can't be undone: the first press asks.
-                if !self.confirm_replace {
-                    self.confirm_replace = true;
-                    self.set_confirm("Click Replace again to rewrite these files on disk · Esc cancels");
+                let files = self.search.results.iter().map(|f| f.rel.clone()).collect();
+                let capped = self.search.total >= search::MAX_MATCHES;
+                let warning =
+                    if capped { " Results are capped; only the listed matches will be replaced." } else { "" };
+                if !self.confirm_action(super::ConfirmAction::Replace(self.search.current(), self.search.replace.clone()), "Replace matches in files?",
+                    format!("Replace {} matches in {} files on disk? Files that are not open in the editor have no Undo for this operation.{warning}", self.search.total, self.search.results.len()),
+                    files, "Replace all") {
                     return Task::none();
                 }
-                self.confirm_replace = false;
                 self.replacing = true;
                 let epoch = self.root_epoch;
-                let capped = self.search.total >= search::MAX_MATCHES;
                 let files: Vec<PathBuf> = self.search.results.iter().map(|f| f.path.clone()).collect();
                 let (query, replacement, opts) =
                     (self.search.query.clone(), self.search.replace.clone(), self.search.opts.clone());

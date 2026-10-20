@@ -94,6 +94,11 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - ChatGPT sign-in is a modal (`App::signin`, `SignInStage::Ask` → `Waiting`, app/scm.rs; drawn with `stack` +
   `opaque` in `view`): ✦ checks `commitgen::needs_sign_in()` and asks before `openai::login` opens the browser;
   focusing `DIALOG_FOCUS` (no such widget) takes the keyboard from the terminal so Escape cancels it.
+- `src/git/remote.rs` — local push/pull preparation, explicit publication, guarded retries and
+  failure advice. `src/app/remote.rs` owns persistent Git error/publication dialogs. Remote writes
+  never retry automatically; IPv4 retry uses Git's option. Default OpenSSH uses bounded connection
+  attempts and batch mode; custom commands/variants are preserved. Foreground errors must remain
+  readable/copyable until dismissed; folder changes invalidate publication/retry approval.
 - `src/commitgen.rs` — commit message prompt/diff budget, provider choice (`commit_provider`), streams `Event`s
   (Delta, Account, Done) to `Msg::CommitGen`; cancel restores the previous text.
 - `src/openai.rs` — Responses API over `curl` with SSE streaming; ChatGPT OAuth PKCE login (codex's client,
@@ -121,8 +126,10 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - Changes rows: `change_button` with a `hover` key reports the mouse (`Msg::HoverChange`); build row buttons with
   `row_actions` (only for the hovered/open row). Discard always snapshots first (`git::snapshot_tree`) and offers
   Undo via `status_action` (`restore_from_tree`); without a snapshot nothing is discarded.
-- Destructive actions are two-step (`set_confirm`, `theme::danger` label, cleared with the status or Escape:
-  `clear_confirms`); icon-only buttons get a `tip`; git buttons are disabled while `git_busy`.
+- Destructive actions go through `app/confirm.rs`: an explicit modal with a warning, affected targets,
+  Cancel selected initially and a `theme::danger` action. Approval is one-shot, tied to the folder and
+  stable targets; status expiration never dismisses it. Escape cancels (`clear_confirms` also runs on
+  folder switches). Icon-only buttons get a `tip`; git buttons are disabled while `git_busy`.
 - Diff rows: content row is the stack base layer, backgrounds go `push_under` so wrapped lines stay aligned.
 - App shortcuts are `Ctrl+Shift+<letter>`; the terminal widget leaves those in `APP_LETTERS` (term/widget.rs) to the app.
   Never take `C`/`V` (terminal copy/paste) or plain `Ctrl+B` (herdr's prefix).

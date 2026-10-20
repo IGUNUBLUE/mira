@@ -2,6 +2,8 @@
 //! behavior identical to what the user and their agents see in the terminal,
 //! and respects hooks, config, credentials helpers and signing.
 
+pub mod remote;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,6 +41,7 @@ pub struct Commit {
 pub struct Snapshot {
     pub root: Option<PathBuf>,
     pub branch: String,
+    pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     pub staged: Vec<Change>,
@@ -301,6 +304,7 @@ fn parse_branch(line: &str, snap: &mut Snapshot) {
         None => (line.split(' ').next().unwrap_or(line), ""),
     };
     snap.branch = name.to_string();
+    snap.upstream = rest.strip_prefix("...").and_then(|s| s.split_whitespace().next()).map(String::from);
     if let (Some(s), Some(e)) = (rest.find('['), rest.find(']')) {
         for item in rest[s + 1..e].split(", ") {
             if let Some(n) = item.strip_prefix("ahead ") {
@@ -512,35 +516,6 @@ pub fn error_summary(stderr: &str) -> String {
     }
 }
 
-/// Longest a push or pull may run: an ssh passphrase or host-key prompt
-/// mira can't answer would otherwise block every other git action.
-const NETWORK_TIMEOUT_SECS: u32 = 120;
-
-/// `git` for commands that talk to a remote, under [`NETWORK_TIMEOUT_SECS`].
-fn git_remote(root: &Path, args: &[&str]) -> Result<String, String> {
-    git_timed(root, args, &[], NETWORK_TIMEOUT_SECS).map_err(|e| match e {
-        TimedError::TimedOut => format!(
-            "git {} timed out after {NETWORK_TIMEOUT_SECS} s (waiting for a password? try it in the terminal)",
-            args.first().copied().unwrap_or_default()
-        ),
-        TimedError::Failed(e) => e,
-    })
-}
-
-pub fn push(root: &Path) -> Result<String, String> {
-    git_remote(root, &["push"]).or_else(|e| {
-        if e.contains("no upstream") || e.contains("set-upstream") {
-            git_remote(root, &["push", "-u", "origin", "HEAD"])
-        } else {
-            Err(e)
-        }
-    })
-}
-
-pub fn pull(root: &Path) -> Result<String, String> {
-    git_remote(root, &["pull", "--ff-only"])
-}
-
 // ------------------------------------------------------------------ snapshots
 //
 // A snapshot is a git *tree* of the whole working directory (tracked +
@@ -679,10 +654,12 @@ mod tests {
         let mut s = Snapshot::default();
         parse_branch("main...origin/main [ahead 2, behind 1]", &mut s);
         assert_eq!((s.branch.as_str(), s.ahead, s.behind), ("main", 2, 1));
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
 
         let mut s = Snapshot::default();
         parse_branch("No commits yet on dev", &mut s);
         assert_eq!(s.branch, "dev");
+        assert!(s.upstream.is_none());
     }
 
     #[test]

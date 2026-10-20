@@ -307,7 +307,23 @@ impl App {
                 mouse_area(space().width(Length::Fill).height(Length::Fill)).on_press(msg.clone()).on_right_press(msg),
             )
         };
-        let overlay: Element<'_, Msg> = if self.gear_menu {
+        let overlay: Element<'_, Msg> = if let Some(pending) = &self.confirmation {
+            let panel = iced::widget::opaque(self.view_confirmation(pending));
+            iced::widget::opaque(
+                mouse_area(iced::widget::center(panel).padding(24).style(|_| container::Style {
+                    background: Some(p().bg.scale_alpha(0.75).into()),
+                    ..Default::default()
+                }))
+                .on_press(Msg::ConfirmCancel),
+            )
+        } else if let Some(dialog) = &self.remote_dialog {
+            iced::widget::opaque(
+                container(self.view_remote_dialog(dialog))
+                    .padding(24)
+                    .center(Length::Fill)
+                    .style(theme::panel(p().bg.scale_alpha(0.55))),
+            )
+        } else if self.gear_menu {
             iced::widget::stack![close_on_click(Msg::GearMenu(false)), self.view_gear_menu()].into()
         } else if let Some(d) = self.dialog {
             // Modal: a click outside closes it, as Escape does.
@@ -442,6 +458,105 @@ impl App {
         let x = (self.window_width - WIDTH - 8.0).max(0.0);
         let y = (self.window_height - HEIGHT - 30.0).max(0.0);
         iced::widget::pin(iced::widget::opaque(popup(items, WIDTH))).x(x).y(y).into()
+    }
+
+    fn view_remote_dialog<'a>(&self, dialog: &'a RemoteDialog) -> Element<'a, Msg> {
+        let mut body = column![
+            text(dialog.title.as_str()).size(20),
+            text(dialog.summary.as_str()).size(UI),
+            text(dialog.context.as_str()).size(12).font(theme::mono_font()).color(p().muted),
+            text(dialog.next.as_str()).size(UI),
+        ]
+        .spacing(12);
+        if !dialog.remotes.is_empty() {
+            body = body.push(
+                iced::widget::pick_list(dialog.remotes.as_slice(), dialog.selected_remote.as_ref(), move |remote| {
+                    Msg::RemoteSelect(dialog.id, remote)
+                })
+                .placeholder("Choose a remote…")
+                .width(Length::Fill),
+            );
+        }
+        if !dialog.detail.is_empty() {
+            body = body.push(
+                container(
+                    scrollable(text(dialog.detail.as_str()).size(12).font(theme::mono_font())).spacing(4).height(160),
+                )
+                .padding(10)
+                .width(Length::Fill)
+                .style(theme::bordered(p().bg)),
+            );
+        }
+        for (i, (label, choice)) in dialog.choices.iter().enumerate() {
+            body = body.push(
+                button(text(*label).size(UI))
+                    .width(Length::Fill)
+                    .padding([6, 12])
+                    .style(theme::outline(dialog.selected == i))
+                    .on_press_maybe(
+                        (*choice != RemoteChoice::Publish || dialog.selected_remote.is_some())
+                            .then_some(Msg::RemoteAction(dialog.id, *choice)),
+                    ),
+            );
+        }
+        body = body.push(text("Escape closes · Tab selects an action · Enter activates it").size(12).color(p().muted));
+        container(scrollable(body).spacing(4).height(Length::Shrink))
+            .padding(24)
+            .width(Length::Fill)
+            .max_width(680)
+            .max_height((self.window_height - 48.0).max(120.0))
+            .style(theme::bordered(p().sidebar))
+            .into()
+    }
+
+    fn view_confirmation<'a>(&self, pending: &'a Confirmation) -> Element<'a, Msg> {
+        let mut content = column![
+            row![ico(Icon::Discard, 20).color(p().warn_text), text(pending.title).size(20)]
+                .spacing(10)
+                .align_y(Alignment::Center),
+            text(pending.detail.as_str()).size(UI).color(p().fg),
+        ]
+        .spacing(16);
+        if !pending.targets.is_empty() {
+            let list = pending.targets.iter().fold(Column::new().spacing(5), |list, target| {
+                list.push(text(target.as_str()).size(12).font(theme::mono_font()).color(p().fg))
+            });
+            content = content.push(
+                container(scrollable(list).height((pending.targets.len() as f32 * 23.0).min(184.0)))
+                    .padding(10)
+                    .width(Length::Fill)
+                    .style(theme::bordered(p().bg)),
+            );
+        }
+        if let Some(remaining) = &pending.remaining {
+            content = content.push(text(remaining.as_str()).size(12).color(p().muted));
+        }
+        let selected = pending.accept_selected;
+        content = content.push(
+            row![
+                space::horizontal(),
+                button(text("Cancel").size(UI))
+                    .padding([7, 14])
+                    .style(theme::outline(!selected))
+                    .on_press(Msg::ConfirmCancel),
+                button(text(pending.accept).size(UI))
+                    .padding([7, 14])
+                    .style(move |theme, status| {
+                        let mut style = theme::danger(theme, status);
+                        if selected {
+                            style.border.color = p().accent;
+                            style.border.width = 2.0;
+                        }
+                        style
+                    })
+                    .on_press(Msg::ConfirmProceed(pending.id)),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        );
+        content =
+            content.push(text("Escape cancels · Tab selects an action · Enter activates it").size(12).color(p().muted));
+        container(content).padding(24).width(Length::Fill).max_width(580).style(theme::bordered(p().sidebar)).into()
     }
 
     fn view_dialog(&self, d: Dialog) -> Element<'_, Msg> {
@@ -1088,7 +1203,6 @@ impl App {
             Some(Tab::Diff(DiffTab { rel, source: DiffSource::Index { staged }, .. })) => Some((rel.as_str(), *staged)),
             _ => None,
         };
-        let when_idle = |m: Msg| (!busy).then_some(m);
 
         let mut list = Column::new().spacing(1);
         // Row buttons, VSCodium's order: open the file, discard, stage / unstage.
@@ -1164,17 +1278,7 @@ impl App {
             if all.is_empty() {
                 vec![]
             } else {
-                let discard_all: Element<'_, Msg> = if self.confirm_discard_all {
-                    tip(
-                        button(text(format!("Discard {}?", changes.len())).size(12))
-                            .padding([2, 6])
-                            .style(theme::danger)
-                            .on_press_maybe(when_idle(Msg::DiscardAll)),
-                        "Click again to discard every change below · Esc cancels",
-                    )
-                } else {
-                    tip(self.git_button(Icon::Discard, Msg::DiscardAll), "Discard all changes")
-                };
+                let discard_all = tip(self.git_button(Icon::Discard, Msg::DiscardAll), "Discard all changes");
                 vec![
                     tip(icon_button(Icon::Diff, Msg::OpenChanges(false)), "Review changes file by file"),
                     discard_all,
@@ -1259,26 +1363,19 @@ impl App {
                     row![
                         row![ico(Icon::Branch, 14).color(p().accent), branch].spacing(6).align_y(Alignment::Center),
                         space::horizontal(),
-                        self.chatgpt_account.as_ref().map(|email| if self.confirm_signout {
-                            tip(
-                                button(text("Sign out?").size(12))
-                                    .padding([3, 6])
-                                    .style(theme::danger)
-                                    .on_press(Msg::ChatGptSignOut),
-                                "Click again to sign out of ChatGPT · Esc cancels",
-                            )
-                        } else {
-                            tip(
-                                icon_button(Icon::Account, Msg::ChatGptSignOut),
-                                if email.is_empty() {
-                                    "Signed in to ChatGPT — click to sign out".to_string()
-                                } else {
-                                    format!("ChatGPT: {email} — click to sign out")
-                                },
-                            )
-                        }),
+                        self.chatgpt_account.as_ref().map(|email| tip(
+                            icon_button(Icon::Account, Msg::ChatGptSignOut),
+                            if email.is_empty() {
+                                "Signed in to ChatGPT — click to sign out".to_string()
+                            } else {
+                                format!("ChatGPT: {email} — click to sign out")
+                            },
+                        )),
                         tip(self.git_button(Icon::ArrowDown, Msg::Pull), "Pull (fast-forward)"),
-                        tip(self.git_button(Icon::ArrowUp, Msg::Push), "Push"),
+                        tip(
+                            self.git_button(Icon::ArrowUp, Msg::Push),
+                            if self.git.upstream.is_some() { "Push to configured remote" } else { "Publish branch…" }
+                        ),
                         tip(
                             button(if self.manual_refresh { self.spinner(15) } else { ico(Icon::Refresh, 15) })
                                 .padding([3, 5])
@@ -1394,13 +1491,14 @@ impl App {
             .padding(10),
             self.view_changes_toolbar(),
             hrule(),
-            scrollable(if self.group_by_run { self.view_runs() } else { list }).height(Length::Fill),
+            // Reserve a scrollbar gutter so run metadata and row actions stay visible.
+            scrollable(if self.group_by_run { self.view_runs() } else { list }).spacing(2).height(Length::Fill),
             hdivider(
                 Divider::History,
                 self.dragging == Some(Divider::History) || self.hovered_divider == Some(Divider::History),
             ),
             section("HISTORY".into(), vec![]),
-            scrollable(history).height(self.history_height),
+            scrollable(history).spacing(2).height(self.history_height),
         ]
         .into()
     }
@@ -1471,24 +1569,15 @@ impl App {
                     header.push(tip(icon_button(Icon::Terminal, Msg::FocusAgent(r.pane.clone())), "Show this agent"));
             }
             if selected && !working {
-                let confirming = self.confirm_revert == Some(r.id);
                 let idle = !self.git_busy;
                 header = header
                     .push(tip(self.git_button(Icon::Add, Msg::StageRun(r.id)), "Stage this run's files"))
                     .push(tip(
-                        button(if confirming {
-                            text(format!("Revert {n} {}?", if n == 1 { "file" } else { "files" })).size(12)
-                        } else {
-                            self.action_icon(Icon::Discard, &Msg::RevertRun(r.id), 14)
-                        })
-                        .padding([3, 5])
-                        .style(if confirming { theme::danger } else { theme::flat_fn })
-                        .on_press_maybe(idle.then_some(Msg::RevertRun(r.id))),
-                        if confirming {
-                            "Click again to restore these files · Esc cancels"
-                        } else {
-                            "Revert this run"
-                        },
+                        button(self.action_icon(Icon::Discard, &Msg::RevertRun(r.id), 14))
+                            .padding([3, 5])
+                            .style(theme::flat_fn)
+                            .on_press_maybe(idle.then_some(Msg::RevertRun(r.id))),
+                        "Revert this run",
                     ));
             }
             list = list.push(
@@ -1526,20 +1615,12 @@ impl App {
         let s = &self.search;
         let toggle = |label, on, which, name| option_toggle(label, on, Msg::SearchToggle(which), name);
         let capped = if s.total >= search::MAX_MATCHES { "+" } else { "" };
-        // Two steps, like Revert: files not open in a tab can't be undone.
+        // The modal confirms before any file is rewritten.
         let replace: Element<'_, Msg> = if self.replacing {
             button(row![self.spinner(13), text("Replacing…").size(12)].spacing(5).align_y(Alignment::Center))
                 .padding([2, 8])
                 .style(theme::flat(false))
                 .into()
-        } else if self.confirm_replace {
-            tip(
-                button(text(format!("Replace {}{capped} in {} files?", s.total, s.results.len())).size(12))
-                    .padding([2, 8])
-                    .style(theme::danger)
-                    .on_press(Msg::ReplaceAll),
-                "Click again to rewrite these files on disk · Esc cancels",
-            )
         } else {
             small_button("Replace all", (!s.results.is_empty() && !s.running).then_some(Msg::ReplaceAll))
         };
@@ -1833,19 +1914,10 @@ impl App {
                     format!("⇄ {name} ({side})")
                 }
             };
-            // A first Ctrl+W / × on unsaved edits arms this; the next one discards.
-            let discarding = matches!(t, Tab::File(f) if self.pending_close.as_ref() == Some(&f.path));
-            let close = if discarding {
-                tip(
-                    button(text("Discard?").size(12)).padding([3, 6]).style(theme::danger).on_press(Msg::CloseTab(i)),
-                    "Click again to close without saving · Ctrl+S saves · Esc cancels",
-                )
-            } else {
-                tip(
-                    button(text("×").size(14)).padding([4, 6]).style(theme::tab(active)).on_press(Msg::CloseTab(i)),
-                    "Close (Ctrl+W)",
-                )
-            };
+            let close = tip(
+                button(text("×").size(14)).padding([4, 6]).style(theme::tab(active)).on_press(Msg::CloseTab(i)),
+                "Close (Ctrl+W)",
+            );
             let tab = container(
                 row![
                     button(text(title).size(UI).wrapping(text::Wrapping::None))
