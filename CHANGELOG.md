@@ -6,6 +6,11 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Activity indicators reserve the same fixed space as idle icons, keeping Push, Pull, Refresh
+  and neighboring controls stationary throughout the animation.
+
 ## [0.5.0]
 
 ### Added
