@@ -6,6 +6,15 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Click the branch in Changes or the status bar to search local and cached remote branches.
+  Remote selection creates a local tracking branch; switching preserves local edits when Git
+  can do so safely and protects unsaved editors, ignored files and other worktrees.
+- History offers Undo Last Commit with explicit confirmation. Working files and existing staged
+  edits are preserved, the removed commit's changes remain staged, and its message fills an empty
+  commit box. Known shared commits are refused in favor of revert; stale approvals are rejected.
+
 ## [0.4.3]
 
 ### Fixed

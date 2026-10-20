@@ -323,6 +323,13 @@ impl App {
                     .center(Length::Fill)
                     .style(theme::panel(p().bg.scale_alpha(0.55))),
             )
+        } else if let Some(picker) = &self.branch_picker {
+            iced::widget::opaque(
+                container(self.view_branches(picker))
+                    .padding(24)
+                    .center(Length::Fill)
+                    .style(theme::panel(p().bg.scale_alpha(0.55))),
+            )
         } else if self.gear_menu {
             iced::widget::stack![close_on_click(Msg::GearMenu(false)), self.view_gear_menu()].into()
         } else if let Some(d) = self.dialog {
@@ -458,6 +465,68 @@ impl App {
         let x = (self.window_width - WIDTH - 8.0).max(0.0);
         let y = (self.window_height - HEIGHT - 30.0).max(0.0);
         iced::widget::pin(iced::widget::opaque(popup(items, WIDTH))).x(x).y(y).into()
+    }
+
+    fn view_branches<'a>(&self, picker: &'a BranchPicker) -> Element<'a, Msg> {
+        let mut list = Column::new().spacing(3);
+        for (position, &index) in picker.matches.iter().enumerate() {
+            let branch = &picker.listing.branches[index];
+            let label = column![
+                text(branch.name.as_str()).size(UI).wrapping(text::Wrapping::None),
+                text(branch.unavailable.as_deref().unwrap_or(if branch.remote {
+                    "Remote — creates a local tracking branch"
+                } else {
+                    "Local branch"
+                }))
+                .size(12)
+                .wrapping(text::Wrapping::None)
+                .color(p().muted)
+            ]
+            .spacing(2);
+            list = list.push(row_tip(
+                button(container(label).width(Length::Fill).clip(true))
+                    .height(52)
+                    .width(Length::Fill)
+                    .padding([7, 10])
+                    .style(theme::outline(position == picker.selected))
+                    .on_press_maybe(
+                        branch.unavailable.is_none().then(|| Msg::BranchPick(picker.id, branch.reference.clone())),
+                    ),
+                branch.unavailable.as_deref().unwrap_or(branch.name.as_str()),
+            ));
+        }
+        if picker.matches.is_empty() {
+            list = list.push(text("No matching branches").size(UI).color(p().muted));
+        }
+        let mut body=column![text("Switch branch").size(20),
+            text("Local edits are kept when Git can switch safely. If they conflict, commit or stash them in a shell first. Remote refs are from the last fetch.").size(UI),
+            text_input("Find a local or remote branch…",&picker.query).id("branch-search")
+                .on_input(move |q|Msg::BranchQuery(picker.id,q)).on_submit(Msg::BranchSubmit(picker.id)).padding(8),
+            scrollable(list).id("branch-list").spacing(4).height((picker.matches.len().max(1) as f32*55.0-3.0).min((self.window_height-300.0).clamp(100.0,400.0))),
+        ].spacing(12);
+        if picker.capped || picker.listing.truncated {
+            body = body.push(
+                text("Branch list limited — refine the search or use the terminal for additional refs.")
+                    .size(12)
+                    .color(p().muted),
+            );
+        }
+        body = body.push(
+            row![
+                text("↑/↓ select · Enter switches · Escape closes").size(12).color(p().muted),
+                space::horizontal(),
+                button(text("Cancel")).padding([6, 12]).style(theme::outline(false)).on_press(Msg::BranchesClose)
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+        );
+        container(scrollable(body).spacing(4).height(Length::Shrink))
+            .padding(24)
+            .width(Length::Fill)
+            .max_width(640)
+            .max_height((self.window_height - 48.0).max(120.0))
+            .style(theme::bordered(p().sidebar))
+            .into()
     }
 
     fn view_remote_dialog<'a>(&self, dialog: &'a RemoteDialog) -> Element<'a, Msg> {
@@ -1361,8 +1430,30 @@ impl App {
             container(
                 column![
                     row![
-                        row![ico(Icon::Branch, 14).color(p().accent), branch].spacing(6).align_y(Alignment::Center),
-                        space::horizontal(),
+                        tip(
+                            button(
+                                container(
+                                    row![
+                                        if matches!(self.busy_op, Some(BusyOp::Branches | BusyOp::SwitchBranch(_))) {
+                                            self.spinner(14)
+                                        } else {
+                                            ico(Icon::Branch, 14).color(p().accent)
+                                        },
+                                        container(branch).width(Length::Fill).clip(true),
+                                        ico(Icon::ChevronDown, 12),
+                                    ]
+                                    .spacing(6)
+                                    .align_y(Alignment::Center)
+                                )
+                                .width(Length::Fill)
+                                .clip(true)
+                            )
+                            .width(Length::Fill)
+                            .padding([3, 4])
+                            .style(theme::flat(false))
+                            .on_press_maybe((!busy).then_some(Msg::BranchesOpen)),
+                            "Switch branch…"
+                        ),
                         self.chatgpt_account.as_ref().map(|email| tip(
                             icon_button(Icon::Account, Msg::ChatGptSignOut),
                             if email.is_empty() {
@@ -1497,7 +1588,23 @@ impl App {
                 Divider::History,
                 self.dragging == Some(Divider::History) || self.hovered_divider == Some(Divider::History),
             ),
-            section("HISTORY".into(), vec![]),
+            section(
+                "HISTORY".into(),
+                vec![tip(
+                    button(
+                        row![
+                            self.action_icon(Icon::Discard, &Msg::UndoLastCommit, 14),
+                            text("Undo Last Commit").size(SMALL)
+                        ]
+                        .spacing(5)
+                        .align_y(Alignment::Center)
+                    )
+                    .padding([2, 6])
+                    .style(theme::flat(false))
+                    .on_press_maybe((!busy && !self.git.log.is_empty()).then_some(Msg::UndoLastCommit)),
+                    "Remove the last local commit; keep its changes staged"
+                )]
+            ),
             scrollable(history).spacing(2).height(self.history_height),
         ]
         .into()
@@ -2302,16 +2409,24 @@ impl App {
     fn view_status_bar(&self) -> Element<'_, Msg> {
         let mut left = row![].spacing(14).align_y(Alignment::Center);
         if !self.git.branch.is_empty() {
-            left = left.push(
+            left = left.push(tip(
                 button(
-                    row![ico(Icon::Branch, 12), text(self.git.branch.as_str()).size(12)]
-                        .spacing(4)
-                        .align_y(Alignment::Center),
+                    row![
+                        if matches!(self.busy_op, Some(BusyOp::Branches | BusyOp::SwitchBranch(_))) {
+                            self.spinner(12)
+                        } else {
+                            ico(Icon::Branch, 12)
+                        },
+                        text(self.git.branch.as_str()).size(12)
+                    ]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
                 )
                 .padding([1, 4])
                 .style(theme::flat(false))
-                .on_press(Msg::InspectorTab(Inspector::Changes)),
-            );
+                .on_press_maybe((!self.git_busy).then_some(Msg::BranchesOpen)),
+                "Switch branch…",
+            ));
         }
         let working = self.agents.iter().filter(|a| a.agent_status == AgentStatus::Working).count();
         let blocked = self.agents.iter().filter(|a| a.agent_status == AgentStatus::Blocked).count();
