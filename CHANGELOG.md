@@ -6,6 +6,17 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.2]
+
+### Changed
+
+- Manual Changes refresh, stage/unstage, discard, run actions, repository initialization and
+  hunk actions show activity at their buttons. Background refresh stays quiet; hunk spinners
+  animate without rebuilding diff rows.
+- Replace all and Send to agent show progress and reject repeated clicks while working.
+  Replies from a previous folder do not clear the current comment or rerun its search.
+- Git actions with no output report completion instead of leaving their progress message behind.
+
 ## [0.4.1]
 
 ### Fixed
