@@ -109,7 +109,7 @@ pub struct App {
     pub status_action: Option<(&'static str, Msg)>,
     pub comment: String,
     /// The comment is on its way to an agent's pane (cleared on delivery).
-    sending_comment: bool,
+    pub sending_comment: bool,
     state_dirty: bool,
 
     // documents
@@ -148,6 +148,10 @@ pub struct App {
     /// The opened folder relative to its repository ("" at the top), from the last snapshot.
     pub repo_prefix: String,
     pub refreshing: bool,
+    /// Only an explicit refresh animates; background polling stays quiet.
+    pub manual_refresh: bool,
+    /// Replacement writes are serialized even if the user changes the search.
+    pub replacing: bool,
     /// Bumped per git refresh; an older refresh's snapshot is dropped.
     git_gen: u64,
     /// Bumped whenever `git` is replaced (see `fresh_changes`).
@@ -160,7 +164,7 @@ pub struct App {
     /// A snapshot of this folder arrived, so `git.root` says whether it is a repository.
     pub git_loaded: bool,
     pub git_busy: bool,
-    /// The running git action whose button spins (commit, push, pull).
+    /// The running git action and its target.
     pub busy_op: Option<BusyOp>,
     pub commit_msg: Content,
     commit_history: crate::history::History,
@@ -263,7 +267,7 @@ pub enum Msg {
     SendComment,
     SendToAgent(String),
     /// Text typed into an agent's pane through herdr.
-    SentToPane(Result<(), herdr::Error>),
+    SentToPane(u64, Result<(), herdr::Error>),
     /// Show this agent's pane in herdr (switching workspace if needed).
     FocusAgent(PaneId),
     AgentFocused(Result<(), herdr::Error>),
@@ -327,6 +331,7 @@ pub enum Msg {
     // git
     /// A snapshot from refresh `.0` (see `git_gen`).
     GitLoaded(u64, Result<Snapshot, String>),
+    RefreshChanges,
     OpenDiff(String, bool),
     Stage(Vec<String>),
     Unstage(Vec<String>),
@@ -377,8 +382,8 @@ pub enum Msg {
     /// Send a result's `path:line` to the agent `(results generation, file, line)`.
     SearchSend(u64, usize, usize),
     ReplaceAll,
-    /// `.0`: the results were capped, so files past the cap were not replaced.
-    ReplaceDone(bool, Result<usize, String>),
+    /// Folder epoch, whether results were capped, and the replacement result.
+    ReplaceDone(u64, bool, Result<usize, String>),
 
     // navigate
     /// The keyboard modifiers changed.
@@ -521,6 +526,8 @@ impl App {
             git: Snapshot::default(),
             repo_prefix: String::new(),
             refreshing: false,
+            manual_refresh: false,
+            replacing: false,
             git_gen: 0,
             git_rev: 0,
             fresh_cache: std::cell::Cell::new(None),
@@ -563,9 +570,15 @@ impl App {
         }
         subs.push(iced::time::every(Duration::from_secs(2)).map(|_| Msg::Tick));
         subs.push(iced::time::every(Duration::from_millis(700)).map(|_| Msg::StatusTick));
-        // Spinners: generating a message, the sign-in dialog waiting, a commit, push or pull.
+        // Animate only while a user action is in flight; background polling stays quiet.
         let waiting = matches!(&self.signin, Some(s) if s.stage != SignInStage::Ask);
-        if self.commit_gen.is_some() || waiting || self.busy_op.is_some() {
+        if self.commit_gen.is_some()
+            || waiting
+            || self.busy_op.is_some()
+            || self.manual_refresh
+            || self.replacing
+            || self.sending_comment
+        {
             subs.push(iced::time::every(Duration::from_millis(80)).map(|_| Msg::Spin));
         }
         // Autosave timer, only while some tab has unsaved edits.
@@ -707,6 +720,20 @@ impl App {
     /// Hand each message to the module that owns it. No wildcard: a new `Msg`
     /// variant must be routed here.
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
+        let was_busy = self.git_busy;
+        let op = (!was_busy).then(|| BusyOp::from_message(&msg)).flatten();
+        let task = self.dispatch(msg);
+        if !was_busy
+            && self.git_busy
+            && let Some(op) = op
+        {
+            self.set_status(op.label(), false);
+            self.busy_op = Some(op);
+        }
+        task
+    }
+
+    fn dispatch(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
             Msg::CloseRequested => {
                 if self.autosave != AutoSave::Off {
@@ -760,7 +787,7 @@ impl App {
             | Msg::SendToAgent(_)
             | Msg::FocusAgent(_)
             | Msg::AgentFocused(_)
-            | Msg::SentToPane(_)) => self.update_follow(m),
+            | Msg::SentToPane(..)) => self.update_follow(m),
             m @ (Msg::RunSnapshot(..)
             | Msg::RunFiles(..)
             | Msg::RunPrompt(..)
@@ -812,7 +839,8 @@ impl App {
             | Msg::ExplorerNameCancel
             | Msg::TrashDone(_)
             | Msg::UndoTrash) => self.update_files(m),
-            m @ (Msg::GitLoaded(..)
+            m @ (Msg::RefreshChanges
+            | Msg::GitLoaded(..)
             | Msg::OpenDiff(..)
             | Msg::Stage(_)
             | Msg::Unstage(_)

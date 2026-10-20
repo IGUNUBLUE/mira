@@ -137,6 +137,10 @@ ready for you to review and press Enter.
 Stage, unstage, commit, push and pull. History is under the Changes list; drag the divider to
 resize it.
 
+Actions show a small spinner at the button while they run and report their result in the status
+bar. Manual refresh animates too; automatic refresh stays quiet. Stage, unstage, discard and
+hunk actions cannot be clicked again until the current git action finishes.
+
 - **Row buttons** appear on hover (or on the open file), as in VSCodium: open the file, discard
   its changes, stage or unstage it. Section headers have the same for every file, plus
   **Review** (⇄), which opens the first diff; `‹ ›` in the diff then walks through the section.

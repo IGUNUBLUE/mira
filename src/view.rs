@@ -709,13 +709,25 @@ impl App {
             .color(p().accent)
     }
 
-    /// A git action's icon button; it spins while that action runs.
-    fn git_button<'a>(&self, icon: Icon, op: BusyOp, msg: Option<Msg>) -> Element<'a, Msg> {
-        if self.busy_op == Some(op) {
-            button(self.spinner(15)).padding([3, 5]).style(theme::flat(false)).into()
-        } else {
-            icon_button_maybe(icon, msg)
-        }
+    fn action_icon<'a>(&self, icon: Icon, msg: &Msg, size: u32) -> text::Text<'a> {
+        if self.busy_op.as_ref().is_some_and(|op| op.matches(msg)) { self.spinner(size) } else { ico(icon, size) }
+    }
+
+    /// The working button keeps its place and cannot be clicked twice.
+    fn git_button<'a>(&self, icon: Icon, msg: Msg) -> Element<'a, Msg> {
+        button(self.action_icon(icon, &msg, 15))
+            .padding([3, 5])
+            .style(theme::flat(false))
+            .on_press_maybe((!self.git_busy).then_some(msg))
+            .into()
+    }
+
+    fn git_label<'a>(&self, icon: Icon, label: &'a str, msg: Msg) -> Element<'a, Msg> {
+        button(row![self.action_icon(icon, &msg, 13), text(label).size(12)].spacing(5).align_y(Alignment::Center))
+            .padding([2, 8])
+            .style(theme::flat(false))
+            .on_press_maybe((!self.git_busy).then_some(msg))
+            .into()
     }
 
     /// Quick open: the query, then the best matching files (or go to line after `:`).
@@ -1024,9 +1036,12 @@ impl App {
                 column![
                     text("This folder is not a git repository.").size(UI).color(p().muted),
                     button(
-                        row![ico(Icon::SourceControl, 14), text("Initialize repository").size(UI)]
-                            .spacing(6)
-                            .align_y(Alignment::Center),
+                        row![
+                            self.action_icon(Icon::SourceControl, &Msg::GitInit, 14),
+                            text("Initialize repository").size(UI)
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center),
                     )
                     .style(theme::primary)
                     .padding([5, 12])
@@ -1090,24 +1105,29 @@ impl App {
                 format!("STAGED  {}", staged.len()),
                 vec![
                     tip(icon_button(Icon::Diff, Msg::OpenChanges(true)), "Review staged changes file by file"),
-                    tip(icon_button_maybe(Icon::Remove, when_idle(Msg::Unstage(all))), "Unstage all"),
+                    tip(self.git_button(Icon::Remove, Msg::Unstage(all)), "Unstage all"),
                 ],
             ));
             for (i, c) in staged.iter().enumerate() {
+                let working =
+                    matches!(&self.busy_op, Some(BusyOp::Unstage(paths)) if paths.as_slice() == [c.path.as_str()]);
                 list = list.push(self.change_button(
                     c,
                     open == Some((c.path.as_str(), true)),
                     Msg::OpenDiff(c.path.clone(), true),
                     Some((0, i)),
-                    row_actions(self.hovered_change == Some((0, i)) || open == Some((c.path.as_str(), true)), || {
-                        vec![
-                            open_file(c),
-                            tip(
-                                icon_button_maybe(Icon::Remove, when_idle(Msg::Unstage(vec![c.path.clone()]))),
-                                "Unstage changes",
-                            ),
-                        ]
-                    }),
+                    row_actions(
+                        self.hovered_change == Some((0, i)) || open == Some((c.path.as_str(), true)) || working,
+                        || {
+                            vec![
+                                open_file(c),
+                                tip(
+                                    self.git_button(Icon::Remove, Msg::Unstage(vec![c.path.clone()])),
+                                    "Unstage changes",
+                                ),
+                            ]
+                        },
+                    ),
                     true,
                 ));
             }
@@ -1115,20 +1135,25 @@ impl App {
         if !conflicts.is_empty() {
             list = list.push(section(format!("MERGE CHANGES  {}", conflicts.len()), vec![]));
             for (i, c) in conflicts.iter().enumerate() {
+                let working =
+                    matches!(&self.busy_op, Some(BusyOp::Stage(paths)) if paths.as_slice() == [c.path.as_str()]);
                 list = list.push(self.change_button(
                     c,
                     open == Some((c.path.as_str(), false)),
                     Msg::OpenDiff(c.path.clone(), false),
                     Some((1, i)),
-                    row_actions(self.hovered_change == Some((1, i)) || open == Some((c.path.as_str(), false)), || {
-                        vec![
-                            open_file(c),
-                            tip(
-                                icon_button_maybe(Icon::Add, when_idle(Msg::Stage(vec![c.path.clone()]))),
-                                "Mark as resolved (stage it once the conflict markers are gone)",
-                            ),
-                        ]
-                    }),
+                    row_actions(
+                        self.hovered_change == Some((1, i)) || open == Some((c.path.as_str(), false)) || working,
+                        || {
+                            vec![
+                                open_file(c),
+                                tip(
+                                    self.git_button(Icon::Add, Msg::Stage(vec![c.path.clone()])),
+                                    "Mark as resolved (stage it once the conflict markers are gone)",
+                                ),
+                            ]
+                        },
+                    ),
                     true,
                 ));
             }
@@ -1148,16 +1173,17 @@ impl App {
                         "Click again to discard every change below · Esc cancels",
                     )
                 } else {
-                    tip(icon_button_maybe(Icon::Discard, when_idle(Msg::DiscardAll)), "Discard all changes")
+                    tip(self.git_button(Icon::Discard, Msg::DiscardAll), "Discard all changes")
                 };
                 vec![
                     tip(icon_button(Icon::Diff, Msg::OpenChanges(false)), "Review changes file by file"),
                     discard_all,
-                    tip(icon_button_maybe(Icon::Add, when_idle(Msg::Stage(all))), "Stage all changes"),
+                    tip(self.git_button(Icon::Add, Msg::Stage(all)), "Stage all changes"),
                 ]
             },
         ));
         for (i, c) in changes.iter().enumerate() {
+            let working = matches!(&self.busy_op, Some(BusyOp::Stage(paths) | BusyOp::Discard(paths)) if paths.as_slice() == [c.path.as_str()]);
             let discard_tip = if c.code == 'U' {
                 "Discard: delete this new file (Undo available)"
             } else {
@@ -1168,16 +1194,16 @@ impl App {
                 open == Some((c.path.as_str(), false)),
                 Msg::OpenDiff(c.path.clone(), false),
                 Some((2, i)),
-                row_actions(self.hovered_change == Some((2, i)) || open == Some((c.path.as_str(), false)), || {
-                    vec![
-                        open_file(c),
-                        tip(
-                            icon_button_maybe(Icon::Discard, when_idle(Msg::Discard(vec![c.path.clone()]))),
-                            discard_tip,
-                        ),
-                        tip(icon_button_maybe(Icon::Add, when_idle(Msg::Stage(vec![c.path.clone()]))), "Stage changes"),
-                    ]
-                }),
+                row_actions(
+                    self.hovered_change == Some((2, i)) || open == Some((c.path.as_str(), false)) || working,
+                    || {
+                        vec![
+                            open_file(c),
+                            tip(self.git_button(Icon::Discard, Msg::Discard(vec![c.path.clone()])), discard_tip),
+                            tip(self.git_button(Icon::Add, Msg::Stage(vec![c.path.clone()])), "Stage changes"),
+                        ]
+                    },
+                ),
                 true,
             ));
         }
@@ -1251,12 +1277,15 @@ impl App {
                                 },
                             )
                         }),
+                        tip(self.git_button(Icon::ArrowDown, Msg::Pull), "Pull (fast-forward)"),
+                        tip(self.git_button(Icon::ArrowUp, Msg::Push), "Push"),
                         tip(
-                            self.git_button(Icon::ArrowDown, BusyOp::Pull, when_idle(Msg::Pull)),
-                            "Pull (fast-forward)"
+                            button(if self.manual_refresh { self.spinner(15) } else { ico(Icon::Refresh, 15) })
+                                .padding([3, 5])
+                                .style(theme::flat(false))
+                                .on_press_maybe((!busy && !self.manual_refresh).then_some(Msg::RefreshChanges)),
+                            if self.manual_refresh { "Refreshing changes…" } else { "Refresh" },
                         ),
-                        tip(self.git_button(Icon::ArrowUp, BusyOp::Push, when_idle(Msg::Push)), "Push"),
-                        tip(icon_button_maybe(Icon::Refresh, when_idle(Msg::Tick)), "Refresh"),
                     ]
                     .align_y(Alignment::Center),
                     row![
@@ -1445,15 +1474,12 @@ impl App {
                 let confirming = self.confirm_revert == Some(r.id);
                 let idle = !self.git_busy;
                 header = header
-                    .push(tip(
-                        icon_button_maybe(Icon::Add, idle.then_some(Msg::StageRun(r.id))),
-                        "Stage this run's files",
-                    ))
+                    .push(tip(self.git_button(Icon::Add, Msg::StageRun(r.id)), "Stage this run's files"))
                     .push(tip(
                         button(if confirming {
                             text(format!("Revert {n} {}?", if n == 1 { "file" } else { "files" })).size(12)
                         } else {
-                            ico(Icon::Discard, 14)
+                            self.action_icon(Icon::Discard, &Msg::RevertRun(r.id), 14)
                         })
                         .padding([3, 5])
                         .style(if confirming { theme::danger } else { theme::flat_fn })
@@ -1501,7 +1527,12 @@ impl App {
         let toggle = |label, on, which, name| option_toggle(label, on, Msg::SearchToggle(which), name);
         let capped = if s.total >= search::MAX_MATCHES { "+" } else { "" };
         // Two steps, like Revert: files not open in a tab can't be undone.
-        let replace: Element<'_, Msg> = if self.confirm_replace {
+        let replace: Element<'_, Msg> = if self.replacing {
+            button(row![self.spinner(13), text("Replacing…").size(12)].spacing(5).align_y(Alignment::Center))
+                .padding([2, 8])
+                .style(theme::flat(false))
+                .into()
+        } else if self.confirm_replace {
             tip(
                 button(text(format!("Replace {}{capped} in {} files?", s.total, s.results.len())).size(12))
                     .padding([2, 8])
@@ -2114,15 +2145,22 @@ impl App {
             let discardable = !staged && self.git.unstaged.iter().any(|c| c.path == d.rel && c.code != '!');
             if discardable {
                 header = header.push(tip(
-                    icon_label(Icon::Discard, "Discard", (!self.git_busy).then(|| Msg::Discard(vec![d.rel.clone()]))),
+                    self.git_label(Icon::Discard, "Discard", Msg::Discard(vec![d.rel.clone()])),
                     "Throw away these changes (Undo available)",
                 ));
             }
             header = header.push(
-                button(text(if staged { "Unstage" } else { "Stage" }).size(12))
-                    .padding([2, 8])
-                    .style(theme::primary)
-                    .on_press_maybe((!self.git_busy).then_some(msg)),
+                button(
+                    row![
+                        self.action_icon(if staged { Icon::Remove } else { Icon::Add }, &msg, 13),
+                        text(if staged { "Unstage" } else { "Stage" }).size(12)
+                    ]
+                    .spacing(5)
+                    .align_y(Alignment::Center),
+                )
+                .padding([2, 8])
+                .style(theme::primary)
+                .on_press_maybe((!self.git_busy).then_some(msg)),
             );
         }
 
@@ -2137,7 +2175,14 @@ impl App {
                 // Built once per diff, anchor and palette, not on every frame:
                 // the terminal streams many messages per second while agents work.
                 let (rows, anchor) = (Arc::clone(diff), d.anchor);
-                let cached = lazy((diff.id, anchor, theme::current()), move |_| diff_rows(&rows, anchor));
+                let busy = self.git_busy;
+                let hunk = match self.busy_op {
+                    Some(BusyOp::Hunk(kind, id, i)) => Some((kind, id, i)),
+                    _ => None,
+                };
+                let cached = lazy((diff.id, anchor, theme::current(), busy, hunk), move |_| {
+                    diff_rows(&rows, anchor, busy, hunk)
+                });
                 // `lazy` hints Shrink: the widths are set here, or the rows get none.
                 scrollable(container(cached).width(Length::Fill).padding(Padding { right: 12.0, ..Padding::ZERO }))
                     .width(Length::Fill)
@@ -2152,15 +2197,22 @@ impl App {
         };
         let comment = row![
             text_input(&place, &self.comment)
-                .on_input(Msg::Comment)
+                .on_input_maybe((!self.sending_comment).then_some(Msg::Comment))
                 .on_submit(Msg::SendComment)
                 .size(UI)
                 .padding(6)
                 .style(theme::input),
-            button(row![ico(Icon::Send, 13), text("Send to agent").size(12)].spacing(5).align_y(Alignment::Center))
-                .padding([5, 10])
-                .style(theme::primary)
-                .on_press_maybe((!self.comment.trim().is_empty()).then_some(Msg::SendComment)),
+            button(
+                row![
+                    if self.sending_comment { self.spinner(13) } else { ico(Icon::Send, 13) },
+                    text(if self.sending_comment { "Sending…" } else { "Send to agent" }).size(12)
+                ]
+                .spacing(5)
+                .align_y(Alignment::Center)
+            )
+            .padding([5, 10])
+            .style(theme::primary)
+            .on_press_maybe((!self.sending_comment && !self.comment.trim().is_empty()).then_some(Msg::SendComment)),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
@@ -2279,8 +2331,20 @@ impl App {
                 .push(text(format!("Ln {}, Col {}", p.line + 1, col + 1)).size(12))
                 .push(text(t.syntax.as_str()).size(12));
         }
-        if self.git_busy || self.search.running {
-            right = right.push(text("working…").size(12).color(p().muted));
+        if self.git_busy || self.manual_refresh || self.replacing {
+            let label = self.busy_op.as_ref().map_or(
+                if self.replacing {
+                    "Replacing…"
+                } else if self.manual_refresh {
+                    "Refreshing changes…"
+                } else {
+                    "Working…"
+                },
+                BusyOp::label,
+            );
+            right = right.push(row![self.spinner(12), text(label).size(12).color(p().muted)].spacing(4));
+        } else if self.search.running {
+            right = right.push(text("Searching…").size(12).color(p().muted));
         }
         let theme_label: Cow<'_, str> = match self.theme {
             theme::Choice::Auto => format!("{} (auto)", p().name).into(),
@@ -2328,7 +2392,12 @@ impl App {
 // ------------------------------------------------------------------ diff rows
 
 /// The rows of a diff, owning their text (for `lazy`), at most [`diff::MAX_FULL_ROWS`].
-fn diff_rows(diff: &diff::FileDiff, anchor: Option<usize>) -> Element<'static, Msg> {
+fn diff_rows(
+    diff: &diff::FileDiff,
+    anchor: Option<usize>,
+    busy: bool,
+    hunk: Option<(HunkOp, u64, usize)>,
+) -> Element<'static, Msg> {
     let note = |s: String| container(text(s).size(12).color(p().warn_text)).padding([4, 12]);
     let mut rows = Column::new().width(Length::Fill);
     if diff.full_capped {
@@ -2351,7 +2420,7 @@ fn diff_rows(diff: &diff::FileDiff, anchor: Option<usize>) -> Element<'static, M
     });
     for (r, item) in shown.iter().enumerate() {
         if let (Some(patch), Some(i)) = (&diff.patch, bars.as_ref().and_then(|b| b[r])) {
-            rows = rows.push(hunk_bar(&patch.hunks[i].header, patch.staged, diff.id, i));
+            rows = rows.push(hunk_bar(&patch.hunks[i].header, patch.staged, diff.id, i, busy, hunk));
         }
         rows = rows.push(match item {
             Item::Gap(n) => Element::from(
@@ -2380,7 +2449,23 @@ fn diff_rows(diff: &diff::FileDiff, anchor: Option<usize>) -> Element<'static, M
 }
 
 /// The bar above one git hunk: its `@@` line and what can be done with it.
-fn hunk_bar(header: &str, staged: bool, diff: u64, i: usize) -> Element<'static, Msg> {
+fn hunk_bar(
+    header: &str,
+    staged: bool,
+    diff: u64,
+    i: usize,
+    busy: bool,
+    hunk: Option<(HunkOp, u64, usize)>,
+) -> Element<'static, Msg> {
+    let action = |icon, label: &'static str, kind| {
+        let msg = Msg::Hunk(kind, diff, i);
+        let working = hunk == Some((kind, diff, i));
+        let icon: Element<'static, Msg> = if working { crate::spinner::view(13) } else { ico(icon, 13).into() };
+        button(row![icon, text(label).size(12)].spacing(5).align_y(Alignment::Center))
+            .padding([2, 8])
+            .style(theme::flat(false))
+            .on_press_maybe((!busy).then_some(msg))
+    };
     let mut bar = row![
         container(
             text(header.to_string()).size(11).font(theme::mono_font()).color(p().muted).wrapping(text::Wrapping::None)
@@ -2391,20 +2476,11 @@ fn hunk_bar(header: &str, staged: bool, diff: u64, i: usize) -> Element<'static,
     .spacing(4)
     .align_y(Alignment::Center);
     if staged {
-        bar = bar.push(tip(
-            icon_label(Icon::Remove, "Unstage", Some(Msg::Hunk(HunkOp::Unstage, diff, i))),
-            "Take this change out of the index",
-        ));
+        bar = bar.push(tip(action(Icon::Remove, "Unstage", HunkOp::Unstage), "Take this change out of the index"));
     } else {
         bar = bar
-            .push(tip(
-                icon_label(Icon::Discard, "Discard", Some(Msg::Hunk(HunkOp::Discard, diff, i))),
-                "Throw away this change (Undo available)",
-            ))
-            .push(tip(
-                icon_label(Icon::Add, "Stage", Some(Msg::Hunk(HunkOp::Stage, diff, i))),
-                "Stage only this change",
-            ));
+            .push(tip(action(Icon::Discard, "Discard", HunkOp::Discard), "Throw away this change (Undo available)"))
+            .push(tip(action(Icon::Add, "Stage", HunkOp::Stage), "Stage only this change"));
     }
     container(bar)
         .padding(Padding { top: 1.0, right: 8.0, bottom: 1.0, left: 12.0 })

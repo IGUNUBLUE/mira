@@ -36,22 +36,83 @@ pub enum GitOutcome {
 }
 
 /// What to do with one hunk of an index diff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HunkOp {
     Stage,
     Unstage,
     Discard,
 }
 
-/// The git action that shows a spinner on its button while it runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The running action, including its target so unrelated buttons stay still.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BusyOp {
     Commit,
     Push,
     Pull,
+    Init,
+    Stage(Vec<String>),
+    Unstage(Vec<String>),
+    Discard(Vec<String>),
+    DiscardAll,
+    Undo,
+    StageRun(crate::runs::RunId),
+    RevertRun(crate::runs::RunId),
+    Hunk(HunkOp, u64, usize),
 }
 
-/// Spinner frames for the generate button.
+impl BusyOp {
+    pub(super) fn from_message(msg: &Msg) -> Option<Self> {
+        Some(match msg {
+            Msg::Commit => Self::Commit,
+            Msg::Push => Self::Push,
+            Msg::Pull => Self::Pull,
+            Msg::GitInit => Self::Init,
+            Msg::Stage(paths) => Self::Stage(paths.clone()),
+            Msg::Unstage(paths) => Self::Unstage(paths.clone()),
+            Msg::Discard(paths) => Self::Discard(paths.clone()),
+            Msg::DiscardAll => Self::DiscardAll,
+            Msg::UndoDiscard => Self::Undo,
+            Msg::StageRun(id) => Self::StageRun(*id),
+            Msg::RevertRun(id) => Self::RevertRun(*id),
+            Msg::Hunk(op, diff, i) => Self::Hunk(*op, *diff, *i),
+            _ => return None,
+        })
+    }
+
+    /// Compare without cloning file lists during view construction.
+    pub fn matches(&self, msg: &Msg) -> bool {
+        match (self, msg) {
+            (Self::Commit, Msg::Commit)
+            | (Self::Push, Msg::Push)
+            | (Self::Pull, Msg::Pull)
+            | (Self::Init, Msg::GitInit)
+            | (Self::DiscardAll, Msg::DiscardAll)
+            | (Self::Undo, Msg::UndoDiscard) => true,
+            (Self::Stage(a), Msg::Stage(b))
+            | (Self::Unstage(a), Msg::Unstage(b))
+            | (Self::Discard(a), Msg::Discard(b)) => a == b,
+            (Self::StageRun(a), Msg::StageRun(b)) | (Self::RevertRun(a), Msg::RevertRun(b)) => a == b,
+            (Self::Hunk(a, d, i), Msg::Hunk(b, e, j)) => a == b && d == e && i == j,
+            _ => false,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Commit => "Committing…",
+            Self::Push => "Pushing…",
+            Self::Pull => "Pulling…",
+            Self::Init => "Initializing repository…",
+            Self::Stage(_) | Self::StageRun(_) | Self::Hunk(HunkOp::Stage, ..) => "Staging…",
+            Self::Unstage(_) | Self::Hunk(HunkOp::Unstage, ..) => "Unstaging…",
+            Self::Discard(_) | Self::DiscardAll | Self::Hunk(HunkOp::Discard, ..) => "Discarding…",
+            Self::Undo => "Restoring…",
+            Self::RevertRun(_) => "Reverting…",
+        }
+    }
+}
+
+/// Shared spinner frames for user actions.
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Not a widget: focusing it takes the keyboard away from the terminal and
@@ -92,9 +153,13 @@ impl App {
                     return Task::none();
                 }
                 self.refreshing = false;
+                let manual = std::mem::take(&mut self.manual_refresh);
                 match result {
                     Ok(mut snap) => {
                         self.git_loaded = true;
+                        if manual {
+                            self.set_status("Changes refreshed", false);
+                        }
                         let mut tasks = Vec::new();
                         // Ignored files weren't listed (Files is hidden): keep the
                         // last list, and leave it out of the comparison.
@@ -132,6 +197,14 @@ impl App {
                         self.set_error_detail(git::error_summary(&e), e);
                     }
                 }
+            }
+            Msg::RefreshChanges => {
+                if self.git_busy || self.manual_refresh {
+                    return Task::none();
+                }
+                self.manual_refresh = true;
+                self.reload_changed_files();
+                return self.refresh_git();
             }
             Msg::OpenDiff(rel, staged) => {
                 self.mark_seen(&rel);
@@ -301,8 +374,7 @@ impl App {
                     return Task::none();
                 }
                 let prefix = self.repo_prefix.clone();
-                return self
-                    .spinning(BusyOp::Commit, |a| a.git_task(move |r| commit_in(r, &message, &prefix, stage_all)));
+                return self.git_task(move |r| commit_in(r, &message, &prefix, stage_all));
             }
             Msg::GitInit => return self.git_op(git::init),
             // The dialog asks first; ✦ does nothing while it is open.
@@ -462,19 +534,16 @@ impl App {
             // Said only once the action really starts (one git action at a time).
             Msg::Push if !self.git_busy => {
                 self.set_status("Pushing…", false);
-                let task = self.spinning(BusyOp::Push, |a| a.git_op(|r| git::push(r).map(|_| "Pushed".into())));
-                return task;
+                return self.git_op(|r| git::push(r).map(|_| "Pushed".into()));
             }
             Msg::Pull if !self.git_busy => {
                 self.set_status("Pulling…", false);
-                return self.spinning(BusyOp::Pull, |a| {
-                    a.git_op(|r| git::pull(r).map(|o| first_line(&o).unwrap_or("Pulled").into()))
-                });
+                return self.git_op(|r| git::pull(r).map(|o| first_line(&o).unwrap_or("Pulled").into()));
             }
             Msg::Push | Msg::Pull => {}
             Msg::GitDone(epoch, result) => {
                 self.git_busy = false;
-                self.busy_op = None;
+                let op = self.busy_op.take();
                 // Started in a folder mira has left: its commit box and status
                 // belong to the old folder, and the new one was refreshed on switch.
                 if epoch != self.root_epoch {
@@ -491,9 +560,12 @@ impl App {
                         self.set_status(summary, false);
                     }
                     Ok(GitOutcome::Info(out)) => {
-                        if let Some(line) = first_line(&out) {
-                            self.set_status(line.to_string(), false);
-                        }
+                        let fallback = match op {
+                            Some(BusyOp::Stage(_) | BusyOp::StageRun(_)) => "Changes staged",
+                            Some(BusyOp::Unstage(_)) => "Changes unstaged",
+                            _ => "Git action completed",
+                        };
+                        self.set_status(first_line(&out).unwrap_or(fallback).to_string(), false);
                     }
                     Ok(GitOutcome::Discarded { tree, paths, done, close_diffs, error }) => {
                         // Their diffs would only say "No changes" now.
@@ -547,19 +619,6 @@ impl App {
     /// Run a git action whose output is just informative (stage, push, …).
     pub(super) fn git_op(&mut self, op: impl FnOnce(&Path) -> Result<String, String> + Send + 'static) -> Task<Msg> {
         self.git_task(move |r| op(r).map(GitOutcome::Info))
-    }
-
-    /// Start a git action with `start` (through `git_task`); its button spins
-    /// until `GitDone`. Nothing starts while another action runs.
-    fn spinning(&mut self, op: BusyOp, start: impl FnOnce(&mut Self) -> Task<Msg>) -> Task<Msg> {
-        if self.git_busy {
-            return Task::none();
-        }
-        let task = start(self);
-        if self.git_busy {
-            self.busy_op = Some(op);
-        }
-        task
     }
 
     /// Run one git action at a time in the repository, off the UI thread.
@@ -715,6 +774,115 @@ fn prefix_in(root: &Path, repo: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercise real update routing with isolated config/state in a child process.
+    /// App::new spawns only /bin/true here, never the user's herdr client.
+    #[test]
+    fn activity_lifecycle_is_scoped_and_repeated_actions_are_blocked() {
+        let Ok(root) = std::env::var("MIRA_ACTIVITY_TEST_ROOT") else {
+            let root = crate::files::test_dir("activity");
+            std::fs::create_dir_all(root.join("config/mira")).unwrap();
+            std::fs::write(root.join("config/mira/config"), "terminal = shell\ntheme = LAGC Tech Dark\n").unwrap();
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "app::scm::tests::activity_lifecycle_is_scoped_and_repeated_actions_are_blocked",
+                    "--nocapture",
+                ])
+                .env("MIRA_ACTIVITY_TEST_ROOT", &root)
+                .env("HOME", &root)
+                .env("XDG_CONFIG_HOME", root.join("config"))
+                .env("XDG_STATE_HOME", root.join("state"))
+                .env("SHELL", "/bin/true")
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(root).unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        };
+        let (mut app, task) = App::new(super::super::Start::Folder(root.into()), true);
+        drop(task);
+        let snapshot = git::Snapshot { root: Some(app.root.clone()), ..Default::default() };
+        // A click during background polling attaches to that refresh. Late generations cannot stop it.
+        let generation = app.git_gen;
+        drop(app.update(Msg::RefreshChanges));
+        drop(app.update(Msg::RefreshChanges));
+        assert!(app.manual_refresh);
+        assert_eq!(app.git_gen, generation);
+        drop(app.update(Msg::GitLoaded(generation - 1, Ok(snapshot.clone()))));
+        assert!(app.manual_refresh);
+        drop(app.update(Msg::GitLoaded(generation, Ok(snapshot.clone()))));
+        assert!(!app.manual_refresh);
+        assert!(!app.refreshing);
+        assert_eq!(app.status.as_ref().map(|s| s.0.as_str()), Some("Changes refreshed"));
+        // Errors stop the spinner too; automatic refreshes never start it.
+        drop(app.refresh_git());
+        assert!(!app.manual_refresh);
+        drop(app.update(Msg::RefreshChanges));
+        drop(app.update(Msg::GitLoaded(app.git_gen, Err("refresh failed".into()))));
+        assert!(!app.manual_refresh);
+        assert!(!app.refreshing);
+
+        let stage = Msg::Stage(vec!["a.txt".into()]);
+        drop(app.update(stage.clone()));
+        assert!(app.git_busy);
+        assert!(app.busy_op.as_ref().unwrap().matches(&stage));
+        assert!(!app.busy_op.as_ref().unwrap().matches(&Msg::Stage(vec!["b.txt".into()])));
+        drop(app.update(Msg::Push));
+        assert!(app.busy_op.as_ref().unwrap().matches(&stage));
+        drop(app.update(Msg::GitDone(app.root_epoch, Err("stage failed".into()))));
+        assert!(!app.git_busy);
+        assert!(app.busy_op.is_none());
+        drop(app.update(stage));
+        drop(app.update(Msg::GitDone(app.root_epoch, Ok(GitOutcome::Info(String::new())))));
+        assert_eq!(app.status.as_ref().map(|s| s.0.as_str()), Some("Changes staged"));
+        // First click only asks. The second click starts the action and animates its section button.
+        app.git.unstaged = vec![git::Change::new("a.txt", 'M')];
+        drop(app.update(Msg::DiscardAll));
+        assert!(app.confirm_discard_all);
+        assert!(!app.git_busy);
+        assert!(app.busy_op.is_none());
+        drop(app.update(Msg::DiscardAll));
+        assert_eq!(app.busy_op, Some(BusyOp::DiscardAll));
+        drop(app.update(Msg::GitDone(app.root_epoch, Ok(GitOutcome::Info("Discarded".into())))));
+        assert!(app.busy_op.is_none());
+        // An obsolete hunk never starts a spinner.
+        drop(app.update(Msg::Hunk(HunkOp::Stage, 123, 0)));
+        assert!(!app.git_busy);
+        assert!(app.busy_op.is_none());
+
+        // Replacement is serialized even when a new query finishes before the disk write.
+        app.replacing = true;
+        app.confirm_replace = true;
+        drop(app.update(Msg::ReplaceAll));
+        assert!(app.confirm_replace, "a repeated click did not start another write");
+        let old_epoch = app.root_epoch;
+        app.root_epoch += 1;
+        app.search.query = "new folder query".into();
+        drop(app.update(Msg::ReplaceDone(old_epoch, false, Ok(2))));
+        assert!(!app.replacing);
+        assert!(!app.search.running, "a previous folder's write did not refresh this folder's search");
+        // A comment delivery from an old folder must not clear the new folder's draft.
+        app.sending_comment = true;
+        app.comment = "new draft".into();
+        drop(app.update(Msg::SentToPane(old_epoch, Ok(()))));
+        assert!(!app.sending_comment);
+        assert_eq!(app.comment, "new draft");
+    }
+
+    #[test]
+    fn hunk_activity_matches_only_its_action_and_diff_generation() {
+        let op = BusyOp::from_message(&Msg::Hunk(HunkOp::Stage, 12, 3)).unwrap();
+        assert!(op.matches(&Msg::Hunk(HunkOp::Stage, 12, 3)));
+        assert!(!op.matches(&Msg::Hunk(HunkOp::Discard, 12, 3)));
+        assert!(!op.matches(&Msg::Hunk(HunkOp::Stage, 13, 3)));
+        assert!(!op.matches(&Msg::Hunk(HunkOp::Stage, 12, 4)));
+    }
 
     #[test]
     fn streamed_deltas_append_at_the_end() {

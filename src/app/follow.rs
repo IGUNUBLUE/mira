@@ -71,9 +71,15 @@ impl App {
                 return Task::batch([task, focus]);
             }
             Msg::AgentFocused(Err(e)) => self.set_status(e.to_string(), true),
-            Msg::SentToPane(result) => {
+            Msg::SentToPane(epoch, result) => {
                 // The comment box empties only once the agent got it.
                 let comment = std::mem::take(&mut self.sending_comment);
+                if epoch != self.root_epoch {
+                    if let Err(e) = result {
+                        self.set_status(format!("Previous folder: {e}"), true);
+                    }
+                    return Task::none();
+                }
                 match result {
                     Ok(()) => {
                         if comment {
@@ -162,6 +168,8 @@ impl App {
         // A refresh of the old folder may still hold the old cache; it's dropped with it.
         self.git_cache = Default::default();
         self.refreshing = false;
+        self.manual_refresh = false;
+        self.busy_op = None;
         // Snapshots queued or in flight for the old folder still land in its saved state.
         self.snapshots_off = false;
         self.selected_run = None;
@@ -243,6 +251,10 @@ impl App {
     /// (herdr's focused pane) as a paste. `comment`: it is the diff's comment
     /// box, emptied only once the text was delivered.
     pub(super) fn send_to_agent(&mut self, text: String, target: Option<RunId>, comment: bool) -> Task<Msg> {
+        if self.sending_comment {
+            self.set_status("Wait for the comment to reach the agent", false);
+            return Task::none();
+        }
         let pane: Option<PaneId> = target
             .and_then(|id| self.runs.get(id))
             .map(|r| r.pane.clone())
@@ -251,12 +263,13 @@ impl App {
         match (pane, self.herdr.clone()) {
             (Some(pane), Some(client)) => {
                 self.sending_comment = comment;
+                let epoch = self.root_epoch;
                 let task = Task::perform(
                     blocking(move || {
                         client.send_text(&pane, &text)?;
                         client.focus_pane(&pane)
                     }),
-                    Msg::SentToPane,
+                    move |result| Msg::SentToPane(epoch, result),
                 );
                 Task::batch([task, focus])
             }

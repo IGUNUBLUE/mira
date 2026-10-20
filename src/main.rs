@@ -22,6 +22,7 @@ mod quickopen;
 mod rightclick;
 mod runs;
 mod search;
+mod spinner;
 mod term;
 mod termio;
 mod textfind;

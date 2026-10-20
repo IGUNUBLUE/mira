@@ -96,7 +96,7 @@ impl App {
             }
             Msg::ReplaceAll => {
                 // Results of an older query would get the new pattern.
-                if self.search.running || self.search.results.is_empty() {
+                if self.replacing || self.search.running || self.search.results.is_empty() {
                     return Task::none();
                 }
                 // Files not open in a tab can't be undone: the first press asks.
@@ -106,16 +106,26 @@ impl App {
                     return Task::none();
                 }
                 self.confirm_replace = false;
+                self.replacing = true;
+                let epoch = self.root_epoch;
                 let capped = self.search.total >= search::MAX_MATCHES;
                 let files: Vec<PathBuf> = self.search.results.iter().map(|f| f.path.clone()).collect();
                 let (query, replacement, opts) =
                     (self.search.query.clone(), self.search.replace.clone(), self.search.opts.clone());
                 return Task::perform(
                     blocking(move || search::replace_all(&files, &query, &replacement, &opts)),
-                    move |r| Msg::ReplaceDone(capped, r),
+                    move |r| Msg::ReplaceDone(epoch, capped, r),
                 );
             }
-            Msg::ReplaceDone(capped, result) => {
+            Msg::ReplaceDone(epoch, capped, result) => {
+                self.replacing = false;
+                if epoch != self.root_epoch {
+                    match result {
+                        Ok(n) => self.set_status(format!("Previous folder: replaced in {n} file(s)"), false),
+                        Err(e) => self.set_status(format!("Previous folder: {e}"), true),
+                    }
+                    return Task::none();
+                }
                 match result {
                     Ok(n) if capped => self.set_status(
                         format!(

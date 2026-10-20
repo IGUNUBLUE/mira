@@ -187,7 +187,9 @@ impl App {
                 }
                 return self.git_op(move |r| git::stage(r, &paths));
             }
-            Msg::Comment(c) => self.comment = c,
+            Msg::Comment(c) if !self.sending_comment => self.comment = c,
+            Msg::Comment(_) => {}
+            Msg::SendComment if self.sending_comment => {}
             Msg::SendComment => {
                 let comment = self.comment.trim().to_string();
                 let Some(d) = self.active_diff() else {
