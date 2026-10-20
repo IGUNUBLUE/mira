@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.4.3]
+
 ### Fixed
 
 - Unpublished branches ask which remote to publish to instead of assuming `origin`. Push/pull
