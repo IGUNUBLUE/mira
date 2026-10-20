@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0]
+
 ### Added
 
 - Click the branch in Changes or the status bar to search local and cached remote branches.
