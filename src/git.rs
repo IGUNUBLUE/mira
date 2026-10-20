@@ -2,6 +2,7 @@
 //! behavior identical to what the user and their agents see in the terminal,
 //! and respects hooks, config, credentials helpers and signing.
 
+pub mod branches;
 pub mod remote;
 
 use std::path::{Path, PathBuf};

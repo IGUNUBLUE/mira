@@ -178,6 +178,7 @@ impl App {
         self.hovered_change = None;
         self.clear_confirms();
         self.remote_dialog = None;
+        self.branch_picker = None;
         self.state_dirty = false;
         self.agents.clear();
         self.commit_msg = Content::new();

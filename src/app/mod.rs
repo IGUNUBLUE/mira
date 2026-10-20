@@ -10,6 +10,7 @@
 //! `documents`, `scm` (git and commit messages), `find` (Search), `navigate`
 //! (find in file, go to line, quick open) and `keys`.
 
+mod branches;
 mod confirm;
 mod documents;
 mod files;
@@ -24,6 +25,7 @@ mod scm;
 mod settings;
 mod terminal;
 
+pub use branches::BranchPicker;
 use confirm::ConfirmAction;
 pub use confirm::Confirmation;
 pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, ImageData, ImageTab, Tab};
@@ -121,6 +123,8 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub confirmation: Option<Confirmation>,
     pub remote_dialog: Option<RemoteDialog>,
+    pub branch_picker: Option<BranchPicker>,
+    branch_seq: u64,
     remote_seq: u64,
     confirm_seq: u64,
     approval: Option<ConfirmAction>,
@@ -364,6 +368,16 @@ pub enum Msg {
     SignInCancel,
     SignInCopyLink,
     SignInEvent(u64, SignInEvent),
+    BranchesOpen,
+    BranchesLoaded(u64, Result<crate::git::branches::Listing, String>),
+    BranchesClose,
+    BranchQuery(u64, String),
+    BranchMove(isize),
+    BranchSubmit(u64),
+    BranchPick(u64, String),
+    UndoLastCommit,
+    UndoCommitPrepared(u64, Result<crate::git::branches::UndoCommit, String>),
+    UndoCommitApply(crate::git::branches::UndoCommit),
     Push,
     Pull,
     RemotePrepared(u64, crate::git::remote::Operation, Result<crate::git::remote::Plan, String>),
@@ -475,6 +489,8 @@ impl App {
             dialog: None,
             confirmation: None,
             remote_dialog: None,
+            branch_picker: None,
+            branch_seq: 0,
             remote_seq: 0,
             confirm_seq: 0,
             approval: None,
@@ -586,6 +602,7 @@ impl App {
         // Autosave timer, only while some tab has unsaved edits.
         if self.confirmation.is_none()
             && self.remote_dialog.is_none()
+            && self.branch_picker.is_none()
             && matches!(self.autosave, AutoSave::AfterDelay(_))
             && self.tabs.iter().any(|t| matches!(t, Tab::File(f) if f.dirty && !f.conflict && !f.write_failed))
         {
@@ -711,6 +728,19 @@ impl App {
         {
             return Task::none();
         }
+        if self.branch_picker.is_some()
+            && !confirm::allowed_during_confirmation(&msg)
+            && !matches!(
+                msg,
+                Msg::BranchesClose
+                    | Msg::BranchQuery(..)
+                    | Msg::BranchMove(_)
+                    | Msg::BranchSubmit(_)
+                    | Msg::BranchPick(..)
+            )
+        {
+            return Task::none();
+        }
         let had_confirmation = self.confirmation.is_some();
         let was_busy = self.git_busy;
         let op = (!was_busy).then(|| BusyOp::from_message(&msg)).flatten();
@@ -766,6 +796,16 @@ impl App {
             m @ (Msg::RemotePrepared(..) | Msg::RemoteDone(..) | Msg::RemoteSelect(..) | Msg::RemoteAction(..)) => {
                 self.update_remote(m)
             }
+            m @ (Msg::BranchesOpen
+            | Msg::BranchesLoaded(..)
+            | Msg::BranchesClose
+            | Msg::BranchQuery(..)
+            | Msg::BranchMove(_)
+            | Msg::BranchSubmit(_)
+            | Msg::BranchPick(..)
+            | Msg::UndoLastCommit
+            | Msg::UndoCommitPrepared(..)
+            | Msg::UndoCommitApply(_)) => self.update_branches(m),
             Msg::Tick => self.on_tick(),
             Msg::Key(event, captured) => self.on_key(event, captured),
             m @ (Msg::Inspector(_)

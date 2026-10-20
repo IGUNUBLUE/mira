@@ -29,6 +29,17 @@ impl App {
             }
             return self.remote_key(key, repeat, modifiers.shift());
         }
+        if self.branch_picker.is_some() {
+            if !modifiers.is_empty() {
+                return Task::none();
+            }
+            return match key {
+                keyboard::Key::Named(Named::Escape) => self.update(Msg::BranchesClose),
+                keyboard::Key::Named(Named::ArrowUp) => self.update(Msg::BranchMove(-1)),
+                keyboard::Key::Named(Named::ArrowDown) => self.update(Msg::BranchMove(1)),
+                _ => Task::none(),
+            };
+        }
         if key == keyboard::Key::Named(Named::Escape) && modifiers.is_empty() {
             // The palette's input takes Escape (it unfocuses and captures it); the
             // terminal can't have it while the palette is open.

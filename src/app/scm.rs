@@ -24,6 +24,11 @@ pub struct CommitGen {
 pub enum GitOutcome {
     /// A commit was made: the commit box clears. Holds git's summary line.
     Committed(String),
+    Switched(String),
+    Undone {
+        message: String,
+        summary: String,
+    },
     /// Output to show in the status bar (may be empty).
     Info(String),
     /// Files were discarded; `tree` is the snapshot taken just before (Undo).
@@ -32,7 +37,13 @@ pub enum GitOutcome {
     /// is the snapshot taken just before (Undo); `done` says what happened
     /// ("Discarded main.rs"); `close_diffs`: the files' unstaged diffs are empty
     /// now. `error`: it stopped partway; the snapshot still undoes what was done.
-    Discarded { tree: String, paths: Vec<String>, done: String, close_diffs: bool, error: Option<String> },
+    Discarded {
+        tree: String,
+        paths: Vec<String>,
+        done: String,
+        close_diffs: bool,
+        error: Option<String>,
+    },
 }
 
 /// What to do with one hunk of an index diff.
@@ -47,6 +58,9 @@ pub enum HunkOp {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BusyOp {
     Commit,
+    Branches,
+    SwitchBranch(String),
+    UndoCommit,
     Push,
     Pull,
     Init,
@@ -63,6 +77,9 @@ pub enum BusyOp {
 impl BusyOp {
     pub(super) fn from_message(msg: &Msg) -> Option<Self> {
         Some(match msg {
+            Msg::BranchesOpen => Self::Branches,
+            Msg::BranchPick(_, branch) => Self::SwitchBranch(branch.clone()),
+            Msg::UndoLastCommit | Msg::UndoCommitApply(_) => Self::UndoCommit,
             Msg::Commit => Self::Commit,
             Msg::Push => Self::Push,
             Msg::Pull => Self::Pull,
@@ -82,6 +99,10 @@ impl BusyOp {
     /// Compare without cloning file lists during view construction.
     pub fn matches(&self, msg: &Msg) -> bool {
         match (self, msg) {
+            (Self::Branches, Msg::BranchesOpen) | (Self::UndoCommit, Msg::UndoLastCommit | Msg::UndoCommitApply(_)) => {
+                true
+            }
+            (Self::SwitchBranch(a), Msg::BranchPick(_, b)) => a == b,
             (Self::Commit, Msg::Commit)
             | (Self::Push, Msg::Push)
             | (Self::Pull, Msg::Pull)
@@ -99,6 +120,9 @@ impl BusyOp {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Branches => "Loading branches…",
+            Self::SwitchBranch(_) => "Switching branch…",
+            Self::UndoCommit => "Undoing last commit…",
             Self::Commit => "Committing…",
             Self::Push => "Pushing…",
             Self::Pull => "Pulling…",
@@ -564,6 +588,23 @@ impl App {
                     return Task::none();
                 }
                 match result {
+                    Ok(GitOutcome::Switched(summary)) => {
+                        for i in (0..self.tabs.len()).rev() {
+                            if matches!(self.tabs[i], Tab::Diff(_)) {
+                                self.close_tab(i);
+                            }
+                        }
+                        self.undo_discard = None;
+                        self.selected_run = None;
+                        self.hovered_change = None;
+                        self.set_status(summary, false);
+                    }
+                    Ok(GitOutcome::Undone { message, summary }) => {
+                        if self.commit_msg.text().trim().is_empty() {
+                            self.set_commit_text(&message);
+                        }
+                        self.set_status(summary, false);
+                    }
                     Ok(GitOutcome::Committed(summary)) => {
                         self.commit_msg = Content::new();
                         self.commit_history = crate::history::History::default();
@@ -665,6 +706,13 @@ impl App {
             op(&repo)
         };
         Task::perform(blocking(run), move |r| Msg::GitDone(epoch, r))
+    }
+
+    pub(super) fn cancel_commit_generation_for_head_change(&mut self) {
+        if let Some(job) = self.commit_gen.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+            self.set_commit_text(&job.previous);
+        }
     }
 
     /// Replace the commit box's text, cursor at the end (where streaming writes).

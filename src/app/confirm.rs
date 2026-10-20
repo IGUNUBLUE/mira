@@ -22,6 +22,7 @@ pub(super) enum ConfirmAction {
     Overwrite(PathBuf, Option<SystemTime>),
     Quit(Vec<PathBuf>),
     SignOut,
+    UndoCommit(crate::git::branches::UndoCommit),
 }
 
 impl ConfirmAction {
@@ -46,6 +47,7 @@ impl ConfirmAction {
             Self::Overwrite(path, _) => Msg::SaveFile(path.clone()),
             Self::Quit(_) => Msg::CloseRequested,
             Self::SignOut => Msg::ChatGptSignOut,
+            Self::UndoCommit(plan) => Msg::UndoCommitApply(plan.clone()),
         })
     }
 }
@@ -93,6 +95,8 @@ pub(super) fn allowed_during_confirmation(msg: &Msg) -> bool {
             | Msg::TrashDone(_)
             | Msg::GitLoaded(..)
             | Msg::GitDone(..)
+            | Msg::BranchesLoaded(..)
+            | Msg::UndoCommitPrepared(..)
             | Msg::RemotePrepared(..)
             | Msg::RemoteDone(..)
             | Msg::CommitGen(..)

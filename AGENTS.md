@@ -94,6 +94,11 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - ChatGPT sign-in is a modal (`App::signin`, `SignInStage::Ask` → `Waiting`, app/scm.rs; drawn with `stack` +
   `opaque` in `view`): ✦ checks `commitgen::needs_sign_in()` and asks before `openai::login` opens the browser;
   focusing `DIALOG_FOCUS` (no such widget) takes the keyboard from the terminal so Escape cancels it.
+- `src/git/branches.rs` / `src/app/branches.rs` — cached local/remote branch picker and scoped
+  Undo Last Commit. Switch uses Git without force or automatic stash; block unsaved editor tabs,
+  ignored-file overwrites and other worktrees. Undo requires `confirm.rs`, preserves index/files
+  (`reset --soft`), refuses known shared commits and rechecks HEAD/branch before acting. Cancel
+  in-flight commit generation before either operation changes HEAD; clear stale diff tabs on switch.
 - `src/git/remote.rs` — local push/pull preparation, explicit publication, guarded retries and
   failure advice. `src/app/remote.rs` owns persistent Git error/publication dialogs. Remote writes
   never retry automatically; IPv4 retry uses Git's option. Default OpenSSH uses bounded connection

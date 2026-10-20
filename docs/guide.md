@@ -141,6 +141,19 @@ Actions show a small spinner at the button while they run and report their resul
 bar. Manual refresh animates too; automatic refresh stays quiet. Stage, unstage, discard and
 hunk actions cannot be clicked again until the current git action finishes.
 
+- **Switch branches.** Click the branch name in Changes or the status bar. Search local branches
+  and cached remote branches with the input; use Up/Down and Enter, or click a row. Remote branches
+  create a local tracking branch, and never replace an existing local branch of that name. The
+  list does not fetch. Save unsaved editor tabs first. Git preserves working changes where safe;
+  if they conflict, commit or stash in a shell. Ignored files and branches in another worktree
+  are protected. A branch or commit changed after opening the selector requires a fresh choice.
+- **Undo Last Commit.** The History header has an explicit action and confirmation. It moves the
+  local branch to the first parent with `git reset --soft`: files and the index stay intact, so
+  the commit's changes remain staged alongside existing staged work. The removed message fills
+  an empty commit input; a draft is preserved. Git's `ORIG_HEAD` and reflog retain the old commit.
+  Undo refuses a detached HEAD, the first commit, an in-progress Git operation, or a commit already
+  contained in known remote refs. For shared history, use `git revert` in a shell. Remote refs may
+  be stale: no network check is made, so do not use Undo for a commit you already shared.
 - **Publishing a branch.** Push opens **Publish branch** when the local branch has no tracking
   branch. Choose the remote and explicitly publish; mira sets tracking only after success.
   Existing tracked branches use Git's configured push destination. Pull requires a tracking

@@ -104,7 +104,12 @@ impl App {
             }
             Msg::WindowFocus(f) => {
                 self.window_focused = f;
-                if !f && self.confirmation.is_none() && self.remote_dialog.is_none() && self.autosave != AutoSave::Off {
+                if !f
+                    && self.confirmation.is_none()
+                    && self.remote_dialog.is_none()
+                    && self.branch_picker.is_none()
+                    && self.autosave != AutoSave::Off
+                {
                     self.save_dirty_tabs();
                 }
                 // herdr enables focus reporting (mode 1004) and redraws on focus.
