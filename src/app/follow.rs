@@ -177,6 +177,7 @@ impl App {
         self.undo_discard = None;
         self.hovered_change = None;
         self.clear_confirms();
+        self.remote_dialog = None;
         self.state_dirty = false;
         self.agents.clear();
         self.commit_msg = Content::new();

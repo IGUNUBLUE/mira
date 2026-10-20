@@ -87,7 +87,6 @@ impl App {
             }
             Msg::SelectRun(id) => {
                 self.selected_run = if self.selected_run == Some(id) { None } else { Some(id) };
-                self.confirm_revert = None;
             }
             Msg::MarkAllSeen => {
                 self.runs.mark_all_seen();
@@ -144,23 +143,18 @@ impl App {
                 }
             }
             Msg::RevertRun(id) => {
-                if self.confirm_revert != Some(id) {
-                    self.confirm_revert = Some(id);
-                    self.set_confirm(
-                        "Click Revert again to restore these files (later edits to them are lost) · Esc cancels",
-                    );
-                    return Task::none();
-                }
-                // A push can take a while: keep the confirmation and say why nothing happens.
                 if self.git_busy {
-                    self.set_status("Wait for the running git action to finish, then click Revert again", true);
                     return Task::none();
                 }
-                self.confirm_revert = None;
                 let Some(run) = self.runs.get(id) else { return Task::none() };
                 let (Some((from, _)), Some(files)) = (run.trees(), run.files.as_ref()) else { return Task::none() };
                 let from = from.to_string();
                 let paths: Vec<String> = files.iter().map(|c| c.path.clone()).collect();
+                if !self.confirm_action(super::ConfirmAction::RevertRun(id, paths.clone(), from.clone()), "Revert this agent run?",
+                    "These files will be restored to their contents before the run. All later edits to them, including changes by you or other agents, will be replaced. A snapshot of the current files is kept for Undo.",
+                    paths.clone(), "Revert run") {
+                    return Task::none();
+                }
                 for p in &paths {
                     self.mark_seen(p);
                 }

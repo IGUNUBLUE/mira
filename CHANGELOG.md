@@ -6,6 +6,19 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Unpublished branches ask which remote to publish to instead of assuming `origin`. Push/pull
+  failures show persistent context, Git output and recovery actions, including an explicit IPv4
+  retry for connection errors. Default OpenSSH connections use bounded address attempts and
+  batch mode; custom transports are preserved. Delayed publication and retry reject changed
+  branches, commits, folders or remote routing. Successful publication names its destination.
+- Changes and History reserve space for their scrollbars so they do not cover row text or actions.
+- Discarding files or hunks now requires an explicit confirmation, as do Discard all, reverting
+  an agent run, restoring discarded files, moving files/folders to the trash, Replace all,
+  signing out, and losing unsaved edits on close or overwrite. Dialogs explain the scope and
+  recovery limits, start on Cancel, and reject stale or reused approvals.
+
 ## [0.4.2]
 
 ### Changed
