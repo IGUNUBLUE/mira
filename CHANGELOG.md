@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.2]
+
 ### Fixed
 
 - History branch and tag badges use larger semibold text with more padding. Refs appear
