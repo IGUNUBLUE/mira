@@ -248,14 +248,20 @@ fn row_actions<'a>(show: bool, build: impl FnOnce() -> Vec<Element<'a, Msg>>) ->
 }
 
 fn badge<'a>(label: impl text::IntoFragment<'a>, color: Color) -> Element<'a, Msg> {
-    container(text(label).size(10).color(p().bg).wrapping(text::Wrapping::None))
-        .padding([0, 5])
-        .style(move |_| container::Style {
-            background: Some(color.into()),
-            border: iced::Border::default().rounded(8),
-            ..Default::default()
-        })
-        .into()
+    container(
+        text(label)
+            .size(SMALL)
+            .font(Font { weight: iced::font::Weight::Semibold, ..theme::ui_font() })
+            .color(p().on_accent)
+            .wrapping(text::Wrapping::WordOrGlyph),
+    )
+    .padding([2, 6])
+    .style(move |_| container::Style {
+        background: Some(color.into()),
+        border: iced::Border::default().rounded(4),
+        ..Default::default()
+    })
+    .into()
 }
 
 fn split_path(p: &str) -> (&str, &str) {
@@ -1399,17 +1405,19 @@ impl App {
 
         let mut history = Column::new().spacing(1);
         for (i, c) in self.git.log.iter().enumerate() {
-            let mut r = row![
+            let r = row![
                 text(if i == 0 { "○" } else { "●" }).size(SMALL).color(p().accent),
                 text(c.subject.as_str()).size(UI).wrapping(text::Wrapping::None),
             ]
             .spacing(6)
             .align_y(Alignment::Center);
+            // Refs get the panel's full width instead of the subject's leftover space.
+            let mut entry = column![r].spacing(3).width(Length::Fill);
             if !c.refs.is_empty() {
-                r = r.push(badge(c.refs.as_str(), p().accent));
+                entry = entry.push(container(badge(c.refs.as_str(), p().accent)).padding(Padding::ZERO.left(16)));
             }
             history = history.push(tooltip(
-                container(r).padding([2, 10]).width(Length::Fill).clip(true),
+                container(entry).padding([3, 10]).width(Length::Fill).clip(true),
                 container(
                     column![text(c.subject.as_str()).size(12), text(c.detail.as_str()).size(12).color(p().muted),]
                         .spacing(2),
@@ -2766,6 +2774,30 @@ fn diff_side(side: &diff::Side) -> Element<'static, Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_branch_badges_wrap_inside_narrow_panels() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+        use iced::{Pixels, Size};
+        use std::future::Future as _;
+
+        let mut new =
+            std::pin::pin!(<iced::Renderer as Headless>::new(theme::ui_font(), Pixels(14.0), Some("tiny-skia")));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Some(renderer)) = new.as_mut().poll(&mut cx) else { panic!("headless renderer") };
+        for width in [140.0, 220.0, 320.0] {
+            let mut element =
+                badge("origin/feature/FRED-296-FRED-298-locations-frontend, feature/Freddys-Demo", p().accent);
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(width, 500.0)),
+            );
+            assert!(node.size().width <= width, "badge stays inside a {width}px panel");
+            assert!(node.size().height > 28.0, "full branch names wrap instead of clipping at {width}px");
+        }
+    }
 
     #[test]
     fn activity_frames_keep_toolbar_buttons_in_place() {

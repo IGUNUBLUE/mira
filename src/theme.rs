@@ -9,7 +9,7 @@ use iced::widget::{button, container, text_input};
 use iced::{Background, Border, Color, Font, Theme, color};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::SystemTime;
 
 pub struct Palette {
@@ -273,7 +273,8 @@ fn staterc_theme(path: &Path) -> Option<String> {
 /// UI font. Medium weight: the regular cut renders too thin on light themes.
 /// Override the family with `MIRA_FONT`.
 pub fn ui_font() -> Font {
-    font_from_env("MIRA_FONT", "Inter")
+    static FONT: LazyLock<Font> = LazyLock::new(|| font_from_env("MIRA_FONT", "Inter"));
+    *FONT
 }
 
 /// Code and terminal font. Override with `MIRA_MONO_FONT`.

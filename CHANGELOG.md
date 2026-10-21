@@ -6,6 +6,11 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- History branch and tag badges use larger semibold text with more padding. Refs appear
+  below the commit subject and wrap within the panel so long names remain readable.
+
 ## [0.5.1]
 
 ### Fixed
