@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0]
+
 ### Added
 
 - Automatically outline matching brackets and connect the active block with a colored
