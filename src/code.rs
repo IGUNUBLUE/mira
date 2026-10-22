@@ -6,6 +6,10 @@ use iced::widget::text_editor::Position;
 use iced::{Color, Font};
 use std::ops::Range;
 use std::sync::LazyLock;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use two_face::re_exports::syntect::{highlighting, parsing};
 
 static SYNTAXES: LazyLock<parsing::SyntaxSet> = LazyLock::new(two_face::syntax::extra_no_newlines);
@@ -24,6 +28,161 @@ static EMBEDDED: LazyLock<Vec<parsing::Scope>> = LazyLock::new(|| {
 const CHECKPOINT_LINES: usize = 50;
 const MAX_CHECKPOINTS: usize = 256;
 const MAX_DEPTH: usize = 1024;
+const MAX_BRACKETS: usize = 100_000;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Pair {
+    pub open: Position,
+    pub close: Option<Position>,
+    pub depth: usize,
+    parent: Option<usize>,
+}
+
+#[derive(Debug)]
+struct Token {
+    position: Position,
+    pair: usize,
+    opening: bool,
+}
+
+/// A bounded, immutable index built off the UI thread. Cursor queries are logarithmic.
+#[derive(Debug, Default)]
+pub struct Index {
+    pairs: Vec<Pair>,
+    tokens: Vec<Token>,
+    pub indent: usize,
+}
+
+fn key(p: Position) -> (usize, usize) {
+    (p.line, p.column)
+}
+
+impl Index {
+    pub fn parse(text: &str, token: &str, cancel: &AtomicBool) -> Result<Option<Arc<Self>>, String> {
+        let mut parser = Parser::new(token);
+        let mut index = Self { indent: 4, ..Self::default() };
+        let mut stack: Vec<(u8, usize)> = Vec::new();
+        let mut exceeded = false;
+        let mut min_indent = 8;
+        for (line_no, line) in text.lines().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            let spaces = line.bytes().take_while(|&b| b == b' ').count();
+            if !line.trim().is_empty() && (2..=8).contains(&spaces) {
+                min_indent = min_indent.min(spaces);
+            }
+            parser.line(line, |range, scopes| {
+                if !is_code(scopes) || exceeded {
+                    return;
+                }
+                for column in range {
+                    let byte = line.as_bytes()[column];
+                    let position = Position { line: line_no, column };
+                    match byte {
+                        b'(' | b'[' | b'{' => {
+                            if stack.len() >= MAX_DEPTH || index.tokens.len() >= MAX_BRACKETS {
+                                exceeded = true;
+                                return;
+                            }
+                            let pair = index.pairs.len();
+                            index.pairs.push(Pair {
+                                open: position,
+                                close: None,
+                                depth: stack.len(),
+                                parent: stack.last().map(|&(_, id)| id),
+                            });
+                            stack.push((byte, pair));
+                            index.tokens.push(Token { position, pair, opening: true });
+                        }
+                        b')' | b']' | b'}' => {
+                            let Some(&(open, pair)) = stack.last() else { continue };
+                            if closing(open) != byte {
+                                continue;
+                            }
+                            if index.tokens.len() >= MAX_BRACKETS {
+                                exceeded = true;
+                                return;
+                            }
+                            stack.pop();
+                            index.pairs[pair].close = Some(position);
+                            index.tokens.push(Token { position, pair, opening: false });
+                        }
+                        _ => {}
+                    }
+                }
+            })?;
+            if exceeded {
+                return Err("Code guides exceed the 100000-bracket or 1024-level limit".into());
+            }
+        }
+        index.indent = if min_indent <= 3 { 2 } else { 4 };
+        Ok(Some(Arc::new(index)))
+    }
+
+    /// Adjacent brackets take precedence; inside a block, use its innermost pair.
+    pub fn active(&self, cursor: iced::widget::text_editor::Cursor) -> Option<Pair> {
+        let position = cursor
+            .selection
+            .filter(|s| s.line == cursor.position.line && s.column.abs_diff(cursor.position.column) == 1)
+            .map_or(cursor.position, |s| if s.column < cursor.position.column { s } else { cursor.position });
+        let at = self.tokens.partition_point(|t| key(t.position) < key(position));
+        let adjacent = self.tokens.get(at).filter(|t| t.position == position).or_else(|| {
+            at.checked_sub(1)
+                .and_then(|i| self.tokens.get(i))
+                .filter(|t| t.position.line == position.line && t.position.column + 1 == position.column)
+        });
+        let mut pair = if let Some(token) = adjacent {
+            Some(token.pair)
+        } else {
+            let previous = at.checked_sub(1).and_then(|i| self.tokens.get(i))?;
+            if previous.opening { Some(previous.pair) } else { self.pairs[previous.pair].parent }
+        };
+        while let Some(id) = pair {
+            let p = self.pairs[id];
+            if p.close.is_some() {
+                return Some(p);
+            }
+            pair = p.parent;
+        }
+        None
+    }
+}
+
+#[derive(Default)]
+pub struct Structure {
+    pub index: Option<Arc<Index>>,
+    pub indent: Option<usize>,
+    request: Option<Arc<AtomicBool>>,
+}
+
+impl Structure {
+    pub fn request(&mut self) -> Option<Arc<AtomicBool>> {
+        if self.index.is_some() || self.request.is_some() {
+            return None;
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.request = Some(Arc::clone(&cancel));
+        Some(cancel)
+    }
+
+    pub fn cancel(&mut self) {
+        if let Some(cancel) = self.request.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    pub fn invalidate(&mut self) {
+        self.cancel();
+        self.index = None;
+    }
+}
+
+impl Drop for Structure {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
 
 fn syntax(token: &str) -> &'static parsing::SyntaxReference {
     SYNTAXES.find_syntax_by_token(token).unwrap_or_else(|| SYNTAXES.find_syntax_plain_text())
@@ -303,6 +462,21 @@ pub fn matching(text: &str, token: &str, cursor: Position) -> Result<Option<Posi
 mod tests {
     use super::*;
     use iced::advanced::text::Highlighter as _;
+
+    #[test]
+    fn structural_index_tracks_adjacent_and_enclosing_pairs_without_literal_brackets() {
+        use iced::widget::text_editor::Cursor;
+        let source = "fn f() {\n  call([1, 2]); // }\n  let s = \"}\";\n}";
+        let index = Index::parse(source, "rs", &AtomicBool::new(false)).unwrap().unwrap();
+        let at = |line, column| index.active(Cursor { position: Position { line, column }, selection: None }).unwrap();
+        assert_eq!(at(0, 8).close, Some(Position { line: 3, column: 0 }));
+        assert_eq!(at(3, 1).open, Position { line: 0, column: 7 });
+        assert_eq!(at(1, 8).open, Position { line: 1, column: 7 });
+        assert_eq!(at(1, 8).close, Some(Position { line: 1, column: 12 }));
+        assert_eq!(at(2, 8).open, Position { line: 0, column: 7 });
+        assert_eq!(index.indent, 2);
+        assert!(Index::parse(source, "rs", &AtomicBool::new(true)).unwrap().is_none());
+    }
 
     fn settings(token: &str) -> Settings {
         let p = &crate::theme::PALETTES[0];

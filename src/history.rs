@@ -7,6 +7,7 @@
 //! and the stacks are capped, so long sessions on big files stay cheap. The
 //! text is read once per step, never per keystroke.
 
+use iced::advanced::text::Renderer;
 use iced::widget::text_editor::{Action, Content, Cursor, Edit, Position};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -63,7 +64,7 @@ pub struct History {
 
 impl History {
     /// Apply an editor action, recording it when it edits.
-    pub fn perform(&mut self, content: &mut Content, action: Action) {
+    pub fn perform<R: Renderer>(&mut self, content: &mut Content<R>, action: Action) {
         if !action.is_edit() {
             // A scroll keeps the group; anything that moves the cursor ends it.
             if !matches!(action, Action::Scroll { .. }) {
@@ -106,7 +107,7 @@ impl History {
     }
 
     /// Close the open group, if any.
-    pub fn flush(&mut self, content: &Content) {
+    pub fn flush<R: Renderer>(&mut self, content: &Content<R>) {
         if let Some(p) = self.pending.take() {
             self.push(&p.before, &content.text(), p.cursor, content.cursor());
         }
@@ -150,7 +151,7 @@ impl History {
     }
 
     /// Undo one step. `false` when there is nothing to undo.
-    pub fn undo(&mut self, content: &mut Content) -> bool {
+    pub fn undo<R: Renderer>(&mut self, content: &mut Content<R>) -> bool {
         self.flush(content);
         let Some(step) = self.undo.pop_back() else { return false };
         self.bytes -= step.bytes();
@@ -160,7 +161,7 @@ impl History {
         true
     }
 
-    pub fn redo(&mut self, content: &mut Content) -> bool {
+    pub fn redo<R: Renderer>(&mut self, content: &mut Content<R>) -> bool {
         self.flush(content);
         let Some(step) = self.redo.pop() else { return false };
         replace(content, step.start, &step.old, &step.new);
@@ -175,7 +176,7 @@ impl History {
     }
 
     /// The current text matches the file on disk.
-    pub fn mark_saved(&mut self, content: &Content) {
+    pub fn mark_saved<R: Renderer>(&mut self, content: &Content<R>) {
         self.flush(content);
         self.saved = self.state();
     }
@@ -188,7 +189,7 @@ impl History {
 
 /// A deletion with nothing to delete: Backspace at the start or Delete at the
 /// end of the text, with no selection.
-fn is_noop(content: &Content, action: &Action) -> bool {
+fn is_noop<R: Renderer>(content: &Content<R>, action: &Action) -> bool {
     let cursor = content.cursor();
     if cursor.selection.is_some_and(|s| s != cursor.position) {
         return false;
@@ -248,7 +249,7 @@ fn position(text: &str, offset: usize) -> Position {
 
 /// Replace `old` (which is at byte `start`) with `new`, through the editor so
 /// its scroll and highlighting survive.
-fn replace(content: &mut Content, start: usize, old: &str, new: &str) {
+fn replace<R: Renderer>(content: &mut Content<R>, start: usize, old: &str, new: &str) {
     let text = content.text();
     let start = floor_boundary(&text, start);
     let end = floor_boundary(&text, start + old.len());
@@ -260,6 +261,7 @@ fn replace(content: &mut Content, start: usize, old: &str, new: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type Content = iced::widget::text_editor::Content<iced::Renderer>;
     use iced::widget::text_editor::Motion;
 
     fn typed(h: &mut History, c: &mut Content, s: &str) {

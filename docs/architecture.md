@@ -51,6 +51,8 @@ the state, `view` draws it.
 | `src/git.rs` | git CLI wrapper, snapshots, tree diffs |
 | `src/diff.rs` | Side-by-side diff model (`similar`) |
 | `src/history.rs` | Undo/redo for the editor |
+| `src/code.rs` | Grammar-based bracket colors and cancellable structural index |
+| `src/codeview.rs` | Public-API editor/renderer adapters for pair highlights, guides and horizontal scroll |
 | `src/search.rs` | Search & replace (`ignore` + `regex`) |
 | `src/explorer.rs` | File tree |
 | `src/commitgen.rs`, `src/openai.rs` | Commit messages: prompt, providers, streaming over `curl` |

@@ -144,9 +144,9 @@ impl App {
     }
 
     /// Show another folder: git, explorer, search and agent turns follow it.
-    /// File tabs stay open (they are absolute paths); diff tabs belong to the
-    /// old repository and close.
-    fn switch_root(&mut self, root: PathBuf) -> Task<Msg> {
+    /// File/image tabs are parked per workspace and restored on return; diff
+    /// tabs belong to the old repository and close. Unsaved edits remain owned.
+    pub(super) fn switch_root(&mut self, root: PathBuf) -> Task<Msg> {
         if self.autosave != AutoSave::Off {
             self.save_dirty_tabs();
         }
@@ -155,6 +155,11 @@ impl App {
             job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.root_epoch += 1;
+        let documents = super::documents::WorkspaceTabs::park(&mut self.tabs, &mut self.active_tab);
+        self.parked_documents.insert(self.root.clone(), documents);
+        let documents = self.parked_documents.remove(&root).unwrap_or_default();
+        self.tabs = documents.tabs;
+        self.active_tab = documents.active;
         let _ = persist::set_last_root(&root);
         // Known again once this folder's first snapshot lands.
         self.repo_prefix = String::new();
@@ -193,9 +198,6 @@ impl App {
         self.explorer_menu = None;
         self.name_edit = None;
         self.explorer_target = None;
-        let keep: Vec<bool> = self.tabs.iter().map(|t| t.file_path().is_some()).collect();
-        self.active_tab = super::documents::active_after_retain(self.active_tab, &keep);
-        self.tabs.retain(|t| t.file_path().is_some());
         for tab in &mut self.tabs {
             match tab {
                 Tab::File(t) => t.crumbs = super::documents::crumbs(&self.root, &t.path),

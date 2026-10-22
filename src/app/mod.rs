@@ -116,6 +116,7 @@ pub struct App {
 
     // documents
     pub tabs: Vec<Tab>,
+    parked_documents: std::collections::BTreeMap<PathBuf, documents::WorkspaceTabs>,
     /// Height of the file editor's text area, once laid out (for the line numbers).
     pub editor_view: Option<f32>,
     pub active_tab: Option<usize>,
@@ -422,6 +423,8 @@ pub enum Msg {
     FindSubmit,
     FindClose,
     MatchBracket,
+    CodeAnalyze(std::sync::Arc<()>, std::sync::Arc<std::sync::atomic::AtomicBool>),
+    CodeAnalyzed(std::sync::Arc<()>, Result<Option<std::sync::Arc<crate::code::Index>>, String>),
     BracketLoaded(std::sync::Arc<()>, text_editor::Cursor, Result<Option<text_editor::Position>, String>),
     /// Open the palette: quick open, or go to line (`true`, prefilled with `:`).
     PaletteOpen(bool),
@@ -548,6 +551,7 @@ impl App {
             sending_comment: false,
             state_dirty: false,
             tabs: Vec::new(),
+            parked_documents: Default::default(),
             editor_view: None,
             active_tab: None,
             git: Snapshot::default(),
@@ -754,6 +758,7 @@ impl App {
         let was_busy = self.git_busy;
         let op = (!was_busy).then(|| BusyOp::from_message(&msg)).flatten();
         let task = self.dispatch(msg);
+        let task = Task::batch([task, self.queue_code_analysis()]);
         if !was_busy
             && self.git_busy
             && let Some(op) = op
@@ -776,8 +781,7 @@ impl App {
                 }
                 // Ask before losing anything autosave could not write.
                 let unsaved: Vec<String> = self
-                    .tabs
-                    .iter()
+                    .all_document_tabs()
                     .filter_map(|t| match t {
                         Tab::File(f) if f.dirty => Some(file_name(&f.path)),
                         _ => None,
@@ -785,8 +789,7 @@ impl App {
                     .collect();
                 if !unsaved.is_empty() {
                     let paths = self
-                        .tabs
-                        .iter()
+                        .all_document_tabs()
                         .filter_map(|t| match t {
                             Tab::File(f) if f.dirty => Some(f.path.clone()),
                             _ => None,
@@ -941,6 +944,8 @@ impl App {
             | Msg::FindSubmit
             | Msg::FindClose
             | Msg::MatchBracket
+            | Msg::CodeAnalyze(..)
+            | Msg::CodeAnalyzed(..)
             | Msg::BracketLoaded(..)
             | Msg::PaletteOpen(_)
             | Msg::PaletteFrom(_)

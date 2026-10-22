@@ -6,6 +6,18 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Automatically outline matching brackets and connect the active block with a colored
+  guide. Indentation guides follow the editor's shaped text, including tabs and scrolling.
+
+### Fixed
+
+- File/image tabs now belong to their workspace and restore on return, including cursor
+  positions and unsaved edits. Autosave and quit confirmation cover parked workspace tabs.
+- Apply horizontal scrolling consistently to editor text, caret/selection, mouse hit testing
+  and input-method positioning through a public-API adapter.
+
 ## [0.7.0]
 
 ### Added

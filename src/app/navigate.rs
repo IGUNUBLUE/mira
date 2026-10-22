@@ -161,6 +161,17 @@ impl FileTab {
 }
 
 impl App {
+    /// Debounce structural parsing; typing and cursor motion never parse a file in the UI thread.
+    pub(super) fn queue_code_analysis(&mut self) -> Task<Msg> {
+        let Some(tab) = self.active_file_mut() else { return Task::none() };
+        let Some(cancel) = tab.structure.request() else { return Task::none() };
+        let revision = std::sync::Arc::clone(&tab.bracket_revision);
+        self.for_root(Task::perform(
+            async { tokio::time::sleep(std::time::Duration::from_millis(120)).await },
+            move |_| Msg::CodeAnalyze(revision, cancel),
+        ))
+    }
+
     /// The active tab, if it is a file.
     pub fn active_file(&self) -> Option<&FileTab> {
         match self.active_tab.and_then(|i| self.tabs.get(i)) {
@@ -178,6 +189,39 @@ impl App {
         let view = self.editor_view;
         match msg {
             Msg::Modifiers(m) => self.modifiers = m,
+            Msg::CodeAnalyze(revision, cancel) => {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Task::none();
+                }
+                let Some(tab) = self.tabs.iter().find_map(|tab| match tab {
+                    Tab::File(tab) if std::sync::Arc::ptr_eq(&revision, &tab.bracket_revision) => Some(tab),
+                    _ => None,
+                }) else {
+                    return Task::none();
+                };
+                let text = tab.content.text();
+                let syntax = tab.syntax.clone();
+                return self.for_root(Task::perform(
+                    blocking(move || crate::code::Index::parse(&text, &syntax, &cancel)),
+                    move |result| Msg::CodeAnalyzed(revision, result),
+                ));
+            }
+            Msg::CodeAnalyzed(revision, result) => {
+                let Some(tab) = self.tabs.iter_mut().find_map(|tab| match tab {
+                    Tab::File(tab) if std::sync::Arc::ptr_eq(&revision, &tab.bracket_revision) => Some(tab),
+                    _ => None,
+                }) else {
+                    return Task::none();
+                };
+                match result {
+                    Ok(Some(index)) => {
+                        tab.structure.indent = Some(index.indent);
+                        tab.structure.index = Some(index);
+                    }
+                    Ok(None) => {}
+                    Err(error) => self.set_status(format!("Code guides: {error}"), true),
+                }
+            }
             Msg::MatchBracket => {
                 let Some(t) = self.active_file() else { return Task::none() };
                 let text = t.content.text();

@@ -94,6 +94,8 @@ pub(super) fn allowed_during_confirmation(msg: &Msg) -> bool {
             | Msg::HerdrVersion(_)
             | Msg::TrashDone(_)
             | Msg::GitLoaded(..)
+            | Msg::CodeAnalyze(..)
+            | Msg::CodeAnalyzed(..)
             | Msg::GitDone(..)
             | Msg::BranchesLoaded(..)
             | Msg::UndoCommitPrepared(..)
@@ -212,6 +214,61 @@ mod tests {
     use crate::git::{Change, Snapshot};
     use iced::keyboard::{Key, key::Named};
     use std::sync::Arc;
+
+    #[test]
+    fn workspace_tabs_restore_their_own_files_cursor_and_unsaved_edits() {
+        let Some((mut app, root)) = fixture("workspace_tabs_restore_their_own_files_cursor_and_unsaved_edits") else {
+            return;
+        };
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("b.txt"), "other workspace\n").unwrap();
+        drop(app.update(Msg::OpenFile(root.join("a.txt"), None)));
+        drop(
+            app.update(Msg::Edit(iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Insert(
+                'x',
+            )))),
+        );
+        let before = app.active_file().unwrap().content.cursor();
+        drop(app.switch_root(other.clone()));
+        assert!(app.tabs.is_empty(), "old workspace files must not remain visible");
+        drop(app.update(Msg::OpenFile(other.join("b.txt"), None)));
+        assert_eq!(app.tabs.len(), 1);
+        drop(app.switch_root(root.clone()));
+        assert_eq!(app.tabs.len(), 1);
+        let file = app.active_file().unwrap();
+        assert_eq!(file.path, root.join("a.txt"));
+        assert_eq!(file.content.cursor(), before);
+        assert!(file.dirty);
+        assert!(file.content.text().starts_with('x'));
+        drop(app.switch_root(other));
+        assert_eq!(app.active_file().unwrap().path.file_name().unwrap(), "b.txt");
+        drop(app.update(Msg::CloseRequested));
+        assert!(
+            matches!(app.confirmation.as_ref().map(|c| &c.action), Some(ConfirmAction::Quit(paths)) if paths == &vec![root.join("a.txt")])
+        );
+    }
+
+    #[test]
+    fn autosave_on_quit_includes_files_parked_in_other_workspaces() {
+        let Some((mut app, root)) = fixture("autosave_on_quit_includes_files_parked_in_other_workspaces") else {
+            return;
+        };
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        drop(app.update(Msg::OpenFile(root.join("a.txt"), None)));
+        drop(
+            app.update(Msg::Edit(iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Insert(
+                'x',
+            )))),
+        );
+        drop(app.switch_root(other));
+        app.autosave = super::super::AutoSave::OnWindowChange;
+        drop(app.update(Msg::CloseRequested));
+        assert!(app.confirmation.is_none());
+        assert!(std::fs::read_to_string(root.join("a.txt")).unwrap().starts_with('x'));
+        assert!(app.all_document_tabs().all(|t| !matches!(t, Tab::File(f) if f.dirty)));
+    }
 
     /// App::new reads/writes configuration and spawns a terminal. Isolate every test in
     /// its own process and home, with /bin/true as the shell, to leave live sessions alone.

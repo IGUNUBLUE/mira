@@ -7,8 +7,9 @@ use crate::imagefile;
 use crate::persist;
 use crate::runs::RunId;
 
+use crate::codeview::Content;
 use iced::Task;
-use iced::widget::text_editor::{self, Content};
+use iced::widget::text_editor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -58,6 +59,7 @@ pub struct FileTab {
     pub syntax: String,
     /// Identity of these contents; stale asynchronous bracket requests cannot move a newer editor.
     pub bracket_revision: Arc<()>,
+    pub structure: Box<crate::code::Structure>,
     pub history: crate::history::History,
     /// Last edit, for autosave after a delay.
     edited_at: Option<Instant>,
@@ -176,6 +178,27 @@ pub enum Tab {
     Image(ImageTab),
 }
 
+#[derive(Default)]
+pub(super) struct WorkspaceTabs {
+    pub tabs: Vec<Tab>,
+    pub active: Option<usize>,
+}
+
+impl WorkspaceTabs {
+    pub fn park(tabs: &mut Vec<Tab>, active: &mut Option<usize>) -> Self {
+        let keep: Vec<bool> = tabs.iter().map(|t| t.file_path().is_some()).collect();
+        let saved_active = active_after_retain(*active, &keep);
+        tabs.retain(|t| t.file_path().is_some());
+        for tab in tabs.iter_mut() {
+            if let Tab::File(file) = tab {
+                file.structure.cancel();
+            }
+        }
+        *active = None;
+        Self { tabs: std::mem::take(tabs), active: saved_active }
+    }
+}
+
 impl Tab {
     /// The file a file or image tab shows.
     pub fn file_path(&self) -> Option<&Path> {
@@ -274,6 +297,7 @@ impl App {
                     }
                     if edit {
                         t.bracket_revision = Arc::new(());
+                        t.structure.invalidate();
                         t.dirty = true;
                         t.edited_at = Some(Instant::now());
                         t.refind();
@@ -315,6 +339,7 @@ impl App {
                     };
                     if done {
                         t.bracket_revision = Arc::new(());
+                        t.structure.invalidate();
                         t.follow(view);
                         t.dirty = t.history.is_dirty();
                         t.edited_at = Some(Instant::now());
@@ -436,6 +461,7 @@ impl App {
                         dirty: false,
                         syntax,
                         bracket_revision: Arc::new(()),
+                        structure: Box::default(),
                         history: crate::history::History::default(),
                         edited_at: None,
                         conflict: false,
@@ -636,6 +662,20 @@ impl App {
         for i in 0..self.tabs.len() {
             self.save_tab(i, false);
         }
+        // Parked files use absolute paths and the same conflict/permission checks.
+        let mut parked = std::mem::take(&mut self.parked_documents);
+        for documents in parked.values_mut() {
+            std::mem::swap(&mut self.tabs, &mut documents.tabs);
+            for i in 0..self.tabs.len() {
+                self.save_tab(i, false);
+            }
+            std::mem::swap(&mut self.tabs, &mut documents.tabs);
+        }
+        self.parked_documents = parked;
+    }
+
+    pub(super) fn all_document_tabs(&self) -> impl Iterator<Item = &Tab> {
+        self.tabs.iter().chain(self.parked_documents.values().flat_map(|d| d.tabs.iter()))
     }
 
     pub(super) fn reload_changed_files(&mut self) {
@@ -686,6 +726,7 @@ impl App {
                 let before = t.content.cursor();
                 t.content = Content::with_text(&text);
                 t.bracket_revision = Arc::new(());
+                t.structure.invalidate();
                 // A new editor starts at the top, then follows its cursor.
                 t.scroll = crate::gutter::Scroll::default();
                 let line = before.position.line.min(t.content.line_count().saturating_sub(1));
@@ -768,6 +809,7 @@ impl FileTab {
             mtime: None,
             syntax: "txt".into(),
             bracket_revision: Arc::new(()),
+            structure: Box::default(),
             history: crate::history::History::default(),
             edited_at: None,
             conflict: false,

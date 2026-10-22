@@ -4,6 +4,7 @@
 mod agentlog;
 mod app;
 mod code;
+mod codeview;
 mod commitgen;
 mod diff;
 mod explorer;

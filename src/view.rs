@@ -2253,6 +2253,7 @@ impl App {
                 },
                 |format, _| *format,
             );
+        let editor = crate::codeview::editor(editor, t.structure.index.as_deref(), t.structure.indent.unwrap_or(4));
         let editor = iced::widget::sensor(editor).on_show(Msg::EditorViewport).on_resize(Msg::EditorViewport);
         column![
             container(

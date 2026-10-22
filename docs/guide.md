@@ -231,10 +231,17 @@ command are the stable options. See [privacy](privacy.md) for exactly what is se
 - **Code structure**: `{}`, `[]` and `()` use three repeating colors by nesting level,
   with the same color at both ends. Strings, comments and regular expressions follow the
   file's syntax grammar; their literal brackets do not affect the nesting. Unexpected closing
-  brackets use the error color. Click **{ }** above the editor or press `Ctrl+Shift+\` while
+  brackets use the error color. Moving the cursor beside a bracket or into a block outlines
+  both endpoints and shows a colored guide connecting them. Faint indentation guides help
+  follow nested blocks. Highlights follow scrolling without changing the text selection.
+  Click **{ }** above the editor or press `Ctrl+Shift+\` while
   editing to jump to and select the matching bracket. From inside a block, it goes to the
   innermost block's closing bracket. This is grammar-based reading, not compiler diagnostics;
   unsupported file types are treated as plain text.
+- **Workspace tabs**: each workspace has its own file/image tabs, cursor positions and
+  unsaved edits. Switching repositories restores that workspace's tabs; diffs close when
+  leaving their repository. Autosave and the quit confirmation also protect files in other
+  workspaces. Tab sets are kept while mira is running.
 - **Images** (PNG, JPEG, GIF, WebP, BMP, ICO) open in an image tab with their size: scroll to
   zoom, drag to pan. An SVG opens as text; **Preview** shows what it draws. Both reload when
   the file changes.
