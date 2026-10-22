@@ -328,7 +328,7 @@ impl App {
 }
 
 /// mira's shortcuts, as listed in the dialog (and the guide).
-pub const SHORTCUTS: [(&str, &str); 20] = [
+pub const SHORTCUTS: [(&str, &str); 21] = [
     ("Ctrl+`", "Focus the terminal"),
     ("Ctrl+Shift+G", "Changes (focuses the commit message)"),
     ("Ctrl+Shift+F", "Search"),
@@ -338,6 +338,7 @@ pub const SHORTCUTS: [(&str, &str); 20] = [
     ("Ctrl+Shift+T", "Next theme"),
     ("Ctrl+Shift+P, Ctrl+P", "Quick open (Ctrl+P outside the terminal)"),
     ("Ctrl+G", "Go to line"),
+    ("Ctrl+Shift+\\", "Go to the matching bracket (in the editor)"),
     ("Ctrl+F", "Find in the open file"),
     ("F3, Shift+F3", "Next, previous match"),
     ("Ctrl+,", "Settings"),

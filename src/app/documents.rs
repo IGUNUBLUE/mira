@@ -56,6 +56,8 @@ pub struct FileTab {
     pub dirty: bool,
     pub mtime: Option<SystemTime>,
     pub syntax: String,
+    /// Identity of these contents; stale asynchronous bracket requests cannot move a newer editor.
+    pub bracket_revision: Arc<()>,
     pub history: crate::history::History,
     /// Last edit, for autosave after a delay.
     edited_at: Option<Instant>,
@@ -271,6 +273,7 @@ impl App {
                         None => t.follow(view),
                     }
                     if edit {
+                        t.bracket_revision = Arc::new(());
                         t.dirty = true;
                         t.edited_at = Some(Instant::now());
                         t.refind();
@@ -311,6 +314,7 @@ impl App {
                         t.history.redo(&mut t.content)
                     };
                     if done {
+                        t.bracket_revision = Arc::new(());
                         t.follow(view);
                         t.dirty = t.history.is_dirty();
                         t.edited_at = Some(Instant::now());
@@ -431,6 +435,7 @@ impl App {
                         path,
                         dirty: false,
                         syntax,
+                        bracket_revision: Arc::new(()),
                         history: crate::history::History::default(),
                         edited_at: None,
                         conflict: false,
@@ -680,6 +685,7 @@ impl App {
                 let old = t.content.text();
                 let before = t.content.cursor();
                 t.content = Content::with_text(&text);
+                t.bracket_revision = Arc::new(());
                 // A new editor starts at the top, then follows its cursor.
                 t.scroll = crate::gutter::Scroll::default();
                 let line = before.position.line.min(t.content.line_count().saturating_sub(1));
@@ -761,6 +767,7 @@ impl FileTab {
             dirty: false,
             mtime: None,
             syntax: "txt".into(),
+            bracket_revision: Arc::new(()),
             history: crate::history::History::default(),
             edited_at: None,
             conflict: false,

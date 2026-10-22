@@ -2233,6 +2233,9 @@ impl App {
                     Key::Character(c) if plain_ctrl && c.eq_ignore_ascii_case("g") => {
                         Some(Binding::Custom(Msg::PaletteOpen(true)))
                     }
+                    Key::Character("\\" | "|") if ctrl && kp.modifiers.shift() => {
+                        Some(Binding::Custom(Msg::MatchBracket))
+                    }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("z") => {
                         Some(Binding::Custom(if kp.modifiers.shift() { Msg::Redo } else { Msg::Undo }))
                     }
@@ -2241,13 +2244,25 @@ impl App {
                     _ => Binding::from_key_press(kp),
                 }
             })
-            .highlight(&t.syntax, p().syntax);
+            .highlight_with::<crate::code::Highlighter>(
+                crate::code::Settings {
+                    token: t.syntax.clone(),
+                    theme: p().syntax,
+                    colors: p().brackets(),
+                    error: p().error_text,
+                },
+                |format, _| *format,
+            );
         let editor = iced::widget::sensor(editor).on_show(Msg::EditorViewport).on_resize(Msg::EditorViewport);
         column![
             container(
                 row![
                     text(t.crumbs.as_str()).size(12).color(p().muted),
                     space::horizontal(),
+                    tip(
+                        button(text("{ }").size(14)).on_press(Msg::MatchBracket).style(theme::flat_fn),
+                        "Jump to the matching bracket or the end of this block (Ctrl+Shift+\\)",
+                    ),
                     (crate::imagefile::kind(&t.path) == Some(crate::imagefile::Kind::Svg)).then(|| tip(
                         icon_label(Icon::Preview, "Preview", Some(Msg::OpenImage(t.path.clone()))),
                         "Show the image this SVG draws"

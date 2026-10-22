@@ -74,6 +74,14 @@ fn selection_span(c: Cursor) -> Option<(usize, usize, usize)> {
     (s.line == c.position.line).then(|| (s.line, s.column.min(c.position.column), s.column.max(c.position.column)))
 }
 
+/// A selected destination bracket remains the source of the next jump,
+/// including when another bracket immediately follows it, as in `])`.
+fn bracket_from(c: Cursor) -> Position {
+    selection_span(c)
+        .filter(|(_, start, end)| end - start == 1)
+        .map_or(c.position, |(line, column, _)| Position { line, column })
+}
+
 /// Where a search from the cursor starts: the selection's start, or the cursor.
 fn search_from(c: Cursor) -> (Position, bool) {
     match c.selection {
@@ -84,6 +92,20 @@ fn search_from(c: Cursor) -> (Position, bool) {
 }
 
 impl FileTab {
+    fn bracket_result_is_current(&self, revision: &std::sync::Arc<()>, cursor: Cursor) -> bool {
+        std::sync::Arc::ptr_eq(revision, &self.bracket_revision) && cursor == self.content.cursor()
+    }
+
+    fn select_bracket(&mut self, position: Position, view: Option<f32>) {
+        self.content.move_to(Cursor {
+            position: Position { column: position.column + 1, ..position },
+            selection: Some(position),
+        });
+        self.reveal = false;
+        self.follow(view);
+        self.sync_find();
+    }
+
     /// Recompute the find bar's matches (query, case or text changed).
     pub(super) fn refind(&mut self) {
         let Some(f) = &mut self.find else { return };
@@ -156,6 +178,32 @@ impl App {
         let view = self.editor_view;
         match msg {
             Msg::Modifiers(m) => self.modifiers = m,
+            Msg::MatchBracket => {
+                let Some(t) = self.active_file() else { return Task::none() };
+                let text = t.content.text();
+                let token = t.syntax.clone();
+                let cursor = t.content.cursor();
+                let position = bracket_from(cursor);
+                let revision = std::sync::Arc::clone(&t.bracket_revision);
+                return self.for_root(Task::perform(
+                    blocking(move || crate::code::matching(&text, &token, position)),
+                    move |result| Msg::BracketLoaded(revision, cursor, result),
+                ));
+            }
+            Msg::BracketLoaded(revision, cursor, result) => {
+                let Some(t) = self.active_file_mut() else { return Task::none() };
+                if !t.bracket_result_is_current(&revision, cursor) {
+                    return Task::none();
+                }
+                match result {
+                    Ok(Some(position)) => {
+                        t.select_bracket(position, view);
+                        return iced::widget::operation::focus(EDITOR);
+                    }
+                    Ok(None) => self.set_status("No matching code bracket at the cursor", false),
+                    Err(error) => self.set_status(format!("Matching bracket: {error}"), true),
+                }
+            }
             Msg::FindOpen => {
                 let Some(t) = self.active_file_mut() else { return Task::none() };
                 // Like VSCodium: a selection within one line becomes the query.
@@ -321,6 +369,48 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bracket_navigation_selects_both_directions_without_editing_and_follows_scroll() {
+        let mut tab = FileTab::for_test(&format!("{{\n{}}}", "    body\n".repeat(50)));
+        let original = tab.content.text();
+        tab.select_bracket(Position { line: 51, column: 0 }, Some(100.0));
+        assert_eq!(tab.content.selection().as_deref(), Some("}"));
+        assert!(tab.scroll.offset(FileTab::row(), tab.content.line_count(), 100.0) > 0.0);
+        tab.select_bracket(Position { line: 0, column: 0 }, Some(100.0));
+        assert_eq!(tab.content.selection().as_deref(), Some("{"));
+        assert_eq!(tab.scroll.offset(FileTab::row(), tab.content.line_count(), 100.0), 0.0);
+        assert_eq!(tab.content.text(), original);
+        assert!(!tab.dirty);
+        assert!(!tab.history.undo(&mut tab.content));
+    }
+
+    #[test]
+    fn bracket_reply_is_stale_after_moving_editing_or_reopening_a_file() {
+        let mut tab = FileTab::for_test("{ x }");
+        let cursor = tab.content.cursor();
+        let revision = std::sync::Arc::clone(&tab.bracket_revision);
+        assert!(tab.bracket_result_is_current(&revision, cursor));
+        tab.content.perform(text_editor::Action::Move(text_editor::Motion::Right));
+        assert!(!tab.bracket_result_is_current(&revision, cursor));
+        let cursor = tab.content.cursor();
+        tab.bracket_revision = std::sync::Arc::new(());
+        assert!(!tab.bracket_result_is_current(&revision, cursor));
+        let reopened = FileTab::for_test("{ x }");
+        assert!(!reopened.bracket_result_is_current(&revision, reopened.content.cursor()));
+    }
+
+    #[test]
+    fn a_selected_destination_bracket_wins_over_the_next_adjacent_bracket() {
+        let c = cursor(0, 4, Some((0, 3)));
+        let source = "([1])";
+        assert_eq!(
+            crate::code::matching(source, "rs", bracket_from(c)).unwrap(),
+            Some(Position { line: 0, column: 1 })
+        );
+        assert_eq!(bracket_from(cursor(0, 3, Some((0, 4)))), Position { line: 0, column: 3 });
+        assert_eq!(bracket_from(cursor(0, 4, Some((0, 1)))), Position { line: 0, column: 4 });
+    }
 
     fn cursor(line: usize, column: usize, selection: Option<(usize, usize)>) -> Cursor {
         Cursor {

@@ -42,8 +42,16 @@ pub struct Palette {
     pub delete_text: Color,
     pub filler: Color,
     pub syntax: iced::highlighter::Theme,
+    pub bracket_colors: [Color; 3],
     /// ANSI 0–15, from the matching kitty theme.
     pub ansi: [&'static str; 16],
+}
+
+impl Palette {
+    /// Three distinct, AA-readable hues repeated by bracket nesting depth.
+    pub fn brackets(&self) -> [Color; 3] {
+        self.bracket_colors
+    }
 }
 
 const fn a(c: Color, alpha: f32) -> Color {
@@ -77,6 +85,7 @@ pub const PALETTES: [Palette; 4] = [
         delete_text: a(color!(0xC9614B), 0.28),
         filler: a(color!(0xB2CBD3), 0.25),
         syntax: iced::highlighter::Theme::InspiredGitHub,
+        bracket_colors: [color!(0x12717C), color!(0x7B479A), color!(0x315DAE)],
         ansi: [
             "#435763", "#E48458", "#23838C", "#B15837", "#3B6ADF", "#3057B5", "#375967", "#0C1C28", "#5E707C",
             "#EA9E7B", "#34BFCB", "#CD6C44", "#628AE5", "#81A0EA", "#74D1D9", "#D9ECF0",
@@ -108,6 +117,7 @@ pub const PALETTES: [Palette; 4] = [
         delete_text: a(color!(0xE48458), 0.27),
         filler: a(color!(0x204756), 0.35),
         syntax: iced::highlighter::Theme::Base16Ocean,
+        bracket_colors: [color!(0x34BFCB), color!(0xE0A35E), color!(0xC4A2E8)],
         ansi: [
             "#122638", "#E48458", "#34BFCB", "#EFB79D", "#628AE5", "#9ADFE4", "#B1C2C9", "#DDEEF2", "#435763",
             "#EA9E7B", "#74D1D9", "#F6D8CB", "#81A0EA", "#C2D0F5", "#C7F0F3", "#D9ECF0",
@@ -139,6 +149,7 @@ pub const PALETTES: [Palette; 4] = [
         delete_text: a(color!(0xB05A4E), 0.28),
         filler: a(color!(0xC9BCA6), 0.3),
         syntax: iced::highlighter::Theme::InspiredGitHub,
+        bracket_colors: [color!(0x576A3C), color!(0x885929), color!(0x85516F)],
         ansi: [
             "#DDD2BE", "#B05A4E", "#5C7040", "#8A5A1E", "#55655E", "#9E5F4A", "#6B8350", "#3A342C", "#8C7D6C",
             "#C96B5C", "#7F9A5E", "#A06830", "#71807A", "#B07156", "#8FA66B", "#FDF9EF",
@@ -170,6 +181,7 @@ pub const PALETTES: [Palette; 4] = [
         delete_text: a(color!(0xD67A6E), 0.27),
         filler: a(color!(0x4A423B), 0.35),
         syntax: iced::highlighter::Theme::Base16Mocha,
+        bracket_colors: [color!(0xA9C080), color!(0xD4A55C), color!(0xC2A0C8)],
         ansi: [
             "#352E29", "#D67A6E", "#A9C080", "#D4A55C", "#8FA8A0", "#C98A6B", "#9DB8A0", "#E9DFCE", "#6B5F53",
             "#E0877B", "#B9CC94", "#E0B876", "#A8BDB0", "#D8A188", "#ADD0B8", "#F4EEE2",
@@ -485,6 +497,20 @@ mod tests {
                     let ratio = contrast(fg, bg);
                     assert!(ratio >= 4.5, "{}: {name} on {surface} is {ratio:.2}:1", c.name);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn bracket_colors_are_distinct_and_readable_in_every_palette() {
+        for palette in &PALETTES {
+            let colors = palette.brackets();
+            for (i, &color) in colors.iter().enumerate() {
+                assert!(contrast(color, palette.bg) >= 4.5, "{} bracket {i}", palette.name);
+                for &other in &colors[i + 1..] {
+                    assert_ne!(color, other);
+                }
+                assert_ne!(color, palette.error_text);
             }
         }
     }

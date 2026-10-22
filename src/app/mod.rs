@@ -421,6 +421,8 @@ pub enum Msg {
     /// Enter in the find input: next, or previous with Shift.
     FindSubmit,
     FindClose,
+    MatchBracket,
+    BracketLoaded(std::sync::Arc<()>, text_editor::Cursor, Result<Option<text_editor::Position>, String>),
     /// Open the palette: quick open, or go to line (`true`, prefilled with `:`).
     PaletteOpen(bool),
     /// Whether the terminal had the keyboard when the palette opened.
@@ -938,6 +940,8 @@ impl App {
             | Msg::FindStep(_)
             | Msg::FindSubmit
             | Msg::FindClose
+            | Msg::MatchBracket
+            | Msg::BracketLoaded(..)
             | Msg::PaletteOpen(_)
             | Msg::PaletteFrom(_)
             | Msg::PaletteFiles(..)

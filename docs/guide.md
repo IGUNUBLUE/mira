@@ -228,6 +228,13 @@ command are the stable options. See [privacy](privacy.md) for exactly what is se
   to save, `Ctrl+W` or middle-click to close a tab. Long lines don't wrap; the view follows the
   cursor sideways.
   Tabs without unsaved edits reload when an agent changes the file.
+- **Code structure**: `{}`, `[]` and `()` use three repeating colors by nesting level,
+  with the same color at both ends. Strings, comments and regular expressions follow the
+  file's syntax grammar; their literal brackets do not affect the nesting. Unexpected closing
+  brackets use the error color. Click **{ }** above the editor or press `Ctrl+Shift+\` while
+  editing to jump to and select the matching bracket. From inside a block, it goes to the
+  innermost block's closing bracket. This is grammar-based reading, not compiler diagnostics;
+  unsupported file types are treated as plain text.
 - **Images** (PNG, JPEG, GIF, WebP, BMP, ICO) open in an image tab with their size: scroll to
   zoom, drag to pan. An SVG opens as text; **Preview** shows what it draws. Both reload when
   the file changes.
@@ -278,6 +285,7 @@ plain symbols. Fonts default to Inter and JetBrains Mono (medium weight); see
 | `Ctrl+Shift+P`, `Ctrl+P` | Quick open: go to a file of the folder by name (fuzzy; `:` + a number goes to a line) |
 | `Ctrl+F` | Find in the open file (`Enter` / `Shift+Enter` or `F3` / `Shift+F3`: next / previous) |
 | `Ctrl+G` | Go to line in the open file |
+| `Ctrl+Shift+\` | Jump to and select the matching bracket (in the editor) |
 | `Ctrl+S` / `Ctrl+W` | Save / close tab |
 | `Ctrl+Z` / `Ctrl+Shift+Z`, `Ctrl+Y` | Undo / redo |
 | `Ctrl+Enter` | Commit (in the commit box) |

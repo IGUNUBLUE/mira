@@ -13,6 +13,8 @@ exclude = ["/.agents", "/.kiro", "/.github", "/docs/images"]
 
 [dependencies]
 iced = { version = "0.14.0", features = ["highlighter", "tokio", "advanced", "lazy", "image-without-codecs", "svg"] }
+# Reuse iced's existing grammar bundle to distinguish code brackets from strings/comments.
+two-face = { version = "=0.4.5", default-features = false, features = ["syntect-default-fancy"] }
 # Image tabs: only the common formats are decoded (iced's `image` would enable them all).
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
 # The terminal's emulation and PTY; mira draws it itself (src/term).

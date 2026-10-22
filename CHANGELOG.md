@@ -6,6 +6,13 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Code brackets use three readable colors by nesting level in all four palettes.
+  Syntax grammars exclude literal brackets in strings, comments and regular expressions.
+- The editor's **{ }** button and `Ctrl+Shift+\` jump to and select a matching bracket,
+  or the innermost block's closing bracket when the cursor is inside the block.
+
 ## [0.6.1]
 
 ### Fixed
