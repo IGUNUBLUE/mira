@@ -27,7 +27,7 @@ mod settings;
 mod terminal;
 
 pub use branches::BranchPicker;
-pub use commits::CommitView;
+pub use commits::{CommitMenu, CommitMenuAction, CommitView};
 use confirm::ConfirmAction;
 pub use confirm::Confirmation;
 pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, ImageData, ImageTab, Tab};
@@ -342,6 +342,9 @@ pub enum Msg {
     HistorySelect(std::sync::Arc<str>),
     HistoryLoaded(u64, Result<std::sync::Arc<crate::git::commits::Details>, String>),
     HistoryOpen(u64, usize),
+    HistoryMenuAt(std::sync::Arc<str>, iced::Point),
+    HistoryMenuClose,
+    HistoryMenuAction(CommitMenuAction),
     RefreshChanges,
     OpenDiff(String, bool),
     Stage(Vec<String>),
@@ -897,7 +900,12 @@ impl App {
             | Msg::TrashDone(_)
             | Msg::TrashPath(..)
             | Msg::UndoTrash) => self.update_files(m),
-            m @ (Msg::HistorySelect(_) | Msg::HistoryLoaded(..) | Msg::HistoryOpen(..)) => self.update_commits(m),
+            m @ (Msg::HistorySelect(_)
+            | Msg::HistoryLoaded(..)
+            | Msg::HistoryOpen(..)
+            | Msg::HistoryMenuAt(..)
+            | Msg::HistoryMenuClose
+            | Msg::HistoryMenuAction(_)) => self.update_commits(m),
             m @ (Msg::RefreshChanges
             | Msg::GitLoaded(..)
             | Msg::OpenDiff(..)

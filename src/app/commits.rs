@@ -8,7 +8,35 @@ use std::sync::Arc;
 #[derive(Default)]
 pub struct CommitView {
     pub selected: Option<SelectedCommit>,
+    pub menu: Option<CommitMenu>,
     sequence: u64,
+}
+
+pub struct CommitMenu {
+    pub hash: Arc<str>,
+    pub subject: String,
+    pub at: iced::Point,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitMenuAction {
+    ViewChanges,
+    CopyHash,
+    CopyShortHash,
+    CopySubject,
+}
+
+impl CommitMenu {
+    fn copied_text(&self, action: CommitMenuAction) -> Option<(&'static str, String)> {
+        match action {
+            CommitMenuAction::ViewChanges => None,
+            CommitMenuAction::CopyHash => Some(("Commit hash copied", self.hash.to_string())),
+            CommitMenuAction::CopyShortHash => {
+                Some(("Short commit hash copied", self.hash.get(..7).unwrap_or(&self.hash).to_owned()))
+            }
+            CommitMenuAction::CopySubject => Some(("Commit subject copied", self.subject.clone())),
+        }
+    }
 }
 
 pub struct SelectedCommit {
@@ -42,7 +70,25 @@ impl CommitView {
 impl App {
     pub(super) fn update_commits(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
+            Msg::HistoryMenuAt(hash, at) => {
+                let Some(commit) = self.git.log.iter().find(|c| c.hash == hash) else { return Task::none() };
+                self.commit_view.menu = Some(CommitMenu { hash, subject: commit.subject.clone(), at });
+                // A context menu takes keyboard focus from the terminal/editor.
+                return iced::widget::operation::focus("history-menu");
+            }
+            Msg::HistoryMenuClose => self.commit_view.menu = None,
+            Msg::HistoryMenuAction(action) => {
+                let Some(menu) = self.commit_view.menu.take() else { return Task::none() };
+                if let Some((status, contents)) = menu.copied_text(action) {
+                    self.set_status(status.to_owned(), false);
+                    return iced::clipboard::write(contents);
+                }
+                if !self.commit_view.selected.as_ref().is_some_and(|s| s.hash == menu.hash) {
+                    return self.update_commits(Msg::HistorySelect(menu.hash));
+                }
+            }
             Msg::HistorySelect(hash) => {
+                self.commit_view.menu = None;
                 if !self.git.log.iter().any(|c| c.hash == hash) {
                     return Task::none();
                 }
@@ -78,6 +124,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copying_commit_identifiers_preserves_full_sha1_and_sha256_hashes() {
+        for hash in ["a".repeat(40), "b".repeat(64)] {
+            let menu =
+                CommitMenu { hash: hash.clone().into(), subject: "Fix Unicode: café".into(), at: iced::Point::ORIGIN };
+            assert_eq!(menu.copied_text(CommitMenuAction::CopyHash).unwrap().1, hash);
+            assert_eq!(menu.copied_text(CommitMenuAction::CopyShortHash).unwrap().1, &hash[..7]);
+            assert_eq!(menu.copied_text(CommitMenuAction::CopySubject).unwrap().1, "Fix Unicode: café");
+        }
+    }
 
     #[test]
     fn selecting_another_commit_ignores_the_previous_reply() {

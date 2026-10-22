@@ -15,7 +15,8 @@ mira never asks for a folder; [herdr](https://herdr.dev) workspaces decide.
 - From the app launcher, mira opens the folder of herdr's focused workspace (or the last
   folder, until herdr answers).
 - After that mira **follows herdr**: switch workspace in herdr and Changes, Files, Search and
-  history switch with it. Open file tabs stay; diff tabs close.
+  history switch with it. File and image tabs belong to each workspace and return when you
+  switch back, with their cursor positions and unsaved edits; diff tabs close.
 
 Without herdr installed, mira runs your shell and shows a note in the terminal header. Set
 `terminal = "shell"` to choose that on purpose (the note goes away).
@@ -143,6 +144,8 @@ The comparison uses the first parent (also for merges), or an empty tree for the
 commit. Renames compare the original and new paths. These views show committed contents,
 independent of staged and working changes, and do not offer staging or discard actions.
 Click the commit again to collapse it. Only files inside the opened folder are listed.
+Right-click a commit to view its changes or copy its full hash, seven-character short hash,
+or subject. Copying keeps the selected commit unchanged. Escape or a click outside closes the menu.
 
 Actions show a small spinner at the button while they run and report their result in the status
 bar. Manual refresh animates too; automatic refresh stays quiet. Stage, unstage, discard and

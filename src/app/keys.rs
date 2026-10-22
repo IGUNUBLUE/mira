@@ -56,6 +56,9 @@ impl App {
             if self.explorer_menu.is_some() {
                 return self.update(Msg::ExplorerMenuClose);
             }
+            if self.commit_view.menu.is_some() {
+                return self.update(Msg::HistoryMenuClose);
+            }
             // A name being typed in Files: Escape cancels it. Its input has already
             // dropped the keyboard by now (text inputs unfocus on Escape), so this
             // asks only whether the terminal has it (an agent interrupted there keeps

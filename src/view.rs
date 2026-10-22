@@ -398,6 +398,8 @@ impl App {
                 self.view_explorer_menu(menu),
             ]
             .into()
+        } else if let Some(menu) = &self.commit_view.menu {
+            iced::widget::stack![close_on_click(Msg::HistoryMenuClose), self.view_history_menu(menu)].into()
         } else if let Some(palette) = &self.palette {
             // Near the top like VSCodium's, so the input stays put while the list
             // grows. A click outside closes it; `opaque` keeps it from what is behind
@@ -1263,20 +1265,25 @@ impl App {
             if !c.refs.is_empty() {
                 entry = entry.push(container(badge(c.refs.as_str(), p().accent)).padding(Padding::ZERO.left(16)));
             }
-            history = history.push(tooltip(
-                button(container(entry).width(Length::Fill).clip(true))
-                    .padding([3, 10])
-                    .width(Length::Fill)
-                    .style(theme::flat(selected.is_some()))
-                    .on_press(Msg::HistorySelect(Arc::clone(&c.hash))),
-                container(
-                    column![text(c.subject.as_str()).size(12), text(c.detail.as_str()).size(12).color(p().muted),]
-                        .spacing(2),
-                )
-                .padding(6)
-                .max_width(420)
-                .style(theme::bordered(p().bg)),
-                tooltip::Position::Bottom,
+            let menu_open = self.commit_view.menu.as_ref().is_some_and(|menu| menu.hash == c.hash);
+            let hash = Arc::clone(&c.hash);
+            history = history.push(crate::rightclick::right_click(
+                tooltip(
+                    button(container(entry).width(Length::Fill).clip(true))
+                        .padding([3, 10])
+                        .width(Length::Fill)
+                        .style(theme::flat(selected.is_some() || menu_open))
+                        .on_press(Msg::HistorySelect(Arc::clone(&c.hash))),
+                    container(
+                        column![text(c.subject.as_str()).size(12), text(c.detail.as_str()).size(12).color(p().muted),]
+                            .spacing(2),
+                    )
+                    .padding(6)
+                    .max_width(420)
+                    .style(theme::bordered(p().bg)),
+                    tooltip::Position::Bottom,
+                ),
+                move |at| Msg::HistoryMenuAt(Arc::clone(&hash), at),
             ));
             if let Some(selected) = selected {
                 let mut details = column![text(c.detail.as_str()).size(SMALL).color(p().muted)].spacing(4);
@@ -2068,10 +2075,33 @@ impl App {
             items = items.push(item("Send Path to Agent", MenuAction::SendPath, false));
             rows += 1;
         }
-        const WIDTH: f32 = 220.0;
         let height = rows as f32 * 27.0 + seps as f32 * 7.0 + 10.0;
-        let x = menu.at.x.min(self.window_width - WIDTH - 4.0).max(0.0);
-        let y = menu.at.y.min(self.window_height - height - 4.0).max(0.0);
+        self.context_menu(items, menu.at, height)
+    }
+
+    fn view_history_menu(&self, menu: &CommitMenu) -> Element<'_, Msg> {
+        let item = |label: &'static str, action| {
+            button(text(label).size(UI).color(p().fg))
+                .width(Length::Fill)
+                .padding([4, 12])
+                .style(theme::flat(false))
+                .on_press(Msg::HistoryMenuAction(action))
+        };
+        let items = column![
+            item("View Changes", CommitMenuAction::ViewChanges),
+            container(hrule()).padding([3, 6]),
+            item("Copy Commit Hash", CommitMenuAction::CopyHash),
+            item("Copy Short Hash", CommitMenuAction::CopyShortHash),
+            item("Copy Commit Subject", CommitMenuAction::CopySubject),
+        ];
+        self.context_menu(items, menu.at, 125.0)
+    }
+
+    /// Shared desktop-menu style and window-edge placement.
+    fn context_menu<'a>(&self, items: Column<'a, Msg>, at: iced::Point, height: f32) -> Element<'a, Msg> {
+        const WIDTH: f32 = 220.0;
+        let x = at.x.min(self.window_width - WIDTH - 4.0).max(0.0);
+        let y = at.y.min(self.window_height - height - 4.0).max(0.0);
         let panel = container(items.spacing(1)).width(WIDTH).padding(4).style(|_| container::Style {
             background: Some(p().sidebar.into()),
             text_color: Some(p().fg),
@@ -2989,13 +3019,14 @@ mod tests {
         let (mut app, task) = App::new(crate::app::Start::Folder(root.clone()), true);
         drop(task);
         app.git = crate::git::snapshot(&root, &mut Default::default(), false).unwrap();
+        assert_eq!(app.git.log[0].hash.as_ref(), crate::git::git(&root, &["rev-parse", "HEAD"]).unwrap().trim());
         let mut new =
             std::pin::pin!(<iced::Renderer as Headless>::new(theme::ui_font(), Pixels(14.0), Some("tiny-skia")));
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         let std::task::Poll::Ready(Some(mut renderer)) = new.as_mut().poll(&mut cx) else {
             panic!("headless renderer")
         };
-        let click = |mut element: Element<'_, Msg>, renderer: &mut iced::Renderer, file: bool| {
+        let click = |mut element: Element<'_, Msg>, renderer: &mut iced::Renderer, file: bool, button| {
             let mut tree = Tree::new(&element);
             let node = element.as_widget_mut().layout(
                 &mut tree,
@@ -3021,10 +3052,9 @@ mod tests {
             };
             let cursor = mouse::Cursor::Available(target);
             let mut messages = Vec::new();
-            for event in [
-                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
-                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
-            ] {
+            for event in
+                [Event::Mouse(mouse::Event::ButtonPressed(button)), Event::Mouse(mouse::Event::ButtonReleased(button))]
+            {
                 let mut shell = Shell::new(&mut messages);
                 element.as_widget_mut().update(
                     &mut tree,
@@ -3039,14 +3069,24 @@ mod tests {
             }
             messages
         };
-        let mut messages = click(app.view_history().into(), &mut renderer, false);
+        let mut messages = click(app.view_history().into(), &mut renderer, false, mouse::Button::Right);
+        assert_eq!(messages.len(), 1, "Right-click must not also expand the commit");
+        assert!(matches!(&messages[0], Msg::HistoryMenuAt(hash, _) if hash == &app.git.log[0].hash));
+        drop(app.update(messages.remove(0)));
+        assert!(app.commit_view.selected.is_none());
+        assert_eq!(app.commit_view.menu.as_ref().unwrap().hash, app.git.log[0].hash);
+        drop(app.update(Msg::HistoryMenuAction(CommitMenuAction::CopyHash)));
+        assert!(app.commit_view.menu.is_none());
+        assert!(app.commit_view.selected.is_none());
+
+        let mut messages = click(app.view_history().into(), &mut renderer, false, mouse::Button::Left);
         assert!(matches!(messages.first(), Some(Msg::HistorySelect(_))));
         drop(app.update(messages.remove(0)));
         let selected = app.commit_view.selected.as_ref().unwrap();
         let (id, hash) = (selected.id, Arc::clone(&selected.hash));
         let details = Arc::new(crate::git::commits::inspect(&root, &hash, "").unwrap());
         drop(app.update(Msg::HistoryLoaded(id, Ok(Arc::clone(&details)))));
-        let mut messages = click(app.view_history().into(), &mut renderer, true);
+        let mut messages = click(app.view_history().into(), &mut renderer, true, mouse::Button::Left);
         assert!(matches!(messages.first(), Some(Msg::HistoryOpen(_, 0))));
         drop(app.update(messages.remove(0)));
         let tab = app.active_diff().unwrap();

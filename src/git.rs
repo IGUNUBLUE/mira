@@ -29,6 +29,7 @@ impl Change {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Commit {
+    /// Full object ID; display abbreviations must never replace the copyable identity.
     pub hash: std::sync::Arc<str>,
     pub subject: String,
     pub author: String,
@@ -168,7 +169,7 @@ pub fn snapshot(dir: &Path, cache: &mut Cache, with_ignored: bool) -> Result<Sna
     if fresh {
         snap.log = cache.log.clone();
     } else {
-        if let Ok(log) = git(&repo.root, &["log", "-n", "40", "--pretty=format:%h%x1f%s%x1f%an%x1f%ar%x1f%D"]) {
+        if let Ok(log) = git(&repo.root, &["log", "-n", "40", "--pretty=format:%H%x1f%s%x1f%an%x1f%ar%x1f%D"]) {
             snap.log = parse_log(&log);
         }
         cache.log = snap.log.clone();
@@ -250,7 +251,7 @@ fn parse_log(log: &str) -> Vec<Commit> {
                 author: f[2].into(),
                 when: f[3].into(),
                 refs: f[4].replace("HEAD -> ", ""),
-                detail: format!("{}  {} · {}", f[0], f[2], f[3]),
+                detail: format!("{}  {} · {}", f[0].get(..7).unwrap_or(f[0]), f[2], f[3]),
             })
         })
         .collect()

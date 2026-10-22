@@ -6,6 +6,11 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Right-click History commits to view their changes or copy the full hash, short hash,
+  or commit subject. The menu closes on Escape, outside clicks and workspace changes.
+
 ## [0.8.1]
 
 ### Fixed
