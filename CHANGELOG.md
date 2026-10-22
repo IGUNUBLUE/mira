@@ -6,6 +6,11 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- History file names are clipped before the fixed-width status column, keeping long
+  paths from painting underneath the M/A/D status letters in narrow panels.
+
 ## [0.6.0]
 
 ### Added

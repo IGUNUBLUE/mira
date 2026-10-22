@@ -264,6 +264,33 @@ fn badge<'a>(label: impl text::IntoFragment<'a>, color: Color) -> Element<'a, Ms
     .into()
 }
 
+fn history_file_label(file: &Change) -> Element<'_, Msg> {
+    let status = match file.code {
+        'A' => "A",
+        'D' => "D",
+        'R' => "R",
+        'C' => "C",
+        'T' => "T",
+        _ => "M",
+    };
+    let content = row![
+        file_glyph(&file.path, 14),
+        container(text(file.path.as_str()).size(UI).wrapping(text::Wrapping::None)).width(Length::Fill).clip(true),
+        text(status)
+            .size(SMALL)
+            .color(theme::status_color(file.code))
+            .width(18)
+            .align_x(iced::alignment::Horizontal::Center),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    let mut file_row = column![content];
+    if let Some(orig) = &file.orig {
+        file_row = file_row.push(text(orig.as_str()).size(SMALL).color(p().muted));
+    }
+    file_row.into()
+}
+
 fn split_path(p: &str) -> (&str, &str) {
     match p.rsplit_once('/') {
         Some((d, n)) => (n, d),
@@ -1274,27 +1301,8 @@ impl App {
                                 d.rel == file.path
                                     && matches!(&d.source, DiffSource::Commit { details } if details.oid == commit.oid)
                             });
-                            let status = match file.code {
-                                'A' => "A",
-                                'D' => "D",
-                                'R' => "R",
-                                'C' => "C",
-                                'T' => "T",
-                                _ => "M",
-                            };
-                            let content = row![
-                                file_glyph(&file.path, 14),
-                                text(file.path.as_str()).size(UI).width(Length::Fill).wrapping(text::Wrapping::None),
-                                text(status).size(SMALL).color(theme::status_color(file.code)),
-                            ]
-                            .spacing(6)
-                            .align_y(Alignment::Center);
-                            let mut file_row = column![content];
-                            if let Some(orig) = &file.orig {
-                                file_row = file_row.push(text(orig.as_str()).size(SMALL).color(p().muted));
-                            }
                             details = details.push(row_tip(
-                                button(container(file_row).width(Length::Fill).clip(true))
+                                button(container(history_file_label(file)).width(Length::Fill).clip(true))
                                     .width(Length::Fill)
                                     .padding([3, 6])
                                     .style(theme::flat(active))
@@ -2850,6 +2858,55 @@ fn diff_side(side: &diff::Side) -> Element<'static, Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_filenames_never_paint_over_the_status_column() {
+        use iced::advanced::{Layout, Renderer as _, layout, renderer, renderer::Headless, widget::Tree};
+        use iced::{Pixels, Size, mouse};
+        use std::future::Future as _;
+
+        let mut new =
+            std::pin::pin!(<iced::Renderer as Headless>::new(theme::ui_font(), Pixels(14.0), Some("tiny-skia")));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Some(mut renderer)) = new.as_mut().poll(&mut cx) else {
+            panic!("headless renderer")
+        };
+        let mut render = |file: &Change, width: u32| {
+            let size = Size::new(width as f32, 40.0);
+            let viewport = iced::Rectangle::with_size(size);
+            renderer.reset(viewport);
+            let mut element: Element<'_, Msg> = container(history_file_label(file)).width(Length::Fill).into();
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size));
+            element.as_widget().draw(
+                &tree,
+                &mut renderer,
+                &theme::theme(),
+                &renderer::Style { text_color: p().fg },
+                Layout::new(&node),
+                mouse::Cursor::Unavailable,
+                &viewport,
+            );
+            renderer.screenshot(Size::new(width, 40), 1.0, p().sidebar)
+        };
+        for status in ['M', 'A', 'D'] {
+            for width in [140_u32, 240, 400] {
+                let short = render(&Change::new("a.txt", status), width);
+                let long = render(&Change::new(format!("{}.txt", "very-long-file-name-".repeat(20)), status), width);
+                // The final 24 pixels contain the gap and status. A long path
+                // must render exactly the same pixels there as a short path.
+                for y in 0..40 {
+                    let start = ((y * width + width - 24) * 4) as usize;
+                    let end = ((y + 1) * width * 4) as usize;
+                    assert_eq!(
+                        &long[start..end],
+                        &short[start..end],
+                        "path painted under {status} at width {width}, row {y}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn history_clicks_expand_files_and_open_immutable_diffs() {
