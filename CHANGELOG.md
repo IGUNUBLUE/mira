@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1]
+
 ### Fixed
 
 - History file names are clipped before the fixed-width status column, keeping long
