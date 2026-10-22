@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0]
+
 ### Added
 
 - Code brackets use three readable colors by nesting level in all four palettes.
