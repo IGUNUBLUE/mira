@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0]
+
 ### Added
 
 - Click a History commit to inspect its message and affected files, then open read-only
