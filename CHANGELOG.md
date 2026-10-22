@@ -6,6 +6,8 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0]
+
 ### Added
 
 - Right-click History commits to view their changes or copy the full hash, short hash,
