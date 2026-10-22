@@ -108,6 +108,8 @@ pub enum DiffSource {
     Index { staged: bool },
     /// Between two snapshot trees (an agent run).
     Trees { from: String, to: String, label: String, run: RunId },
+    /// Immutable commit and first-parent comparison, independent of local edits.
+    Commit { details: Arc<git::commits::Details> },
 }
 
 pub struct DiffTab {
@@ -205,6 +207,7 @@ fn load_diff(root: &Path, rel: &str, source: &DiffSource, full: bool) -> FileDif
             blob("") || std::fs::metadata(root.join(rel)).is_ok_and(|m| m.len() > MAX_OPEN_BYTES)
         }
         DiffSource::Trees { from, to, .. } => blob(from) || blob(to),
+        DiffSource::Commit { .. } => false,
     };
     if too_large {
         return FileDiff { too_large: true, id: diff::next_id(), ..Default::default() };
@@ -225,6 +228,11 @@ fn load_diff(root: &Path, rel: &str, source: &DiffSource, full: bool) -> FileDif
             (index, disk)
         }
         DiffSource::Trees { from, to, .. } => (git::show(root, from, rel), git::show(root, to, rel)),
+        DiffSource::Commit { details } => match git::commits::contents(root, details, rel, MAX_OPEN_BYTES) {
+            Ok(Some(contents)) => contents,
+            Ok(None) => return FileDiff { too_large: true, id: diff::next_id(), ..Default::default() },
+            Err(error) => return FileDiff { error: Some(error), id: diff::next_id(), ..Default::default() },
+        },
     };
     let mut d = diff::compute(&old, &new, if full { None } else { Some(3) });
     if let DiffSource::Index { staged } = *source
@@ -369,7 +377,7 @@ impl App {
     }
 
     /// The active tab, if it is a diff.
-    pub(super) fn active_diff(&self) -> Option<&DiffTab> {
+    pub(crate) fn active_diff(&self) -> Option<&DiffTab> {
         match self.active_tab.and_then(|i| self.tabs.get(i)) {
             Some(Tab::Diff(d)) => Some(d),
             _ => None,
@@ -483,11 +491,11 @@ impl App {
         let idx = match idx {
             Some(i) => i,
             // Review diffs share one preview tab instead of piling up.
-            None if matches!(source, DiffSource::Trees { .. }) => {
+            None if matches!(source, DiffSource::Trees { .. } | DiffSource::Commit { .. }) => {
                 match self
                     .tabs
                     .iter()
-                    .position(|t| matches!(t, Tab::Diff(d) if matches!(d.source, DiffSource::Trees { .. })))
+                    .position(|t| matches!(t, Tab::Diff(d) if matches!(d.source, DiffSource::Trees { .. } | DiffSource::Commit { .. })))
                 {
                     Some(i) => {
                         self.tabs[i] = tab(rel, source);

@@ -127,6 +127,14 @@ impl App {
                         }
                     }
                 }
+                if let DiffSource::Commit { details } = &d.source {
+                    let Some(i) = details.files.iter().position(|c| c.path == d.rel) else { return Task::none() };
+                    if let Some(file) = step_index(i, step, details.files.len()).and_then(|i| details.files.get(i)) {
+                        return self.open_diff(file.path.clone(), d.source.clone());
+                    }
+                    self.set_status(if step < 0 { "First file in commit" } else { "Last file in commit" }, false);
+                    return Task::none();
+                }
                 let DiffSource::Trees { run: id, .. } = d.source else { return Task::none() };
                 let files = self.runs.get(id).and_then(|r| r.files.as_ref());
                 let Some((i, files)) = files.and_then(|f| f.iter().position(|c| c.path == d.rel).map(|i| (i, f)))
@@ -192,14 +200,18 @@ impl App {
                 if comment.is_empty() {
                     return Task::none();
                 }
-                let place = match d.anchor {
+                let mut place = match d.anchor {
                     Some(line) => format!("{}:{line}", d.rel),
                     None => d.rel.clone(),
                 };
+                if let DiffSource::Commit { details } = &d.source {
+                    place = format!("{} · {place}", details.label);
+                }
                 // A run's diff goes to the agent that made it; others to the focused pane.
                 let target = match &d.source {
                     DiffSource::Trees { run, .. } => Some(*run),
                     DiffSource::Index { .. } => self.runs.origin(&d.rel).map(|r| r.id),
+                    DiffSource::Commit { .. } => None,
                 };
                 return self.send_to_agent(format!("{place} — {comment}"), target, true);
             }

@@ -3,6 +3,7 @@
 //! and respects hooks, config, credentials helpers and signing.
 
 pub mod branches;
+pub mod commits;
 pub mod remote;
 
 use std::path::{Path, PathBuf};
@@ -28,7 +29,7 @@ impl Change {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Commit {
-    pub hash: String,
+    pub hash: std::sync::Arc<str>,
     pub subject: String,
     pub author: String,
     pub when: String,

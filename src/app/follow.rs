@@ -173,6 +173,7 @@ impl App {
         // Snapshots queued or in flight for the old folder still land in its saved state.
         self.snapshots_off = false;
         self.selected_run = None;
+        self.commit_view.selected = None;
         // Undo of a discard belongs to the old folder's files.
         self.undo_discard = None;
         self.hovered_change = None;

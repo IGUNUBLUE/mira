@@ -46,6 +46,8 @@ pub enum Item {
 
 #[derive(Debug, Clone, Default)]
 pub struct FileDiff {
+    /// A source could not be read; do not present a failed load as an empty diff.
+    pub error: Option<String>,
     /// Unique per computed diff (never reused), so views can cache by it.
     pub id: u64,
     pub items: Vec<Item>,

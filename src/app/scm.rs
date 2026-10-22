@@ -190,6 +190,14 @@ impl App {
                         let kept = (!self.git_with_ignored).then(|| std::mem::take(&mut self.git.ignored));
                         // Only a real change re-renders the panel and recomputes the diff.
                         if snap != self.git {
+                            if self
+                                .commit_view
+                                .selected
+                                .as_ref()
+                                .is_some_and(|selected| !snap.log.iter().any(|commit| commit.hash == selected.hash))
+                            {
+                                self.commit_view.selected = None;
+                            }
                             if let Some(kept) = kept {
                                 snap.ignored = kept;
                             }
@@ -596,6 +604,7 @@ impl App {
                         }
                         self.undo_discard = None;
                         self.selected_run = None;
+                        self.commit_view.selected = None;
                         self.hovered_change = None;
                         self.set_status(summary, false);
                     }

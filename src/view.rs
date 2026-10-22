@@ -1221,6 +1221,102 @@ impl App {
         container(text(msg).size(SMALL).color(p().muted)).padding([8, 10]).into()
     }
 
+    fn view_history(&self) -> Column<'_, Msg> {
+        let mut history = Column::new().spacing(1);
+        for c in &self.git.log {
+            let selected = self.commit_view.selected.as_ref().filter(|s| s.hash == c.hash);
+            let r = row![
+                text(if selected.is_some() { "▾" } else { "▸" }).size(SMALL).color(p().accent).width(10),
+                text(c.subject.as_str()).size(UI).wrapping(text::Wrapping::None),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            // Refs get the panel's full width instead of the subject's leftover space.
+            let mut entry = column![r].spacing(3).width(Length::Fill);
+            if !c.refs.is_empty() {
+                entry = entry.push(container(badge(c.refs.as_str(), p().accent)).padding(Padding::ZERO.left(16)));
+            }
+            history = history.push(tooltip(
+                button(container(entry).width(Length::Fill).clip(true))
+                    .padding([3, 10])
+                    .width(Length::Fill)
+                    .style(theme::flat(selected.is_some()))
+                    .on_press(Msg::HistorySelect(Arc::clone(&c.hash))),
+                container(
+                    column![text(c.subject.as_str()).size(12), text(c.detail.as_str()).size(12).color(p().muted),]
+                        .spacing(2),
+                )
+                .padding(6)
+                .max_width(420)
+                .style(theme::bordered(p().bg)),
+                tooltip::Position::Bottom,
+            ));
+            if let Some(selected) = selected {
+                let mut details = column![text(c.detail.as_str()).size(SMALL).color(p().muted)].spacing(4);
+                match &selected.result {
+                    None => {
+                        details = details.push(text("Loading commit…").size(SMALL).color(p().muted));
+                    }
+                    Some(Err(error)) => {
+                        details = details.push(text(error.as_str()).size(SMALL).color(p().error_text));
+                    }
+                    Some(Ok(commit)) => {
+                        details = details.push(text(commit.comparison.as_str()).size(SMALL).color(p().muted));
+                        if !commit.body.is_empty() {
+                            details = details.push(text(commit.body.as_str()).size(SMALL));
+                        }
+                        if commit.files.is_empty() {
+                            details =
+                                details.push(text("No changed files in this folder").size(SMALL).color(p().muted));
+                        }
+                        for (index, file) in commit.files.iter().enumerate() {
+                            let active = self.active_diff().is_some_and(|d| {
+                                d.rel == file.path
+                                    && matches!(&d.source, DiffSource::Commit { details } if details.oid == commit.oid)
+                            });
+                            let status = match file.code {
+                                'A' => "A",
+                                'D' => "D",
+                                'R' => "R",
+                                'C' => "C",
+                                'T' => "T",
+                                _ => "M",
+                            };
+                            let content = row![
+                                file_glyph(&file.path, 14),
+                                text(file.path.as_str()).size(UI).width(Length::Fill).wrapping(text::Wrapping::None),
+                                text(status).size(SMALL).color(theme::status_color(file.code)),
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center);
+                            let mut file_row = column![content];
+                            if let Some(orig) = &file.orig {
+                                file_row = file_row.push(text(orig.as_str()).size(SMALL).color(p().muted));
+                            }
+                            details = details.push(row_tip(
+                                button(container(file_row).width(Length::Fill).clip(true))
+                                    .width(Length::Fill)
+                                    .padding([3, 6])
+                                    .style(theme::flat(active))
+                                    .on_press(Msg::HistoryOpen(selected.id, index)),
+                                file.path.as_str(),
+                            ));
+                        }
+                        if commit.truncated {
+                            details = details
+                                .push(text("File list limited to 2,000 changes").size(SMALL).color(p().warn_text));
+                        }
+                    }
+                }
+                history = history.push(container(details).padding(Padding::new(6.0).left(26)).width(Length::Fill));
+            }
+        }
+        if self.git.log.is_empty() {
+            history = history.push(self.hint("No commits yet"));
+        }
+        history
+    }
+
     fn view_git(&self) -> Element<'_, Msg> {
         // Until the folder's first snapshot, `git.root` says nothing yet.
         if !self.git_loaded {
@@ -1403,34 +1499,7 @@ impl App {
             );
         }
 
-        let mut history = Column::new().spacing(1);
-        for (i, c) in self.git.log.iter().enumerate() {
-            let r = row![
-                text(if i == 0 { "○" } else { "●" }).size(SMALL).color(p().accent),
-                text(c.subject.as_str()).size(UI).wrapping(text::Wrapping::None),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center);
-            // Refs get the panel's full width instead of the subject's leftover space.
-            let mut entry = column![r].spacing(3).width(Length::Fill);
-            if !c.refs.is_empty() {
-                entry = entry.push(container(badge(c.refs.as_str(), p().accent)).padding(Padding::ZERO.left(16)));
-            }
-            history = history.push(tooltip(
-                container(entry).padding([3, 10]).width(Length::Fill).clip(true),
-                container(
-                    column![text(c.subject.as_str()).size(12), text(c.detail.as_str()).size(12).color(p().muted),]
-                        .spacing(2),
-                )
-                .padding(6)
-                .max_width(420)
-                .style(theme::bordered(p().bg)),
-                tooltip::Position::Bottom,
-            ));
-        }
-        if self.git.log.is_empty() {
-            history = history.push(self.hint("No commits yet"));
-        }
+        let history = self.view_history();
 
         let mut branch = row![text(self.git.branch.as_str()).size(UI)].spacing(8);
         if self.git.ahead > 0 {
@@ -2030,6 +2099,7 @@ impl App {
                         DiffSource::Index { staged: true } => "Index".to_string(),
                         DiffSource::Index { staged: false } => "Working Tree".to_string(),
                         DiffSource::Trees { label, .. } => label.clone(),
+                        DiffSource::Commit { details } => details.label.clone(),
                     };
                     format!("⇄ {name} ({side})")
                 }
@@ -2289,6 +2359,7 @@ impl App {
             DiffSource::Index { staged: true } => "HEAD ⇄ Index".into(),
             DiffSource::Index { staged: false } => "Index ⇄ Working Tree".into(),
             DiffSource::Trees { label, .. } => format!("{label} · before ⇄ after").into(),
+            DiffSource::Commit { details } => details.comparison.as_str().into(),
         };
         // The path and counts take what the buttons leave, clipped (full path in the tooltip).
         let mut info = row![
@@ -2306,8 +2377,9 @@ impl App {
             .spacing(10)
             .align_y(Alignment::Center);
         // ‹ › step through the run's files, or through the diff's section of Changes.
-        let files = match d.source {
-            DiffSource::Trees { run, .. } => self.runs.get(run).and_then(|r| r.files.as_ref()),
+        let files = match &d.source {
+            DiffSource::Trees { run, .. } => self.runs.get(*run).and_then(|r| r.files.as_ref()),
+            DiffSource::Commit { details } => Some(&details.files),
             DiffSource::Index { staged: true } => Some(&self.git.staged),
             DiffSource::Index { staged: false } => Some(&self.git.unstaged),
         };
@@ -2328,7 +2400,8 @@ impl App {
                 Some(Msg::DiffFull(!d.full)),
             ))
             .push(if d.on_disk {
-                icon_label(Icon::GoToFile, "Open file", Some(Msg::DiffOpenFile))
+                let label = if matches!(d.source, DiffSource::Commit { .. }) { "Working file" } else { "Open file" };
+                icon_label(Icon::GoToFile, label, Some(Msg::DiffOpenFile))
             } else {
                 tip(icon_label(Icon::GoToFile, "Open file", None), "File no longer exists")
             });
@@ -2358,6 +2431,9 @@ impl App {
 
         let body: Element<'a, Msg> = match &d.diff {
             None => container(text("Loading…").color(p().muted)).padding(16).into(),
+            Some(diff) if diff.error.is_some() => {
+                container(text(diff.error.as_deref().unwrap_or_default()).color(p().error_text)).padding(16).into()
+            }
             Some(diff) if diff.binary => container(text("Binary file").color(p().muted)).padding(16).into(),
             Some(diff) if diff.too_large => {
                 container(text("File too large to diff (over 8 MB)").color(p().muted)).padding(16).into()
@@ -2774,6 +2850,185 @@ fn diff_side(side: &diff::Side) -> Element<'static, Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_clicks_expand_files_and_open_immutable_diffs() {
+        use iced::advanced::Renderer as _;
+        use iced::advanced::{Layout, Shell, clipboard, layout, renderer, renderer::Headless, widget::Tree};
+        use iced::{Event, Pixels, Point, Size, mouse};
+        use std::future::Future as _;
+
+        // App::new creates a terminal and writes state. Run this UI test in a
+        // separate process with isolated XDG roots and a shell that exits.
+        let Ok(root) = std::env::var("MIRA_HISTORY_TEST_ROOT") else {
+            let base = crate::files::test_dir("history-ui");
+            let root = base.join("work");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::create_dir_all(base.join("config/mira")).unwrap();
+            std::fs::write(
+                base.join("config/mira/config"),
+                "terminal = shell\nautosave = off\ntheme = LAGC Tech Light\n",
+            )
+            .unwrap();
+            crate::git::git(&root, &["init", "-q"]).unwrap();
+            std::fs::write(root.join("sample.txt"), "before\n").unwrap();
+            for message in ["Initial", "Edit sample"] {
+                if message == "Edit sample" {
+                    std::fs::write(root.join("sample.txt"), "after\n").unwrap();
+                    std::fs::write(root.join("second.txt"), "second\n").unwrap();
+                }
+                crate::git::git(&root, &["add", "-A"]).unwrap();
+                crate::git::git(
+                    &root,
+                    &[
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        "commit",
+                        "-qm",
+                        message,
+                    ],
+                )
+                .unwrap();
+            }
+            std::fs::write(root.join("sample.txt"), "local edits\n").unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "view::tests::history_clicks_expand_files_and_open_immutable_diffs", "--nocapture"])
+                .env("MIRA_HISTORY_TEST_ROOT", &root)
+                .env("XDG_CONFIG_HOME", base.join("config"))
+                .env("XDG_STATE_HOME", base.join("state"))
+                .env("SHELL", "/bin/true")
+                .output()
+                .unwrap();
+            std::fs::remove_dir_all(base).unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        let (mut app, task) = App::new(crate::app::Start::Folder(root.clone()), true);
+        drop(task);
+        app.git = crate::git::snapshot(&root, &mut Default::default(), false).unwrap();
+        let mut new =
+            std::pin::pin!(<iced::Renderer as Headless>::new(theme::ui_font(), Pixels(14.0), Some("tiny-skia")));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Some(mut renderer)) = new.as_mut().poll(&mut cx) else {
+            panic!("headless renderer")
+        };
+        let click = |mut element: Element<'_, Msg>, renderer: &mut iced::Renderer, file: bool| {
+            let mut tree = Tree::new(&element);
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                renderer,
+                &layout::Limits::new(Size::ZERO, Size::new(400.0, 600.0)),
+            );
+            let layout = Layout::new(&node);
+            let target = if file {
+                layout
+                    .children()
+                    .nth(1)
+                    .unwrap()
+                    .children()
+                    .next()
+                    .unwrap()
+                    .children()
+                    .nth(2)
+                    .unwrap()
+                    .bounds()
+                    .center()
+            } else {
+                Point::new(100.0, 10.0)
+            };
+            let cursor = mouse::Cursor::Available(target);
+            let mut messages = Vec::new();
+            for event in [
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ] {
+                let mut shell = Shell::new(&mut messages);
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &event,
+                    layout,
+                    cursor,
+                    renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &layout.bounds(),
+                );
+            }
+            messages
+        };
+        let mut messages = click(app.view_history().into(), &mut renderer, false);
+        assert!(matches!(messages.first(), Some(Msg::HistorySelect(_))));
+        drop(app.update(messages.remove(0)));
+        let selected = app.commit_view.selected.as_ref().unwrap();
+        let (id, hash) = (selected.id, Arc::clone(&selected.hash));
+        let details = Arc::new(crate::git::commits::inspect(&root, &hash, "").unwrap());
+        drop(app.update(Msg::HistoryLoaded(id, Ok(Arc::clone(&details)))));
+        let mut messages = click(app.view_history().into(), &mut renderer, true);
+        assert!(matches!(messages.first(), Some(Msg::HistoryOpen(_, 0))));
+        drop(app.update(messages.remove(0)));
+        let tab = app.active_diff().unwrap();
+        assert!(matches!(&tab.source, DiffSource::Commit { details: source } if source.oid == details.oid));
+        let (old, new) = crate::git::commits::contents(&root, &details, &tab.rel, 1024).unwrap().unwrap();
+        assert_eq!((old.as_str(), new.as_str()), ("before\n", "after\n"));
+        let load = tab.load;
+        drop(app.update(Msg::DiffLoaded(load, true, Arc::new(diff::compute(&old, &new, Some(3))))));
+        assert!(app.active_diff().unwrap().diff.as_ref().unwrap().patch.is_none());
+
+        if let Ok(dir) = std::env::var("MIRA_HISTORY_PREVIEW_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            for (name, mut element, size) in [
+                ("history.png", app.view_history().into(), Size::new(400, 400)),
+                ("diff.png", app.view_diff(app.active_diff().unwrap()), Size::new(1100, 500)),
+            ] {
+                renderer.reset(iced::Rectangle::with_size(Size::new(size.width as f32, size.height as f32)));
+                let mut tree = Tree::new(&element);
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, Size::new(size.width as f32, size.height as f32)),
+                );
+                let layout = Layout::new(&node);
+                let mut messages = Vec::new();
+                element.as_widget_mut().update(
+                    &mut tree,
+                    &Event::Window(iced::window::Event::RedrawRequested(std::time::Instant::now())),
+                    layout,
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut Shell::new(&mut messages),
+                    &layout.bounds(),
+                );
+                element.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &theme::theme(),
+                    &renderer::Style { text_color: p().fg },
+                    layout,
+                    mouse::Cursor::Unavailable,
+                    &layout.bounds(),
+                );
+                let bytes = renderer.screenshot(size, 1.0, p().sidebar);
+                image::save_buffer(dir.join(name), &bytes, size.width, size.height, image::ColorType::Rgba8).unwrap();
+            }
+        }
+        drop(app.update(Msg::ReviewStep(1)));
+        assert_eq!(app.active_diff().unwrap().rel, "second.txt");
+        drop(app.update(Msg::HistorySelect(hash)));
+        assert!(app.commit_view.selected.is_none());
+        assert_eq!(std::fs::read_to_string(root.join("sample.txt")).unwrap(), "local edits\n");
+    }
 
     #[test]
     fn long_branch_badges_wrap_inside_narrow_panels() {

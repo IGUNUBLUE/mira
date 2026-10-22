@@ -11,6 +11,7 @@
 //! (find in file, go to line, quick open) and `keys`.
 
 mod branches;
+mod commits;
 mod confirm;
 mod documents;
 mod files;
@@ -26,6 +27,7 @@ mod settings;
 mod terminal;
 
 pub use branches::BranchPicker;
+pub use commits::CommitView;
 use confirm::ConfirmAction;
 pub use confirm::Confirmation;
 pub use documents::{AutoSave, DiffSource, DiffTab, EDITOR_PADDING_TOP, FileTab, ImageData, ImageTab, Tab};
@@ -100,6 +102,7 @@ pub struct App {
     /// Set when a snapshot timed out: the tree is too large to track runs.
     snapshots_off: bool,
     pub selected_run: Option<RunId>,
+    pub commit_view: CommitView,
     pub group_by_run: bool,
     undo_discard: Option<(String, Vec<String>)>,
     /// The Changes row under the mouse (section, index): its buttons show.
@@ -335,6 +338,9 @@ pub enum Msg {
     // git
     /// A snapshot from refresh `.0` (see `git_gen`).
     GitLoaded(u64, Result<Snapshot, String>),
+    HistorySelect(std::sync::Arc<str>),
+    HistoryLoaded(u64, Result<std::sync::Arc<crate::git::commits::Details>, String>),
+    HistoryOpen(u64, usize),
     RefreshChanges,
     OpenDiff(String, bool),
     Stage(Vec<String>),
@@ -531,6 +537,7 @@ impl App {
             snapshot_running: false,
             snapshots_off: false,
             selected_run: None,
+            commit_view: CommitView::default(),
             group_by_run: persist::config_get("changes_view").as_deref() == Some("runs"),
             undo_discard: None,
             hovered_change: None,
@@ -885,6 +892,7 @@ impl App {
             | Msg::TrashDone(_)
             | Msg::TrashPath(..)
             | Msg::UndoTrash) => self.update_files(m),
+            m @ (Msg::HistorySelect(_) | Msg::HistoryLoaded(..) | Msg::HistoryOpen(..)) => self.update_commits(m),
             m @ (Msg::RefreshChanges
             | Msg::GitLoaded(..)
             | Msg::OpenDiff(..)

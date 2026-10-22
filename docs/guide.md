@@ -137,6 +137,13 @@ ready for you to review and press Enter.
 Stage, unstage, commit, push and pull. History is under the Changes list; drag the divider to
 resize it.
 
+Click a commit in History to expand its author, date, message and affected files.
+Click a file to open its side-by-side diff; `‹ ›` walks through the commit's files.
+The comparison uses the first parent (also for merges), or an empty tree for the initial
+commit. Renames compare the original and new paths. These views show committed contents,
+independent of staged and working changes, and do not offer staging or discard actions.
+Click the commit again to collapse it. Only files inside the opened folder are listed.
+
 Actions show a small spinner at the button while they run and report their result in the status
 bar. Manual refresh animates too; automatic refresh stays quiet. Stage, unstage, discard and
 hunk actions cannot be clicked again until the current git action finishes.
