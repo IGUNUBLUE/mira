@@ -449,6 +449,28 @@ mod tests {
     use std::future::Future as _;
     use std::sync::atomic::AtomicBool;
 
+    struct Painted {
+        pixels: Vec<u8>,
+        glyphs: Vec<(Position, Rectangle)>,
+    }
+
+    impl std::ops::Deref for Painted {
+        type Target = [u8];
+        fn deref(&self) -> &[u8] {
+            &self.pixels
+        }
+    }
+
+    impl Painted {
+        fn glyph(&self, position: Position) -> Rectangle {
+            self.glyphs.iter().find(|(p, _)| *p == position).unwrap().1
+        }
+    }
+
+    fn outline_top(glyph: Rectangle) -> Rectangle {
+        Rectangle::new(Point::new(glyph.center_x() - 1.0, glyph.y), Size::new(2.0, 2.0))
+    }
+
     fn renderer() -> iced::Renderer {
         let mut new =
             std::pin::pin!(<iced::Renderer as Headless>::new(theme::mono_font(), Pixels(14.0), Some("tiny-skia")));
@@ -457,7 +479,7 @@ mod tests {
         renderer
     }
 
-    fn paint(renderer: &mut iced::Renderer, content: &Content, index: &code::Index, size: Size<u32>) -> Vec<u8> {
+    fn paint(renderer: &mut iced::Renderer, content: &Content, index: &code::Index, size: Size<u32>) -> Painted {
         let bounds = Rectangle::with_size(Size::new(size.width as f32, size.height as f32));
         renderer.reset(bounds);
         let settings = code::Settings {
@@ -481,12 +503,12 @@ mod tests {
                 selection: theme::p().selection,
             })
             .highlight_with::<code::Highlighter>(settings, |f, _| *f);
-        let mut element = editor(inner, Some(index), index.indent);
-        let mut tree = Tree::new(&element);
-        let node = element.as_widget_mut().layout(&mut tree, renderer, &layout::Limits::new(Size::ZERO, bounds.size()));
+        let mut widget = Decorated { inner: inner.into(), index: Some(index), indent: index.indent };
+        let mut tree = Tree { tag: widget.tag(), state: widget.state(), children: widget.children() };
+        let node = widget.layout(&mut tree, renderer, &layout::Limits::new(Size::ZERO, bounds.size()));
         let mut messages = Vec::new();
         let layout = Layout::new(&node);
-        element.as_widget_mut().update(
+        widget.update(
             &mut tree,
             &Event::Window(iced::window::Event::RedrawRequested(std::time::Instant::now())),
             layout,
@@ -496,7 +518,37 @@ mod tests {
             &mut Shell::new(&mut messages),
             &bounds,
         );
-        element.as_widget().draw(
+        // Inspect the actual syntax-shaped buffer, not a fixed-cell estimate or
+        // a second unhighlighted model (fallback fonts can be proportional).
+        let mut recording = Recording::new(renderer);
+        widget.inner.as_widget().draw(
+            &tree.children[0],
+            &mut recording,
+            &theme::theme(),
+            &renderer::Style { text_color: theme::p().fg },
+            layout,
+            mouse::Cursor::Unavailable,
+            &bounds,
+        );
+        let mut glyphs = Vec::new();
+        for command in &recording.commands {
+            if let Command::Editor(weak, position, _, _) = command {
+                let editor = weak.upgrade().unwrap();
+                let horizontal = editor.buffer().scroll().horizontal;
+                for run in editor.buffer().layout_runs() {
+                    for glyph in run.glyphs {
+                        glyphs.push((
+                            Position { line: run.line_i, column: glyph.start },
+                            Rectangle::new(
+                                Point::new(position.x + glyph.x - horizontal, position.y + run.line_top),
+                                Size::new(glyph.w, run.line_height),
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        widget.draw(
             &tree,
             renderer,
             &theme::theme(),
@@ -505,15 +557,25 @@ mod tests {
             mouse::Cursor::Unavailable,
             &bounds,
         );
-        renderer.screenshot(size, 1.0, theme::p().bg)
+        Painted { pixels: renderer.screenshot(size, 1.0, theme::p().bg), glyphs }
     }
 
     fn colored(bytes: &[u8], width: u32, rect: Rectangle, color: Color) -> bool {
-        let [r, g, b, _] = color.into_rgba8();
+        let fg = color.into_rgba8();
+        let bg = theme::p().bg.into_rgba8();
+        let delta: [f32; 3] = std::array::from_fn(|i| f32::from(fg[i]) - f32::from(bg[i]));
+        let norm: f32 = delta.iter().map(|d| d * d).sum();
         (rect.y.max(0.0) as u32..(rect.y + rect.height) as u32).any(|y| {
             (rect.x.max(0.0) as u32..(rect.x + rect.width) as u32).any(|x| {
                 bytes.get(((y * width + x) * 4) as usize..).is_some_and(|p| {
-                    p.len() >= 4 && p[0].abs_diff(r) < 8 && p[1].abs_diff(g) < 8 && p[2].abs_diff(b) < 8
+                    if p.len() < 4 {
+                        return false;
+                    }
+                    // Thin outlines can be antialiased entirely: require at least
+                    // half foreground coverage and the expected composited hue.
+                    let alpha = (0..3).map(|i| (f32::from(p[i]) - f32::from(bg[i])) * delta[i]).sum::<f32>() / norm;
+                    (0.5..=1.05).contains(&alpha)
+                        && (0..3).all(|i| (f32::from(p[i]) - (f32::from(bg[i]) + alpha * delta[i])).abs() < 8.0)
                 })
             })
         })
@@ -528,27 +590,15 @@ mod tests {
         let idle = paint(&mut renderer, &content, &index, Size::new(600, 160));
         content.move_to(Cursor { position: Position { line: 2, column: 8 }, selection: None });
         let active = paint(&mut renderer, &content, &index, Size::new(600, 160));
-        let row = crate::app::FileTab::row();
-        let mut cache = GuideCache::default();
-        let x = 8.0 + cache.measure("    ", row).unwrap();
-        let guide = Rectangle::new(Point::new(x - 1.0, 6.0 + 2.0 * row + 3.0), Size::new(4.0, row - 6.0));
+        let close = active.glyph(Position { line: 3, column: 4 });
+        let body = active.glyph(Position { line: 2, column: 8 });
+        let guide = Rectangle::new(Point::new(close.x - 1.0, body.y + 3.0), Size::new(4.0, body.height - 6.0));
         let color = theme::p().brackets()[1];
         assert!(!colored(&idle, 600, guide, color), "no active scope before the first bracket");
         assert!(colored(&active, 600, guide, color), "active bracket guide must join both lines");
+        assert!(colored(&active, 600, outline_top(close), color), "closing bracket highlight");
         assert!(
-            colored(&active, 600, Rectangle::new(Point::new(x - 2.0, 6.0 + 3.0 * row), Size::new(12.0, row)), color),
-            "closing bracket highlight"
-        );
-        assert!(
-            colored(
-                &active,
-                600,
-                Rectangle::new(
-                    Point::new(8.0 + cache.measure(&" ".repeat(13), row).unwrap() - 2.0, 6.0 + row),
-                    Size::new(12.0, row)
-                ),
-                color
-            ),
+            colored(&active, 600, outline_top(active.glyph(Position { line: 1, column: 13 })), color),
             "opening bracket highlight"
         );
         assert_eq!(content.text(), source);
@@ -627,23 +677,12 @@ mod tests {
         let source = "\tlet café = { value: 1 };";
         let index = code::Index::parse(source, "rs", &AtomicBool::new(false)).unwrap().unwrap();
         let column = source.find('{').unwrap();
-        let mut model = Editor::with_text(source);
-        model.update(
-            Size::new(600.0, 80.0),
-            theme::mono_font(),
-            Pixels(14.0),
-            text::LineHeight::Relative(1.3),
-            text::Wrapping::None,
-            &mut text::highlighter::PlainText,
-        );
-        let run = model.buffer().layout_runs().next().unwrap();
-        let glyph = run.glyphs.iter().find(|g| g.start == column).unwrap();
-        let border = Rectangle::new(Point::new(8.0 + glyph.x + glyph.w / 3.0, 6.0), Size::new(2.0, 2.0));
         let mut content = Content::with_text(source);
         let mut renderer = renderer();
         let idle = paint(&mut renderer, &content, &index, Size::new(600, 80));
         content.move_to(Cursor { position: Position { line: 0, column: column + 1 }, selection: None });
         let active = paint(&mut renderer, &content, &index, Size::new(600, 80));
+        let border = outline_top(active.glyph(Position { line: 0, column }));
         assert!(!colored(&idle, 600, border, theme::p().brackets()[0]));
         assert!(colored(&active, 600, border, theme::p().brackets()[0]));
     }
