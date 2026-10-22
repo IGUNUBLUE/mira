@@ -6,6 +6,13 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.8.1]
+
+### Fixed
+
+- Visual regression checks use actual syntax-shaped glyphs and antialiased colors,
+  so they also work with fallback fonts on Linux runners.
+
 ## [0.8.0]
 
 ### Added

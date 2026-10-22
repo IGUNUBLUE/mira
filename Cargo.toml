@@ -1,6 +1,6 @@
 [package]
 name = "mira"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 description = "A light, terminal-first workspace for reviewing what your coding agents change"
 license = "MIT OR Apache-2.0"
