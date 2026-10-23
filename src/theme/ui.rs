@@ -1,8 +1,9 @@
 //! Shared native design primitives for product views and the visual specimen. See design.md.
 
 use crate::theme::{self, Palette};
-use iced::widget::{button, container, scrollable, text, text_editor, text_input};
+use iced::widget::{button, container, scrollable, text, text_editor, text_input, tooltip};
 use iced::{Border, Color, Element, Length, Pixels, Theme};
+use std::time::Duration;
 
 pub const BODY: u32 = 14;
 pub const META: u32 = 12;
@@ -18,6 +19,8 @@ pub const TITLE: u32 = 20;
 pub const SECTION: u32 = 16;
 pub const MENU_ROW: f32 = 32.0;
 pub const BADGE_RADIUS: f32 = 4.0;
+pub const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
+pub const ROW_TOOLTIP_DELAY: Duration = Duration::from_millis(700);
 
 /// Includes menu padding, the one-pixel item gaps, and padded separators.
 pub const fn menu_height(rows: usize, separators: usize) -> f32 {
@@ -99,6 +102,29 @@ pub fn primary_wide<'a, M: Clone + 'a>(label: &'a str, message: Option<M>) -> bu
         .on_press_maybe(message)
 }
 
+/// Optional context waits for a deliberate hover; never put essential state only in a tooltip.
+pub fn help<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    hint: impl Into<Element<'a, M>>,
+    position: tooltip::Position,
+) -> tooltip::Tooltip<'a, M> {
+    tooltip(content, hint, position).delay(TOOLTIP_DELAY)
+}
+
+/// Explain an empty view without adding a card, illustration or redundant action.
+pub fn empty_state<'a, M: 'a>(title: &'a str, detail: &'a str) -> Element<'a, M> {
+    container(
+        iced::widget::column![
+            text(title).size(BODY).color(theme::p().fg),
+            text(detail).size(META).color(theme::p().muted).wrapping(text::Wrapping::WordOrGlyph),
+        ]
+        .spacing(4),
+    )
+    .width(Length::Fill)
+    .padding(INSET)
+    .into()
+}
+
 /// One field geometry for search, settings, quick open, and the gallery.
 pub fn field<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, M> {
     text_input(placeholder, value)
@@ -144,15 +170,19 @@ pub fn floating(_: &Theme) -> container::Style {
     }
 }
 
+fn field_border(c: &Palette, focused: bool) -> Border {
+    Border {
+        color: if focused { c.focus } else { c.border },
+        width: if focused { 2.0 } else { 1.0 },
+        radius: RADIUS.into(),
+    }
+}
+
 pub fn editor(_: &Theme, status: text_editor::Status) -> text_editor::Style {
     let c = theme::p();
     text_editor::Style {
         background: c.bg.into(),
-        border: Border {
-            color: if matches!(status, text_editor::Status::Focused { .. }) { c.accent } else { c.border },
-            width: 1.0,
-            radius: RADIUS.into(),
-        },
+        border: field_border(c, matches!(status, text_editor::Status::Focused { .. })),
         placeholder: c.muted,
         value: c.fg,
         selection: c.selection,
@@ -182,7 +212,7 @@ pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {
         background: c.bg.into(),
-        border: Border { color: if focused { c.accent } else { c.border }, width: 1.0, radius: RADIUS.into() },
+        border: field_border(c, focused),
         icon: c.muted,
         placeholder: c.muted,
         value: c.fg,
@@ -280,6 +310,19 @@ mod tests {
                         assert!(contrast >= 4.5, "{} selected={active} {state:?}: {contrast:.2}:1", palette.name);
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn field_focus_is_distinct_from_idle_borders_in_every_palette() {
+        for palette in &theme::PALETTES {
+            let focus = field_border(palette, true);
+            assert_eq!(focus.width, 2.0, "{} focus must have a two-pixel stroke", palette.name);
+            for background in [palette.bg, palette.sidebar, field_border(palette, false).color] {
+                let (a, b) = (luminance(focus.color), luminance(background));
+                let contrast = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                assert!(contrast >= 3.0, "{} focus contrast is {contrast:.2}:1", palette.name);
             }
         }
     }

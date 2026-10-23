@@ -211,14 +211,31 @@ fn view_shortcuts<'a>() -> Element<'a, Msg> {
     .into()
 }
 
+/// Fallback shared by file and commit editors; app shortcuts must not become editable text.
+fn editor_default_binding(key: text_editor::KeyPress) -> Option<Binding<Msg>> {
+    if matches!(key.status, text_editor::Status::Focused { .. })
+        && key.modifiers.command()
+        && !key.modifiers.shift()
+        && !key.modifiers.alt()
+        && matches!(key.key.as_ref(), Key::Character(","))
+    {
+        // X11 can supply printable text for Ctrl+comma; dispatch before Iced's text fallback.
+        return Some(Binding::Custom(Msg::OpenDialog(Dialog::Settings)));
+    }
+    Binding::from_key_press(key)
+}
+
 fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
     ui::action(label, ui::Variant::Ghost, msg).height(ui::COMPACT).padding([4, 8]).into()
 }
 
 fn tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
-    tooltip(
+    ui::help(
         content,
-        container(text(label).size(SMALL)).padding([6, 10]).max_width(420).style(ui::floating),
+        container(text(label).size(SMALL).wrapping(text::Wrapping::WordOrGlyph))
+            .padding([6, 10])
+            .max_width(420)
+            .style(ui::floating),
         tooltip::Position::Bottom,
     )
     .into()
@@ -227,12 +244,15 @@ fn tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragment<
 /// Tooltip with the full text of a list row that may be clipped; it waits a
 /// moment, so moving over the list doesn't flash one per row.
 fn row_tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
-    tooltip(
+    ui::help(
         content,
-        container(text(label).size(SMALL)).padding([6, 10]).max_width(420).style(ui::floating),
+        container(text(label).size(SMALL).wrapping(text::Wrapping::WordOrGlyph))
+            .padding([6, 10])
+            .max_width(420)
+            .style(ui::floating),
         tooltip::Position::Bottom,
     )
-    .delay(std::time::Duration::from_millis(700))
+    .delay(ui::ROW_TOOLTIP_DELAY)
     .into()
 }
 
@@ -1192,7 +1212,7 @@ impl App {
                 Some(prompt) => text(prompt.as_str()),
                 None => text(format!("Changed by {}", run.agent)),
             };
-            content = content.push(tooltip(
+            content = content.push(ui::help(
                 text(label)
                     .size(SMALL)
                     .color(if new { p().warn_text } else { p().muted })
@@ -1238,7 +1258,7 @@ impl App {
             let menu_open = self.commit_view.menu.as_ref().is_some_and(|menu| menu.hash == c.hash);
             let hash = Arc::clone(&c.hash);
             history = history.push(crate::rightclick::right_click(
-                tooltip(
+                ui::help(
                     button(container(entry).width(Length::Fill).clip(true))
                         .padding([6, 12])
                         .width(Length::Fill)
@@ -1252,7 +1272,8 @@ impl App {
                     .max_width(420)
                     .style(theme::bordered(p().bg)),
                     tooltip::Position::Bottom,
-                ),
+                )
+                .delay(ui::ROW_TOOLTIP_DELAY),
                 move |at| Msg::HistoryMenuAt(Arc::clone(&hash), at),
             ));
             if let Some(selected) = selected {
@@ -1297,7 +1318,7 @@ impl App {
             }
         }
         if self.git.log.is_empty() {
-            history = history.push(self.hint("No commits yet"));
+            history = history.push(ui::empty_state("No commits yet", "Create a commit to start this history."));
         }
         history
     }
@@ -1343,8 +1364,14 @@ impl App {
         let commit_all = staged.is_empty() && !changes.is_empty();
         let commit_label: Cow<'_, str> =
             if commit_all { format!("Commit All ({})", changes.len()).into() } else { "Commit".into() };
-        let commit_tip: Cow<'_, str> = if !conflicts.is_empty() {
+        let commit_tip: Cow<'_, str> = if busy {
+            "Wait for the current Git operation to finish".into()
+        } else if !conflicts.is_empty() {
             "Resolve the merge conflicts first".into()
+        } else if !has_changes {
+            "No changes to commit".into()
+        } else if self.commit_msg.text().trim().is_empty() {
+            "Write a commit message first".into()
         } else if commit_all {
             let untracked = changes.iter().filter(|c| c.code == 'U').count();
             let n = changes.len();
@@ -1473,7 +1500,8 @@ impl App {
             ));
         }
         if !has_changes {
-            list = list.push(self.hint("No changes — agent edits show up here"));
+            list = list
+                .push(ui::empty_state("Working tree clean", "Saved changes from you or your agents will appear here."));
         }
         if self.git.truncated {
             list = list.push(
@@ -1546,7 +1574,7 @@ impl App {
                         ),
                     ]
                     .align_y(Alignment::Center),
-                    text("Commit message").size(SMALL).color(p().muted),
+                    text("Commit message (required)").size(SMALL).color(p().muted),
                     row![
                         // Grows with the message (wrapped to the panel width), then scrolls.
                         iced::widget::text_editor(&self.commit_msg)
@@ -1573,9 +1601,9 @@ impl App {
                                     })),
                                 Key::Character(c) if kp.modifiers.command() && c.eq_ignore_ascii_case("y") =>
                                     Some(Binding::Custom(Msg::CommitRedo)),
-                                _ => Binding::from_key_press(kp),
+                                _ => editor_default_binding(kp),
                             }),
-                        tooltip(
+                        ui::help(
                             ui::control(
                                 container(if generating {
                                     self.spinner(16)
@@ -1823,7 +1851,7 @@ impl App {
         } else if s.running && s.results.is_empty() {
             text("Searching…").size(12).color(p().muted).into()
         } else if s.results.is_empty() {
-            text("No results").size(12).color(p().muted).into()
+            text("0 results").size(12).color(p().muted).into()
         } else {
             // Results of the previous query stay while the new one runs.
             row![
@@ -1835,6 +1863,9 @@ impl App {
         };
 
         let mut list = Column::new();
+        if !s.query.is_empty() && !s.running && s.error.is_none() && s.results.is_empty() {
+            list = list.push(ui::empty_state("No matches", "Try another term or change the search options."));
+        }
         let mut shown = 0;
         'files: for (fi, f) in s.results.iter().enumerate() {
             let (name, dir) = split_path(&f.rel);
@@ -2234,7 +2265,7 @@ impl App {
                     }
                     Key::Character(c) if ctrl && c.eq_ignore_ascii_case("y") => Some(Binding::Custom(Msg::Redo)),
                     Key::Named(Named::Tab) if !ctrl => Some(Binding::Sequence(vec![Binding::Insert(' '); 4])),
-                    _ => Binding::from_key_press(kp),
+                    _ => editor_default_binding(kp),
                 }
             })
             .highlight_with::<crate::code::Highlighter>(
@@ -2589,7 +2620,7 @@ impl App {
             .style(theme::flat(false))
             .on_press(Msg::DismissStatus);
             left = left.push(match &self.status_detail {
-                Some(detail) => tooltip(
+                Some(detail) => ui::help(
                     message,
                     container(text(detail.as_str()).size(12).font(theme::mono_font()))
                         .padding(6)
@@ -2643,7 +2674,7 @@ impl App {
             theme::Choice::Auto => format!("{} (auto)", p().name).into(),
             theme::Choice::Fixed(_) => p().name.into(),
         };
-        right = right.push(tooltip(
+        right = right.push(ui::help(
             button(row![ico(Icon::ColorMode, 12), text(theme_label).size(12)].spacing(4).align_y(Alignment::Center))
                 .padding([1, 4])
                 .style(theme::flat(false))
@@ -2651,7 +2682,7 @@ impl App {
             container(text("Switch theme (Ctrl+Shift+T)").size(12)).padding(6).style(theme::bordered(p().bg)),
             tooltip::Position::Top,
         ));
-        right = right.push(tooltip(
+        right = right.push(ui::help(
             button(ico(Icon::Gear, 13))
                 .padding([1, 4])
                 .style(theme::flat(self.gear_menu))
@@ -2867,6 +2898,29 @@ fn diff_side(side: &diff::Side) -> Element<'static, Msg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_shortcut_never_inserts_text_into_an_editor() {
+        use iced::keyboard::{
+            Modifiers,
+            key::{Code, Physical},
+        };
+        let press = |modifiers, status| text_editor::KeyPress {
+            key: Key::Character(",".into()),
+            modified_key: Key::Character(",".into()),
+            physical_key: Physical::Code(Code::Comma),
+            modifiers,
+            text: Some(",".into()),
+            status,
+        };
+        let focused = text_editor::Status::Focused { is_hovered: false };
+        assert!(matches!(
+            editor_default_binding(press(Modifiers::CTRL, focused)),
+            Some(Binding::Custom(Msg::OpenDialog(Dialog::Settings)))
+        ));
+        assert!(matches!(editor_default_binding(press(Modifiers::empty(), focused)), Some(Binding::Insert(','))));
+        assert!(editor_default_binding(press(Modifiers::CTRL, text_editor::Status::Active)).is_none());
+    }
 
     #[test]
     fn history_filenames_never_paint_over_the_status_column() {

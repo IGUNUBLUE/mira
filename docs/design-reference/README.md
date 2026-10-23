@@ -69,6 +69,36 @@ navigation and Files / By agent run. The active choice retains its own surface a
 crop of the same native product fixture, not a mockup. The four palettes and existing interaction flow
 were checked again; layout tests cover label and icon/label content at 28, 32 and 36 px.
 
+## Small UX refinements
+
+The [research and decisions](ux-refinements.md) record the W3C, Fluent, Microsoft, NN/G and VS Code
+sources behind the next small changes. The governing rules were added to `design.md` alongside the
+shared native helpers. These are real product captures, cropped where a full window adds no evidence.
+
+| Capture | Checked |
+|---|---|
+| [Calm Light focus](ux-focus-calm-light.png) | 2 px border, using the existing darker LAGC green |
+| [No matches](ux-search-empty.png) / [240 px panel](ux-search-empty-narrow.png) | Count and a useful next step, with readable wrapping |
+| [Invalid regex](ux-search-error.png) | An error is shown instead of an empty-success message |
+| [Clean tree and initial History](ux-clean-first.png) | Two distinct states explained without new controls |
+| [Before hover delay](ux-tooltip-early.png) / [After](ux-tooltip-late.png) | Optional help waits before appearing |
+| [Settings from the editor](ux-settings-keyboard.png) | Ctrl+, opens the dialog without inserting a comma |
+
+All four palettes passed the native interaction review. Both focus rows in the Calm Light capture
+match `576A3C`; the next interior row matches its `F4EEE2` field background. The Tech Light focus was
+also checked against its `12717C` source value. These checks used the real GL-rendered pixels.
+
+The tooltip capture changed only after the hover delay; after moving the pointer away, its inspected
+region matched the pre-tooltip region exactly. Ctrl+, was exercised from both the file and commit
+editors. The source file remained unchanged, and the commit placeholder's inspected pixels matched
+before and after opening/dismissing Settings. The previous behavior was reproduced independently in
+the installed 0.10.1 binary, and a new regression fails before the fix.
+
+The final local checks passed: 273 tests, format, Clippy with warnings denied, and the native product
+and gallery builds. API use was verified against the installed `iced_widget` 0.14.2 source: tooltip
+help uses its scheduled redraw API, while field border styling does not participate in layout.
+These visual checks do not establish complete keyboard accessibility or hardware performance.
+
 ## Native Iced specimen
 
 The example imports the same palette and primitive implementation as mira, with static fixture data. It runs independently
