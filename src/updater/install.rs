@@ -211,6 +211,7 @@ pub(super) fn prepare(
         }
         result?;
         file.sync_all().map_err(|e| e.to_string())?;
+        drop(file); // Linux refuses to execute a file while a writable descriptor remains open.
         validate_binary(&temp, &release, cancel, true)?;
         // A private staging name is reserved for this signed version and digest.
         if path.exists() {
@@ -551,6 +552,43 @@ mod tests {
             fs::remove_dir_all(&self.dir).unwrap();
         }
     }
+    #[test]
+    fn extracted_executable_is_closed_before_version_validation() {
+        let fixture = Fixture::new();
+        let mut release = fixture.prepared.release.clone();
+        let name = name(&release.manifest.version, &release.manifest.arch);
+        let package = fixture.dir.join(&name);
+        fs::create_dir(&package).unwrap();
+        let source = fixture.dir.join("version.rs");
+        fs::write(&source, format!("fn main() {{ println!(\"mira {}\"); }}", release.manifest.version)).unwrap();
+        assert!(Command::new("rustc").arg(&source).arg("-o").arg(package.join("mira")).status().unwrap().success());
+        for notice in NOTICES {
+            fs::write(package.join(notice), b"package notices").unwrap();
+        }
+        release.manifest.binary_size = fs::metadata(package.join("mira")).unwrap().len();
+        release.manifest.binary_sha256 = io::sha256(&package.join("mira"), &AtomicBool::new(false)).unwrap();
+        let archive = fixture.dir.join("package.tar.gz");
+        assert!(
+            Command::new("tar")
+                .arg("-czf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(&fixture.dir)
+                .arg(&name)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let prepared = prepare(fixture.prepared.target.clone(), release, &archive, &AtomicBool::new(false)).unwrap();
+        let output = Command::new(&prepared.path).arg("--version").output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), format!("mira {}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            io::read_bounded(&notices_path(&prepared.path).join("THIRD_PARTY_LICENSES.html"), MAX_NOTICE).unwrap(),
+            b"package notices"
+        );
+    }
+
     #[test]
     fn swaps_atomically_preserves_backup_and_rolls_back_binary_and_record() {
         let fixture = Fixture::new();

@@ -6,6 +6,13 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.11.1]
+
+### Fixed
+
+- Close the extracted executable before validating its version, so Linux permits execution
+  and signed downloads can finish. Cover extraction and execution with a real ELF regression test.
+
 ## [0.11.0]
 
 ### Added
