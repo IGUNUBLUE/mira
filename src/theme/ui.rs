@@ -291,17 +291,24 @@ mod tests {
         let std::task::Poll::Ready(Some(renderer)) = new.as_mut().poll(&mut cx) else {
             panic!("headless renderer");
         };
-        for width in [140.0, 208.0, 328.0] {
-            let mut reference: Element<'_, ()> = badge("feature/preserve-full-branch-labels-in-narrow-inspectors");
+        // Fonts have different advances: first measure an overflowing fixture, then compare heights.
+        let label =
+            "origin/feature/preserve-full-branch-labels-in-narrow-inspectors, feature/keep-reference-names-visible";
+        let measure = |width| {
+            let mut reference: Element<'_, ()> = badge(label);
             let mut tree = Tree::new(&reference);
-            let node = reference.as_widget_mut().layout(
-                &mut tree,
-                &renderer,
-                &layout::Limits::new(Size::ZERO, Size::new(width, 400.0)),
-            );
-            assert!(node.size().width <= width, "reference escaped {width}px");
-            assert!(node.size().height > 24.0, "long reference failed to wrap at {width}px");
-            assert!(node.size().height < 400.0, "reference exceeded the available height");
+            reference
+                .as_widget_mut()
+                .layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, Size::new(width, 400.0)))
+                .size()
+        };
+        let unwrapped = measure(4096.0);
+        assert!(unwrapped.width > 328.0, "fixture must overflow the widest inspector");
+        for width in [140.0, 208.0, 328.0] {
+            let size = measure(width);
+            assert!(size.width <= width, "reference escaped {width}px");
+            assert!(size.height > unwrapped.height, "long reference failed to wrap at {width}px");
+            assert!(size.height < 400.0, "reference exceeded the available height");
         }
     }
 }
