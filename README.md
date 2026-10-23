@@ -50,7 +50,7 @@ with the terminal at the center and the review around it. [The longer story →]
 - **The VS Code basics, without the weight.** Source control, search & replace, an explorer,
   a syntax-highlighted editor with undo and autosave, an image viewer, file icons, four themes.
 - **Private by default.** No telemetry, no account needed, no network unless you ask for a
-  commit message. [What leaves your machine →](docs/privacy.md)
+  commit message or check for updates. [What leaves your machine →](docs/privacy.md)
 
 ## Install
 
@@ -65,7 +65,11 @@ desktop entry and icon. Linux only for now (x86_64, aarch64). Uninstall with
 Install [herdr](https://herdr.dev) too: it is what lets mira know which agent changed what (see
 the [recommended herdr settings](docs/guide.md#herdr-settings)). Without it, mira runs your shell
 and still shows your git changes, diffs and history, but not who made them. A
-[Nerd Font](https://www.nerdfonts.com) gives the icons. mira needs `git` and `curl`.
+[Nerd Font](https://www.nerdfonts.com) gives the icons. mira needs `git` and `curl`. Signed updates also need `tar` and OpenSSL 3.
+
+Update through **Settings → Updates**, or rerun the installer. Automatic checks are off by default;
+when enabled, they run at startup/focus at most once a day. Downloading and restarting require a click.
+Package-manager and `cargo install` installations stay managed by their original tool.
 
 From source: `cargo install --git https://github.com/IGUNUBLUE/mira --locked`.
 

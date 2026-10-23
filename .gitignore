@@ -8,3 +8,6 @@
 /.kiro/skills/systematic-debugging
 # Local maintainer notes
 /.kiro/steering/maintainer.md
+
+# Python release-tool bytecode
+__pycache__/

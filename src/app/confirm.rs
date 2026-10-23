@@ -67,6 +67,9 @@ pub struct Confirmation {
 
 /// Keep background results flowing, but do not accept input aimed at the obscured UI.
 pub(super) fn allowed_during_confirmation(msg: &Msg) -> bool {
+    if let Msg::Update(event) = msg {
+        return event.background();
+    }
     matches!(
         msg,
         Msg::ConfirmCancel
@@ -305,6 +308,57 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         None
+    }
+
+    #[test]
+    fn updating_preserves_parked_edits_and_commit_drafts() {
+        let Some((mut app, root)) = fixture("updating_preserves_parked_edits_and_commit_drafts") else {
+            return;
+        };
+        drop(app.update(Msg::OpenFile(root.join("a.txt"), None)));
+        drop(
+            app.update(Msg::Edit(iced::widget::text_editor::Action::Edit(iced::widget::text_editor::Edit::Insert(
+                'x',
+            )))),
+        );
+        let other = root.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        drop(app.switch_root(other));
+        drop(app.update(Msg::Update(super::super::UpdateEvent::Install)));
+        assert!(app.updates.error.as_deref().unwrap().contains("other workspaces"));
+        assert_eq!(app.updates.phase, super::super::UpdatePhase::Idle);
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "disk contents\n");
+        drop(app.switch_root(root));
+        app.tabs.clear();
+        app.commit_msg = iced::widget::text_editor::Content::with_text("draft commit");
+        drop(app.update(Msg::Update(super::super::UpdateEvent::Install)));
+        assert!(app.updates.error.as_deref().unwrap().contains("draft commit"));
+        assert_eq!(app.commit_msg.text(), "draft commit");
+    }
+
+    #[test]
+    fn update_cancellation_ignores_late_results_and_automatic_checks_respect_schedule() {
+        let Some((mut app, _)) =
+            fixture("update_cancellation_ignores_late_results_and_automatic_checks_respect_schedule")
+        else {
+            return;
+        };
+        app.updates.loaded = true;
+        app.updates.automatic = false;
+        drop(app.maybe_check_updates());
+        assert_eq!(app.updates.phase, super::super::UpdatePhase::Idle);
+        app.updates.automatic = true;
+        app.updates.cache.checked_at = crate::persist::now();
+        drop(app.maybe_check_updates());
+        assert_eq!(app.updates.phase, super::super::UpdatePhase::Idle);
+        drop(app.update(Msg::Update(super::super::UpdateEvent::Check)));
+        assert_eq!(app.updates.phase, super::super::UpdatePhase::Checking);
+        drop(app.update(Msg::Update(super::super::UpdateEvent::Cancel)));
+        drop(app.update(Msg::Update(super::super::UpdateEvent::Checked(1, Err("stale response".into())))));
+        assert!(app.updates.error.is_none());
+        assert_eq!(app.updates.phase, super::super::UpdatePhase::Idle);
+        drop(app.maybe_check_updates());
+        assert_eq!(app.updates.phase, super::super::UpdatePhase::Idle);
     }
 
     fn pending_id(app: &App) -> u64 {

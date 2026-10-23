@@ -513,7 +513,11 @@ impl App {
             item("Settings", "Ctrl+,", Msg::Gear(MenuItem::Settings)),
             item("Keyboard Shortcuts", "", Msg::Gear(MenuItem::Shortcuts)),
             container(hrule()).padding([3, 6]),
-            item("Check for Updates", "browser", Msg::Gear(MenuItem::Updates)),
+            item(
+                if self.updates.notice() { "Update available" } else { "Check for updates" },
+                "",
+                Msg::Gear(MenuItem::Updates)
+            ),
             item("About mira", "", Msg::Gear(MenuItem::About)),
         ]
         .spacing(1);
@@ -693,6 +697,7 @@ impl App {
             Dialog::Settings => ("Settings", self.view_settings()),
             Dialog::Shortcuts => ("Keyboard Shortcuts", view_shortcuts()),
             Dialog::About => ("About mira", self.view_about()),
+            Dialog::Updates => ("Mira updates", self.view_updates()),
         };
         let header = row![
             text(title).size(ui::TITLE),
@@ -701,7 +706,7 @@ impl App {
         ]
         .align_y(Alignment::Center);
         // Long dialogs scroll inside, with their header and footer in place.
-        let tall = d != Dialog::About;
+        let tall = matches!(d, Dialog::Settings | Dialog::Shortcuts);
         container(column![header, body].spacing(ui::PANEL_INSET))
             .padding(ui::DIALOG_INSET)
             .width(Length::Fill)
@@ -710,6 +715,91 @@ impl App {
             .max_height((self.window_height - 60.0).max(240.0))
             .style(ui::floating)
             .into()
+    }
+
+    fn view_update_choices(&self) -> Element<'_, Msg> {
+        row![
+            ui::action("Off", ui::Variant::Ghost, Some(Msg::Update(UpdateEvent::Automatic(false))))
+                .style(theme::tab(!self.updates.automatic)),
+            ui::action("On", ui::Variant::Ghost, Some(Msg::Update(UpdateEvent::Automatic(true))))
+                .style(theme::tab(self.updates.automatic)),
+        ]
+        .spacing(4)
+        .into()
+    }
+
+    fn view_updates(&self) -> Element<'_, Msg> {
+        let updates = &self.updates;
+        let event = |e| Msg::Update(e);
+        let mut body = column![
+            text(concat!("Current version: ", env!("CARGO_PKG_VERSION"))).size(UI),
+            text(updates.status.as_str()).size(UI),
+        ]
+        .spacing(ui::INSET);
+        if updates.visual_busy() {
+            body = body.push(
+                row![self.spinner(14), text("Your workspace stays available.").size(SMALL).color(p().muted)]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+            );
+        }
+        body = body.push(
+            row![text("Automatic checks").size(UI), self.view_update_choices()].spacing(12).align_y(Alignment::Center),
+        );
+        body = body.push(text("Off by default. When enabled, checks GitHub on startup or focus, at most once a day. No workspace contents are sent.").size(SMALL).color(p().muted));
+        if let Err(reason) = &updates.target {
+            body = body.push(text(reason.as_str()).size(SMALL).color(p().muted));
+        }
+        if let Some(error) = &updates.error {
+            body = body
+                .push(
+                    container(
+                        ui::scroll(text(error.as_str()).size(SMALL).color(p().error_text)).height(Length::Shrink),
+                    )
+                    .max_height(140),
+                )
+                .push(ui::action("Copy details", ui::Variant::Ghost, Some(event(UpdateEvent::CopyError))));
+        }
+        let mut actions = row![ui::action(
+            "Check for updates",
+            ui::Variant::Outline,
+            (updates.loaded && !updates.busy() && updates.ready.is_none() && updates.installed.is_none())
+                .then_some(event(UpdateEvent::Check))
+        ),]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        if updates.ready.is_some() || updates.installed.is_some() {
+            actions = actions.push(ui::action(
+                if updates.installed.is_some() { "Restart Mira" } else { "Update and restart" },
+                ui::Variant::Primary,
+                (!updates.busy()).then_some(event(UpdateEvent::Install)),
+            ));
+            body = body.push(text(if matches!(self.term_kind, TermKind::Herdr) {
+                "Edited files and draft messages must be saved or resolved first. Your herdr terminals and agents keep running."
+            } else {
+                "Edited files and draft messages must be resolved first. Plain-shell sessions close when Mira restarts."
+            }).size(SMALL).color(p().muted));
+        } else if updates.release.is_some() {
+            actions = actions.push(ui::action(
+                "Download update",
+                ui::Variant::Primary,
+                (!updates.busy() && updates.target.is_ok()).then_some(event(UpdateEvent::Download)),
+            ));
+        }
+        if matches!(updates.phase, UpdatePhase::Checking | UpdatePhase::Downloading) {
+            actions = actions.push(ui::action("Cancel", ui::Variant::Ghost, Some(event(UpdateEvent::Cancel))));
+        }
+        body = body.push(actions.wrap());
+        body = body.push(
+            row![
+                ui::action("Release notes", ui::Variant::Ghost, Some(event(UpdateEvent::Notes))),
+                space::horizontal(),
+                ui::action("Later", ui::Variant::Secondary, Some(Msg::CloseDialog)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+        container(ui::scroll(body).height(Length::Shrink)).max_height((self.window_height - 180.0).max(100.0)).into()
     }
 
     fn view_settings(&self) -> Element<'_, Msg> {
@@ -789,7 +879,7 @@ impl App {
             setting("Runs", terminal.into(), "Takes effect the next time mira starts"),
             setting("herdr session", field(Field::HerdrSession, "default"), "Takes effect the next time mira starts"),
             setting_group("Commit messages"),
-            setting("Provider", provider.wrap().into(), "Only used when you click ✦; nothing else goes to the network"),
+            setting("Provider", provider.wrap().into(), "Commit generation only runs when you click ✦"),
             setting(
                 "Model",
                 field(Field::CommitModel, crate::commitgen::DEFAULT_MODEL),
@@ -801,6 +891,13 @@ impl App {
                 "Gets the prompt on stdin, prints the message"
             ),
             setting("ChatGPT", account, ""),
+            setting_group("Updates"),
+            setting(
+                "Check automatically",
+                self.view_update_choices(),
+                "Off by default. Checks GitHub on startup or focus, at most once a day. No workspace contents are sent.",
+            ),
+            ui::action("Manage updates", ui::Variant::Secondary, Some(Msg::Update(UpdateEvent::Open))),
             setting_group("Changes"),
             setting("Show changes", changes.into(), ""),
         ]
@@ -2669,6 +2766,22 @@ impl App {
             right = right.push(row![self.spinner(12), text(label).size(12).color(p().muted)].spacing(4));
         } else if self.search.running {
             right = right.push(text("Searching…").size(12).color(p().muted));
+        }
+        if self.updates.notice() {
+            right = right.push(
+                button(
+                    text(if self.updates.ready.is_some() || self.updates.installed.is_some() {
+                        "Update ready"
+                    } else {
+                        "Update available"
+                    })
+                    .size(SMALL)
+                    .color(p().fg),
+                )
+                .padding([1, 4])
+                .style(theme::flat(false))
+                .on_press(Msg::Update(UpdateEvent::Open)),
+            );
         }
         let theme_label: Cow<'_, str> = match self.theme {
             theme::Choice::Auto => format!("{} (auto)", p().name).into(),

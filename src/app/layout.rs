@@ -119,6 +119,7 @@ impl App {
                 // Cheap and idempotent: also covers the herdr client just started.
                 if f {
                     self.report_color_scheme();
+                    return self.maybe_check_updates();
                 }
             }
             Msg::DividerHover(d) => self.hovered_divider = d,

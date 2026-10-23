@@ -305,3 +305,30 @@ plain symbols. Fonts default to Inter and JetBrains Mono (medium weight); see
 `Ctrl+G` stay with the shell there and act in mira only outside the terminal. `Escape` stays with the
 terminal and with focused inputs (except quick open and the find bar, which it closes); mira only
 acts on it when nothing else does.
+
+
+## Updates
+
+Open **Check for updates** in the gear menu, or **Settings → Updates → Manage updates**.
+Checks are optional and never block opening Mira. Enable **Automatic checks** to check silently
+on startup/focus at most once a day; the default is Off (`update_checks = "off"`). A new stable
+release gets a quiet status-bar notice. Open its release notes, download it, and choose
+**Update and restart** when convenient. Network failures remain readable in this dialog.
+
+Mira verifies an Ed25519 signature pinned in the app, signed size limits and SHA-256 checksums
+for both the archive and executable. Downloads survive closing Mira. Restart waits until edited
+files (including parked workspace tabs), commit drafts and active Git operations are finished.
+Only Mira restarts: herdr and its agents keep running. The previous binary is kept beside Mira;
+if the new process exits before its window opens, the updater restores that binary automatically.
+If startup confirmation times out, the old window remains open so you can inspect the new one.
+
+In-app installation requires Linux x86_64/aarch64, `curl`, `tar`, OpenSSL 3 and an installation
+owned by your user from the current `install.sh`. Run the documented installer once to migrate
+an older installation. `cargo install`, symlinks and system/package-manager installations use
+their original update method; checking versions and reading release notes still work.
+
+Release maintainers: the publishing workflow signs each architecture's `.update.json` using
+`MIRA_UPDATE_SIGNING_KEY` (an Ed25519 PEM GitHub Actions secret). Its public key must exactly
+match `assets/update-public.pem` and the installer's pinned key. Keep an offline backup of the
+private key; never commit it. Legacy archives before v0.11.0 retain their checksum-only installer
+path when explicitly selected with `--version`; in-app updates always require signatures.

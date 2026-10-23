@@ -20,7 +20,7 @@ General Rust idioms (ownership, errors, clippy, tests, docs): see the `rust-best
 - Newtypes for ids that can be confused (pane ids, tree ids); stable ids instead of `Vec` indices for things that can be removed.
 - Pure logic (state machines, parsers, budgets) lives in functions without IO so it can be unit-tested; IO stays at the edges.
 - New dependency only with a reason (memory, binary size, compile time). Pin exact versions (`=x.y.z`). Prefer std. Check `cargo tree -d` for duplicates.
-- No telemetry. The only network access is commit-message generation on click (`openai.rs`, through `curl`, secrets on its stdin); nothing else may talk to the network.
+- No telemetry. Network is limited to commit generation on click (`openai.rs`) and opt-in GitHub update checks/downloads (`updater.rs`). Use system `curl`, secrets on stdin. Update checks default off; automatic checks run at most daily on startup/focus. Verify pinned Ed25519 signatures and SHA-256 before replacing only installer-owned user binaries; preserve edits and herdr.
 - Never interpolate untrusted values into a shell; pass argv arrays or JSON.
 - Conventional Commits; no AI attribution trailers.
 
