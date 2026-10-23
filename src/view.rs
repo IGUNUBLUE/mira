@@ -12,6 +12,7 @@ use crate::git::Change;
 use crate::herdr::AgentStatus;
 use crate::icons::{self, Icon};
 use crate::search;
+use crate::theme::ui;
 use crate::theme::{self, *};
 
 use iced::keyboard::{Key, key::Named};
@@ -20,14 +21,14 @@ use iced::widget::text::Span;
 use iced::widget::text_editor::{self, Binding};
 use iced::widget::{
     Column, Stack, button, column, container, lazy, mouse_area, pane_grid as grid, rich_text, row, scrollable, space,
-    span, text, text_input, tooltip,
+    span, text, tooltip,
 };
 use iced::{Alignment, Color, Element, Font, Length, Padding};
 use std::borrow::Cow;
 use std::sync::Arc;
 
-const UI: u32 = 14;
-const SMALL: u32 = 12;
+const UI: u32 = ui::BODY;
+const SMALL: u32 = ui::META;
 const MAX_RESULT_LINES: usize = 1_500;
 
 fn hrule<'a>() -> Element<'a, Msg> {
@@ -65,13 +66,20 @@ fn icon_button<'a>(i: Icon, msg: Msg) -> Element<'a, Msg> {
 
 /// Icon button, disabled (dimmed) without a message.
 fn icon_button_maybe<'a>(i: Icon, msg: Option<Msg>) -> Element<'a, Msg> {
-    button(ico(i, 15)).padding([3, 5]).style(theme::flat(false)).on_press_maybe(msg).into()
+    button(container(ico(i, 15)).center(Length::Fill))
+        .width(ui::COMPACT)
+        .height(ui::COMPACT)
+        .padding(0)
+        .style(theme::flat(false))
+        .on_press_maybe(msg)
+        .into()
 }
 
 /// Small button with a leading icon.
 fn icon_label<'a>(i: Icon, label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
-    button(row![ico(i, 13), text(label).size(12)].spacing(5).align_y(Alignment::Center))
-        .padding([2, 8])
+    button(row![ico(i, 14), text(label).size(UI)].spacing(ui::GAP).align_y(Alignment::Center))
+        .height(ui::COMPACT)
+        .padding([4, 8])
         .style(theme::flat(false))
         .on_press_maybe(msg)
         .into()
@@ -110,7 +118,11 @@ fn hdivider<'a>(d: Divider, active: bool) -> Element<'a, Msg> {
 /// A search option toggle (`Aa`, `ab`, `.*`), as in VSCodium.
 fn option_toggle<'a>(label: &'static str, on: bool, msg: Msg, name: &'static str) -> Element<'a, Msg> {
     tip(
-        button(text(label).size(12).font(theme::mono_font())).padding([2, 5]).style(theme::flat(on)).on_press(msg),
+        button(text(label).size(SMALL).font(theme::mono_font()))
+            .height(ui::CONTROL)
+            .padding([7, 5])
+            .style(theme::tab(on))
+            .on_press(msg),
         name,
     )
 }
@@ -150,30 +162,21 @@ fn mira_icon<'a>(size: f32) -> Element<'a, Msg> {
 
 /// A floating panel for a menu.
 fn popup<'a>(items: impl Into<Element<'a, Msg>>, width: f32) -> Element<'a, Msg> {
-    container(items)
-        .width(width)
-        .padding(4)
-        .style(|_| container::Style {
-            background: Some(p().sidebar.into()),
-            text_color: Some(p().fg),
-            border: iced::Border { color: p().border, width: 1.0, radius: 6.0.into() },
-            shadow: iced::Shadow {
-                color: Color::BLACK.scale_alpha(0.25),
-                offset: iced::Vector::new(0.0, 4.0),
-                blur_radius: 16.0,
-            },
-            ..Default::default()
-        })
-        .into()
+    container(items).width(width).padding(4).style(ui::floating).into()
 }
 
 fn choice_button<'a>(label: String, on: bool, choice: Setting) -> Element<'a, Msg> {
-    button(text(label).size(UI)).padding([3, 10]).style(theme::flat(on)).on_press(Msg::SettingChoice(choice)).into()
+    button(text(label).size(UI))
+        .height(ui::CONTROL)
+        .padding([4, 10])
+        .style(theme::tab(on))
+        .on_press(Msg::SettingChoice(choice))
+        .into()
 }
 
 fn setting_group<'a>(title: &'static str) -> Element<'a, Msg> {
-    container(text(title.to_uppercase()).size(SMALL).color(p().accent))
-        .padding(Padding { top: 6.0, ..Padding::ZERO })
+    container(text(title).size(ui::SECTION).color(p().fg))
+        .padding(Padding { top: 12.0, bottom: 4.0, ..Padding::ZERO })
         .into()
 }
 
@@ -198,7 +201,7 @@ fn view_shortcuts<'a>() -> Element<'a, Msg> {
         )
     });
     column![
-        scrollable(container(rows).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Length::Fill),
+        ui::scroll(container(rows).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Length::Fill),
         text("While the terminal has the keyboard, plain Ctrl+… goes to the program in it; Ctrl+Shift+… and Ctrl+` stay with mira.")
             .size(SMALL)
             .color(p().muted)
@@ -209,13 +212,13 @@ fn view_shortcuts<'a>() -> Element<'a, Msg> {
 }
 
 fn small_button<'a>(label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
-    button(text(label).size(12)).padding([2, 8]).style(theme::flat(false)).on_press_maybe(msg).into()
+    ui::action(label, ui::Variant::Ghost, msg).height(ui::COMPACT).padding([4, 8]).into()
 }
 
 fn tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
     tooltip(
         content,
-        container(text(label).size(12)).padding(6).max_width(420).style(theme::bordered(p().bg)),
+        container(text(label).size(SMALL)).padding([6, 10]).max_width(420).style(ui::floating),
         tooltip::Position::Bottom,
     )
     .into()
@@ -226,7 +229,7 @@ fn tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragment<
 fn row_tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragment<'a>) -> Element<'a, Msg> {
     tooltip(
         content,
-        container(text(label).size(12)).padding(6).max_width(420).style(theme::bordered(p().bg)),
+        container(text(label).size(SMALL)).padding([6, 10]).max_width(420).style(ui::floating),
         tooltip::Position::Bottom,
     )
     .delay(std::time::Duration::from_millis(700))
@@ -234,11 +237,11 @@ fn row_tip<'a>(content: impl Into<Element<'a, Msg>>, label: impl text::IntoFragm
 }
 
 fn section<'a>(title: String, actions: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let mut r = row![text(title).size(SMALL).color(p().muted), space::horizontal()].align_y(Alignment::Center);
+    let mut r = row![text(title).size(UI).color(p().fg), space::horizontal()].align_y(Alignment::Center);
     for a in actions {
         r = r.push(a);
     }
-    container(r).padding([4, 10]).width(Length::Fill).style(theme::panel(p().section)).into()
+    container(r).padding([6.0, ui::INSET]).width(Length::Fill).style(theme::panel(p().sidebar)).into()
 }
 
 /// A Changes row's buttons, built only when they show (hovered or open row):
@@ -247,21 +250,8 @@ fn row_actions<'a>(show: bool, build: impl FnOnce() -> Vec<Element<'a, Msg>>) ->
     if show { build() } else { Vec::new() }
 }
 
-fn badge<'a>(label: impl text::IntoFragment<'a>, color: Color) -> Element<'a, Msg> {
-    container(
-        text(label)
-            .size(SMALL)
-            .font(Font { weight: iced::font::Weight::Semibold, ..theme::ui_font() })
-            .color(p().on_accent)
-            .wrapping(text::Wrapping::WordOrGlyph),
-    )
-    .padding([2, 6])
-    .style(move |_| container::Style {
-        background: Some(color.into()),
-        border: iced::Border::default().rounded(4),
-        ..Default::default()
-    })
-    .into()
+fn badge<'a>(label: &'a str) -> Element<'a, Msg> {
+    ui::badge(label)
 }
 
 fn history_file_label(file: &Change) -> Element<'_, Msg> {
@@ -355,7 +345,7 @@ impl App {
         let overlay: Element<'_, Msg> = if let Some(pending) = &self.confirmation {
             let panel = iced::widget::opaque(self.view_confirmation(pending));
             iced::widget::opaque(
-                mouse_area(iced::widget::center(panel).padding(24).style(|_| container::Style {
+                mouse_area(iced::widget::center(panel).padding(ui::DIALOG_INSET).style(|_| container::Style {
                     background: Some(p().bg.scale_alpha(0.75).into()),
                     ..Default::default()
                 }))
@@ -364,14 +354,14 @@ impl App {
         } else if let Some(dialog) = &self.remote_dialog {
             iced::widget::opaque(
                 container(self.view_remote_dialog(dialog))
-                    .padding(24)
+                    .padding(ui::DIALOG_INSET)
                     .center(Length::Fill)
                     .style(theme::panel(p().bg.scale_alpha(0.55))),
             )
         } else if let Some(picker) = &self.branch_picker {
             iced::widget::opaque(
                 container(self.view_branches(picker))
-                    .padding(24)
+                    .padding(ui::DIALOG_INSET)
                     .center(Length::Fill)
                     .style(theme::panel(p().bg.scale_alpha(0.55))),
             )
@@ -381,7 +371,7 @@ impl App {
             // Modal: a click outside closes it, as Escape does.
             let panel = iced::widget::opaque(self.view_dialog(d));
             iced::widget::opaque(
-                mouse_area(iced::widget::center(panel).padding(24).style(|_| container::Style {
+                mouse_area(iced::widget::center(panel).padding(ui::DIALOG_INSET).style(|_| container::Style {
                     background: Some(p().bg.scale_alpha(0.6).into()),
                     ..Default::default()
                 }))
@@ -493,6 +483,7 @@ impl App {
                     .align_y(Alignment::Center),
             )
             .width(Length::Fill)
+            .height(ui::MENU_ROW)
             .padding([4, 12])
             .style(theme::flat(false))
             .on_press(msg)
@@ -507,7 +498,7 @@ impl App {
         ]
         .spacing(1);
         const WIDTH: f32 = 260.0;
-        const HEIGHT: f32 = 4.0 * 27.0 + 7.0 + 10.0;
+        const HEIGHT: f32 = ui::menu_height(4, 1);
         // Over the status bar's right end, where the gear is.
         let x = (self.window_width - WIDTH - 8.0).max(0.0);
         let y = (self.window_height - HEIGHT - 30.0).max(0.0);
@@ -545,11 +536,11 @@ impl App {
         if picker.matches.is_empty() {
             list = list.push(text("No matching branches").size(UI).color(p().muted));
         }
-        let mut body=column![text("Switch branch").size(20),
+        let mut body=column![text("Switch branch").size(ui::TITLE),
             text("Local edits are kept when Git can switch safely. If they conflict, commit or stash them in a shell first. Remote refs are from the last fetch.").size(UI),
-            text_input("Find a local or remote branch…",&picker.query).id("branch-search")
-                .on_input(move |q|Msg::BranchQuery(picker.id,q)).on_submit(Msg::BranchSubmit(picker.id)).padding(8),
-            scrollable(list).id("branch-list").spacing(4).height((picker.matches.len().max(1) as f32*55.0-3.0).min((self.window_height-300.0).clamp(100.0,400.0))),
+            ui::field("Find a local or remote branch…",&picker.query).id("branch-search")
+                .on_input(move |q|Msg::BranchQuery(picker.id,q)).on_submit(Msg::BranchSubmit(picker.id)),
+            ui::scroll(list).id("branch-list").height((picker.matches.len().max(1) as f32*55.0-3.0).min((self.window_height-300.0).clamp(100.0,400.0))),
         ].spacing(12);
         if picker.capped || picker.listing.truncated {
             body = body.push(
@@ -567,18 +558,18 @@ impl App {
             .spacing(10)
             .align_y(Alignment::Center),
         );
-        container(scrollable(body).spacing(4).height(Length::Shrink))
-            .padding(24)
+        container(ui::scroll(body).height(Length::Shrink))
+            .padding(ui::DIALOG_INSET)
             .width(Length::Fill)
             .max_width(640)
             .max_height((self.window_height - 48.0).max(120.0))
-            .style(theme::bordered(p().sidebar))
+            .style(ui::floating)
             .into()
     }
 
     fn view_remote_dialog<'a>(&self, dialog: &'a RemoteDialog) -> Element<'a, Msg> {
         let mut body = column![
-            text(dialog.title.as_str()).size(20),
+            text(dialog.title.as_str()).size(ui::TITLE),
             text(dialog.summary.as_str()).size(UI),
             text(dialog.context.as_str()).size(12).font(theme::mono_font()).color(p().muted),
             text(dialog.next.as_str()).size(UI),
@@ -616,18 +607,18 @@ impl App {
             );
         }
         body = body.push(text("Escape closes · Tab selects an action · Enter activates it").size(12).color(p().muted));
-        container(scrollable(body).spacing(4).height(Length::Shrink))
-            .padding(24)
+        container(ui::scroll(body).height(Length::Shrink))
+            .padding(ui::DIALOG_INSET)
             .width(Length::Fill)
             .max_width(680)
             .max_height((self.window_height - 48.0).max(120.0))
-            .style(theme::bordered(p().sidebar))
+            .style(ui::floating)
             .into()
     }
 
     fn view_confirmation<'a>(&self, pending: &'a Confirmation) -> Element<'a, Msg> {
         let mut content = column![
-            row![ico(Icon::Discard, 20).color(p().warn_text), text(pending.title).size(20)]
+            row![ico(Icon::Discard, 20).color(p().warn_text), text(pending.title).size(ui::TITLE)]
                 .spacing(10)
                 .align_y(Alignment::Center),
             text(pending.detail.as_str()).size(UI).color(p().fg),
@@ -641,7 +632,7 @@ impl App {
                 container(scrollable(list).height((pending.targets.len() as f32 * 23.0).min(184.0)))
                     .padding(10)
                     .width(Length::Fill)
-                    .style(theme::bordered(p().bg)),
+                    .style(ui::surface),
             );
         }
         if let Some(remaining) = &pending.remaining {
@@ -652,11 +643,13 @@ impl App {
             row![
                 space::horizontal(),
                 button(text("Cancel").size(UI))
-                    .padding([7, 14])
+                    .height(ui::DIALOG_CONTROL)
+                    .padding([6, 14])
                     .style(theme::outline(!selected))
                     .on_press(Msg::ConfirmCancel),
                 button(text(pending.accept).size(UI))
-                    .padding([7, 14])
+                    .height(ui::DIALOG_CONTROL)
+                    .padding([6, 14])
                     .style(move |theme, status| {
                         let mut style = theme::danger(theme, status);
                         if selected {
@@ -672,7 +665,7 @@ impl App {
         );
         content =
             content.push(text("Escape cancels · Tab selects an action · Enter activates it").size(12).color(p().muted));
-        container(content).padding(24).width(Length::Fill).max_width(580).style(theme::bordered(p().sidebar)).into()
+        container(content).padding(ui::DIALOG_INSET).width(Length::Fill).max_width(580).style(ui::floating).into()
     }
 
     fn view_dialog(&self, d: Dialog) -> Element<'_, Msg> {
@@ -682,41 +675,30 @@ impl App {
             Dialog::About => ("About mira", self.view_about()),
         };
         let header = row![
-            text(title).size(18),
+            text(title).size(ui::TITLE),
             space::horizontal(),
             tip(icon_button(Icon::Close, Msg::CloseDialog), "Close (Escape)"),
         ]
         .align_y(Alignment::Center);
         // Long dialogs scroll inside, with their header and footer in place.
         let tall = d != Dialog::About;
-        container(column![header, body].spacing(14))
-            .padding(20)
+        container(column![header, body].spacing(ui::PANEL_INSET))
+            .padding(ui::DIALOG_INSET)
             .width(Length::Fill)
             .height(if tall { Length::Fill } else { Length::Shrink })
             .max_width(if tall { 640 } else { 460 })
             .max_height((self.window_height - 60.0).max(240.0))
-            .style(|_| container::Style {
-                background: Some(p().sidebar.into()),
-                text_color: Some(p().fg),
-                border: iced::Border { color: p().border, width: 1.0, radius: 10.0.into() },
-                shadow: iced::Shadow {
-                    color: Color::BLACK.scale_alpha(0.3),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 28.0,
-                },
-                ..Default::default()
-            })
+            .style(ui::floating)
             .into()
     }
 
     fn view_settings(&self) -> Element<'_, Msg> {
         let d = &self.drafts;
         let field = |f: Field, placeholder: &'static str| -> Element<'_, Msg> {
-            text_input(placeholder, d.get(f))
+            ui::field(placeholder, d.get(f))
                 .on_input(move |v| Msg::SettingText(f, v))
                 .on_submit(Msg::SettingSubmit)
                 .size(UI)
-                .padding([4, 8])
                 .style(theme::input)
                 .into()
         };
@@ -806,13 +788,13 @@ impl App {
         let footer = row![
             self.settings_error.as_deref().map(|e| text(e).size(SMALL).color(p().error_text)),
             space::horizontal(),
-            small_button("Open config file", Some(Msg::OpenConfigFile)),
-            button(text("Done").size(12)).padding([3, 12]).style(theme::primary).on_press(Msg::CloseDialog),
+            ui::action("Open config file", ui::Variant::Secondary, Some(Msg::OpenConfigFile)).height(ui::COMPACT),
+            ui::action("Done", ui::Variant::Primary, Some(Msg::CloseDialog)),
         ]
         .spacing(8)
         .align_y(Alignment::Center);
         column![
-            scrollable(container(body).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Length::Fill),
+            ui::scroll(container(body).padding(Padding { right: 12.0, ..Padding::ZERO })).height(Length::Fill),
             footer
         ]
         .spacing(14)
@@ -881,7 +863,7 @@ impl App {
                 row![
                     space::horizontal(),
                     cancel,
-                    button(text("Open browser").size(UI)).padding([6, 14]).style(theme::primary).on_press(Msg::SignInStart),
+                    ui::primary_wide("Open browser", Some(Msg::SignInStart)).height(ui::DIALOG_CONTROL),
                 ]
                 .spacing(8),
             ),
@@ -912,19 +894,9 @@ impl App {
             }
         };
         container(column![title, body, actions].spacing(18))
-            .padding(24)
+            .padding(ui::DIALOG_INSET)
             .max_width(480)
-            .style(|_| container::Style {
-                background: Some(p().sidebar.into()),
-                text_color: Some(p().fg),
-                border: iced::Border { color: p().border, width: 1.0, radius: 8.0.into() },
-                shadow: iced::Shadow {
-                    color: Color::BLACK.scale_alpha(0.25),
-                    offset: iced::Vector::new(0.0, 6.0),
-                    blur_radius: 24.0,
-                },
-                ..Default::default()
-            })
+            .style(ui::floating)
             .into()
     }
 
@@ -939,16 +911,19 @@ impl App {
 
     /// The working button keeps its place and cannot be clicked twice.
     fn git_button<'a>(&self, icon: Icon, msg: Msg) -> Element<'a, Msg> {
-        button(self.action_icon(icon, &msg, 15))
-            .padding([3, 5])
+        button(container(self.action_icon(icon, &msg, 15)).center(Length::Fill))
+            .width(ui::COMPACT)
+            .height(ui::COMPACT)
+            .padding(0)
             .style(theme::flat(false))
             .on_press_maybe((!self.git_busy).then_some(msg))
             .into()
     }
 
     fn git_label<'a>(&self, icon: Icon, label: &'a str, msg: Msg) -> Element<'a, Msg> {
-        button(row![self.action_icon(icon, &msg, 13), text(label).size(12)].spacing(5).align_y(Alignment::Center))
-            .padding([2, 8])
+        button(row![self.action_icon(icon, &msg, 14), text(label).size(UI)].spacing(ui::GAP).align_y(Alignment::Center))
+            .height(ui::COMPACT)
+            .padding([4, 8])
             .style(theme::flat(false))
             .on_press_maybe((!self.git_busy).then_some(msg))
             .into()
@@ -956,12 +931,11 @@ impl App {
 
     /// Quick open: the query, then the best matching files (or go to line after `:`).
     fn view_palette<'a>(&'a self, pal: &'a QuickOpen) -> Element<'a, Msg> {
-        let input = text_input("Go to file by name · : to go to a line", &pal.query)
+        let input = ui::field("Go to file by name · : to go to a line", &pal.query)
             .id(PALETTE_INPUT)
             .on_input(Msg::PaletteQuery)
             .on_submit(Msg::PaletteSubmit)
             .size(UI)
-            .padding(8)
             .style(theme::input);
         let note = |s: Cow<'a, str>, color: Color| container(text(s).size(SMALL).color(color)).padding([6, 10]);
         let mut list = Column::new().spacing(1);
@@ -1019,22 +993,7 @@ impl App {
                 ));
             }
         }
-        container(column![input, list].spacing(6))
-            .padding(8)
-            .width(Length::Fill)
-            .max_width(600)
-            .style(|_| container::Style {
-                background: Some(p().sidebar.into()),
-                text_color: Some(p().fg),
-                border: iced::Border { color: p().border, width: 1.0, radius: 8.0.into() },
-                shadow: iced::Shadow {
-                    color: Color::BLACK.scale_alpha(0.25),
-                    offset: iced::Vector::new(0.0, 6.0),
-                    blur_radius: 24.0,
-                },
-                ..Default::default()
-            })
-            .into()
+        container(column![input, list].spacing(6)).width(Length::Fill).max_width(600).style(ui::floating).into()
     }
 
     fn view_terminal(&self) -> Element<'_, Msg> {
@@ -1143,33 +1102,47 @@ impl App {
     fn view_inspector(&self) -> Element<'_, Msg> {
         let changes = Some(self.git.staged.len() + self.git.unstaged.len()).filter(|n| *n > 0);
         let fresh = self.fresh_changes() > 0;
+        let compact = self.inspector_shown_width() < 320.0;
         let tab = |i: Icon, label: &'static str, which: Inspector, count: Option<usize>, alert: bool| {
             let active = self.inspector == which;
             let color = if active { p().accent } else { p().muted };
-            let mut r = row![ico(i, 14).color(color), text(label).size(UI)].spacing(6).align_y(Alignment::Center);
-            if let Some(n) = count {
-                r = r.push(text(n.to_string()).size(10).color(if alert { p().warn_text } else { p().accent }));
+            let mut r = row![(!compact).then(|| ico(i, 14).color(color)), text(label).size(UI)]
+                .spacing(6)
+                .align_y(Alignment::Center);
+            if let Some(n) = count.filter(|_| !compact) {
+                r = r.push(text(n.to_string()).size(SMALL).color(if alert { p().warn_text } else { p().muted }));
             }
-            if alert {
+            if alert && !compact {
                 r = r.push(ico(Icon::DotFilled, 8).color(p().modified));
             }
-            button(r).padding([6, 9]).style(theme::tab(active)).on_press(Msg::InspectorTab(which))
+            button(container(r).center_x(Length::Fill))
+                .width(Length::Fill)
+                .height(ui::CONTROL)
+                .padding([4, 6])
+                .style(theme::tab(active))
+                .on_press(Msg::InspectorTab(which))
         };
         let tabs = row![
             tip(tab(Icon::SourceControl, "Changes", Inspector::Changes, changes, fresh), "Changes (Ctrl+Shift+G)"),
             tip(tab(Icon::Search, "Search", Inspector::Search, None, false), "Search (Ctrl+Shift+F)"),
             tip(tab(Icon::Files, "Files", Inspector::Files, None, false), "Files (Ctrl+Shift+E)"),
-        ];
+        ]
+        .spacing(2);
         let body = match self.inspector {
             Inspector::Changes => self.view_git(),
             Inspector::Search => self.view_search(),
             Inspector::Files => self.view_explorer(),
         };
-        container(column![container(tabs).width(Length::Fill).style(theme::panel(p().sidebar)), hrule(), body])
-            .width(self.inspector_shown_width())
-            .height(Length::Fill)
-            .style(theme::panel(p().sidebar))
-            .into()
+        container(column![
+            container(container(tabs).padding(4).style(theme::bordered(p().section)))
+                .padding([8, 12])
+                .width(Length::Fill),
+            body,
+        ])
+        .width(self.inspector_shown_width())
+        .height(Length::Fill)
+        .style(theme::panel(p().sidebar))
+        .into()
     }
 
     /// One changed file. `origin`: show which agent run last changed it.
@@ -1233,9 +1206,9 @@ impl App {
         }
         content = content.push(text(c.code.to_string()).size(SMALL).color(color).width(12));
         // Same height with or without the row's buttons.
-        let row = button(container(content).height(22).align_y(Alignment::Center))
+        let row = button(container(content).height(ui::COMPACT).align_y(Alignment::Center))
             .width(Length::Fill)
-            .padding([1, 6])
+            .padding([0, 8])
             .style(theme::flat(active))
             .on_press(msg);
         match hover {
@@ -1256,21 +1229,21 @@ impl App {
             let selected = self.commit_view.selected.as_ref().filter(|s| s.hash == c.hash);
             let r = row![
                 text(if selected.is_some() { "▾" } else { "▸" }).size(SMALL).color(p().accent).width(10),
-                text(c.subject.as_str()).size(UI).wrapping(text::Wrapping::None),
+                text(c.subject.as_str()).size(UI).width(Length::Fill).wrapping(text::Wrapping::WordOrGlyph),
             ]
             .spacing(6)
             .align_y(Alignment::Center);
             // Refs get the panel's full width instead of the subject's leftover space.
             let mut entry = column![r].spacing(3).width(Length::Fill);
             if !c.refs.is_empty() {
-                entry = entry.push(container(badge(c.refs.as_str(), p().accent)).padding(Padding::ZERO.left(16)));
+                entry = entry.push(container(badge(c.refs.as_str())).padding(Padding::ZERO.left(16)));
             }
             let menu_open = self.commit_view.menu.as_ref().is_some_and(|menu| menu.hash == c.hash);
             let hash = Arc::clone(&c.hash);
             history = history.push(crate::rightclick::right_click(
                 tooltip(
                     button(container(entry).width(Length::Fill).clip(true))
-                        .padding([3, 10])
+                        .padding([6, 12])
                         .width(Length::Fill)
                         .style(theme::flat(selected.is_some() || menu_open))
                         .on_press(Msg::HistorySelect(Arc::clone(&c.hash))),
@@ -1358,7 +1331,7 @@ impl App {
                 .align_x(Alignment::Center),
             )
             .center_x(Length::Fill)
-            .padding(24)
+            .padding(ui::DIALOG_INSET)
             .into();
         }
         let busy = self.git_busy;
@@ -1407,7 +1380,7 @@ impl App {
         if !staged.is_empty() {
             let all: Vec<String> = staged.iter().map(|c| c.path.clone()).collect();
             list = list.push(section(
-                format!("STAGED  {}", staged.len()),
+                format!("Staged · {}", staged.len()),
                 vec![
                     tip(icon_button(Icon::Diff, Msg::OpenChanges(true)), "Review staged changes file by file"),
                     tip(self.git_button(Icon::Remove, Msg::Unstage(all)), "Unstage all"),
@@ -1438,7 +1411,7 @@ impl App {
             }
         }
         if !conflicts.is_empty() {
-            list = list.push(section(format!("MERGE CHANGES  {}", conflicts.len()), vec![]));
+            list = list.push(section(format!("Merge changes · {}", conflicts.len()), vec![]));
             for (i, c) in conflicts.iter().enumerate() {
                 let working =
                     matches!(&self.busy_op, Some(BusyOp::Stage(paths)) if paths.as_slice() == [c.path.as_str()]);
@@ -1465,7 +1438,7 @@ impl App {
         }
         let all: Vec<String> = changes.iter().map(|c| c.path.clone()).collect();
         list = list.push(section(
-            format!("CHANGES  {}", changes.len()),
+            format!("Changes · {}", changes.len()),
             if all.is_empty() {
                 vec![]
             } else {
@@ -1546,7 +1519,8 @@ impl App {
                                 .clip(true)
                             )
                             .width(Length::Fill)
-                            .padding([3, 4])
+                            .height(ui::CONTROL)
+                            .padding([4, 6])
                             .style(theme::flat(false))
                             .on_press_maybe((!busy).then_some(Msg::BranchesOpen)),
                             "Switch branch…"
@@ -1566,42 +1540,29 @@ impl App {
                         ),
                         tip(
                             button(if self.manual_refresh { self.spinner(15) } else { ico(Icon::Refresh, 15) })
-                                .padding([3, 5])
+                                .width(ui::COMPACT)
+                                .height(ui::COMPACT)
+                                .padding(5)
                                 .style(theme::flat(false))
                                 .on_press_maybe((!busy && !self.manual_refresh).then_some(Msg::RefreshChanges)),
                             if self.manual_refresh { "Refreshing changes…" } else { "Refresh" },
                         ),
                     ]
                     .align_y(Alignment::Center),
+                    text("Commit message").size(SMALL).color(p().muted),
                     row![
                         // Grows with the message (wrapped to the panel width), then scrolls.
                         iced::widget::text_editor(&self.commit_msg)
                             .id(COMMIT_INPUT)
-                            .placeholder("Commit message (Ctrl+Enter to commit)")
+                            .placeholder("Describe the change")
                             .on_action(Msg::CommitEdit)
                             .size(UI)
-                            .padding(6)
+                            .line_height(text::LineHeight::Absolute(iced::Pixels(18.0)))
+                            .padding([7, 12])
                             .height(Length::Shrink)
                             .max_height(320.0)
                             .wrapping(text::Wrapping::WordOrGlyph)
-                            .style(|_, status| {
-                                let c = p();
-                                text_editor::Style {
-                                    background: c.bg.into(),
-                                    border: iced::Border {
-                                        color: if matches!(status, text_editor::Status::Focused { .. }) {
-                                            c.accent
-                                        } else {
-                                            c.border
-                                        },
-                                        width: 1.0,
-                                        radius: 4.0.into(),
-                                    },
-                                    placeholder: c.muted,
-                                    value: c.fg,
-                                    selection: c.selection,
-                                }
-                            })
+                            .style(ui::editor)
                             .key_binding(|kp| match kp.key.as_ref() {
                                 // Unfocused, iced still asks (see the file editor's bindings).
                                 _ if !matches!(kp.status, text_editor::Status::Focused { .. }) => None,
@@ -1626,8 +1587,8 @@ impl App {
                                 })
                                 .center(Length::Fill),
                             )
-                            .width(30)
-                            .height(30)
+                            .width(ui::CONTROL)
+                            .height(ui::CONTROL)
                             .padding(0)
                             .style(theme::outline(generating))
                             .on_press_maybe(can_generate.then_some(Msg::GenerateCommit)),
@@ -1644,7 +1605,7 @@ impl App {
                             tooltip::Position::Left,
                         ),
                     ]
-                    .spacing(4)
+                    .spacing(ui::GAP)
                     .align_y(Alignment::Start),
                     tip(
                         button(
@@ -1663,7 +1624,8 @@ impl App {
                             .center_x(Length::Fill),
                         )
                         .width(Length::Fill)
-                        .padding(5)
+                        .height(ui::CONTROL)
+                        .padding([4, 12])
                         .style(theme::primary)
                         .on_press_maybe(can_commit.then_some(Msg::Commit)),
                         commit_tip,
@@ -1674,19 +1636,19 @@ impl App {
                             .color(p().warn_text)
                     }),
                 ]
-                .spacing(6)
+                .spacing(ui::GAP)
             )
-            .padding(10),
+            .padding([4, 12]),
             self.view_changes_toolbar(),
             hrule(),
             // Reserve a scrollbar gutter so run metadata and row actions stay visible.
-            scrollable(if self.group_by_run { self.view_runs() } else { list }).spacing(2).height(Length::Fill),
+            ui::scroll(if self.group_by_run { self.view_runs() } else { list }).height(Length::Fill),
             hdivider(
                 Divider::History,
                 self.dragging == Some(Divider::History) || self.hovered_divider == Some(Divider::History),
             ),
             section(
-                "HISTORY".into(),
+                "History".into(),
                 vec![tip(
                     button(
                         row![
@@ -1702,7 +1664,7 @@ impl App {
                     "Remove the last local commit; keep its changes staged"
                 )]
             ),
-            scrollable(history).spacing(2).height(self.history_height),
+            ui::scroll(history).height(self.history_height),
         ]
         .into()
     }
@@ -1710,11 +1672,18 @@ impl App {
     /// `Files | By agent run` switch and "mark all seen".
     fn view_changes_toolbar(&self) -> Element<'_, Msg> {
         let seg = |label: &'static str, on: bool, msg: Msg| {
-            button(text(label).size(12)).padding([2, 10]).style(theme::flat(on)).on_press(msg)
+            button(text(label).size(SMALL)).height(ui::COMPACT).padding([4, 8]).style(theme::tab(on)).on_press(msg)
         };
         let mut bar = row![
-            seg("Files", !self.group_by_run, Msg::GroupByRun(false)),
-            seg("By agent run", self.group_by_run, Msg::GroupByRun(true)),
+            container(
+                row![
+                    seg("Files", !self.group_by_run, Msg::GroupByRun(false)),
+                    seg("By agent run", self.group_by_run, Msg::GroupByRun(true)),
+                ]
+                .spacing(2)
+            )
+            .padding(3)
+            .style(theme::bordered(p().section)),
             space::horizontal(),
         ]
         .spacing(2)
@@ -1725,7 +1694,7 @@ impl App {
                 .push(text(format!("{fresh} new")).size(SMALL).color(p().warn_text))
                 .push(tip(icon_button(Icon::Check, Msg::MarkAllSeen), "Mark all as seen"));
         }
-        container(bar.spacing(6)).padding([4, 10]).width(Length::Fill).into()
+        container(bar.spacing(6)).padding([8, 12]).width(Length::Fill).into()
     }
 
     /// Agent runs that changed files, newest first, each with its files.
@@ -1829,13 +1798,13 @@ impl App {
             small_button("Replace all", (!s.results.is_empty() && !s.running).then_some(Msg::ReplaceAll))
         };
         let inputs = column![
+            text("Search in files").size(SMALL).color(p().muted),
             row![
-                text_input("Search", &s.query)
+                ui::field("Search", &s.query)
                     .id(SEARCH_INPUT)
                     .on_input(Msg::SearchQuery)
                     .on_submit(Msg::SearchRun)
                     .size(UI)
-                    .padding(6)
                     .style(theme::input),
                 toggle("Aa", s.opts.case_sensitive, 0, "Match Case"),
                 toggle("ab", s.opts.whole_word, 1, "Match Whole Word"),
@@ -1843,15 +1812,16 @@ impl App {
             ]
             .spacing(2)
             .align_y(Alignment::Center),
+            text("Replace with").size(SMALL).color(p().muted),
             row![
                 // No on_submit: Enter must never rewrite files.
-                text_input("Replace", &s.replace).on_input(Msg::SearchReplace).size(UI).padding(6).style(theme::input),
+                ui::field("Replace", &s.replace).on_input(Msg::SearchReplace).size(UI).style(theme::input),
                 replace,
             ]
             .spacing(4)
             .align_y(Alignment::Center),
         ]
-        .spacing(6);
+        .spacing(ui::GAP);
 
         let summary: Element<'_, Msg> = if let Some(e) = &s.error {
             text(e.as_str()).size(12).color(p().error_text).into()
@@ -1935,8 +1905,11 @@ impl App {
             }
         }
 
-        column![container(column![inputs, summary].spacing(8)).padding(10), scrollable(list).height(Length::Fill),]
-            .into()
+        column![
+            container(column![inputs, summary].spacing(ui::GAP)).padding(ui::INSET),
+            ui::scroll(list).height(Length::Fill),
+        ]
+        .into()
     }
 
     fn view_explorer(&self) -> Element<'_, Msg> {
@@ -1980,7 +1953,7 @@ impl App {
             let menu_open = self.explorer_menu.as_ref().is_some_and(|m| m.path == e.path);
             let row_button = button(line)
                 .width(Length::Fill)
-                .padding([2, 8])
+                .padding([5, 8])
                 .style(theme::flat(open == Some(e.path.as_path()) || menu_open));
             // While renaming, clicks go to the input, not to the row.
             let row_button = if renaming.is_some() {
@@ -2002,8 +1975,8 @@ impl App {
         // A right click anywhere in the panel opens the menu there (on a row: for it).
         crate::rightclick::right_click(
             column![
-                container(text(file_name(&self.root).to_uppercase()).size(SMALL).color(p().muted)).padding([6, 10]),
-                scrollable(list).height(Length::Fill),
+                container(text(file_name(&self.root)).size(ui::SECTION).color(p().fg)).padding([8, 12]),
+                ui::scroll(list).height(Length::Fill),
             ],
             Msg::ExplorerMenuAt,
         )
@@ -2011,7 +1984,7 @@ impl App {
 
     /// The name input of `edit`, without its row.
     fn name_field<'a>(&'a self, edit: &'a NameEdit) -> Element<'a, Msg> {
-        let input = text_input(if edit.kind == EditKind::NewFolder { "Folder name" } else { "File name" }, &edit.name)
+        let input = ui::field(if edit.kind == EditKind::NewFolder { "Folder name" } else { "File name" }, &edit.name)
             .id(NAME_INPUT)
             .on_input(Msg::ExplorerName)
             .on_submit(Msg::ExplorerNameSubmit)
@@ -2045,6 +2018,7 @@ impl App {
         let item = |label: &'static str, action: MenuAction, danger: bool| -> Element<'_, Msg> {
             button(text(label).size(UI).color(if danger { p().error_text } else { p().fg }))
                 .width(Length::Fill)
+                .height(ui::MENU_ROW)
                 .padding([4, 12])
                 .style(theme::flat(false))
                 .on_press(Msg::ExplorerMenu(action))
@@ -2075,7 +2049,7 @@ impl App {
             items = items.push(item("Send Path to Agent", MenuAction::SendPath, false));
             rows += 1;
         }
-        let height = rows as f32 * 27.0 + seps as f32 * 7.0 + 10.0;
+        let height = ui::menu_height(rows, seps);
         self.context_menu(items, menu.at, height)
     }
 
@@ -2083,6 +2057,7 @@ impl App {
         let item = |label: &'static str, action| {
             button(text(label).size(UI).color(p().fg))
                 .width(Length::Fill)
+                .height(ui::MENU_ROW)
                 .padding([4, 12])
                 .style(theme::flat(false))
                 .on_press(Msg::HistoryMenuAction(action))
@@ -2094,25 +2069,20 @@ impl App {
             item("Copy Short Hash", CommitMenuAction::CopyShortHash),
             item("Copy Commit Subject", CommitMenuAction::CopySubject),
         ];
-        self.context_menu(items, menu.at, 125.0)
+        self.context_menu(items, menu.at, ui::menu_height(4, 1))
     }
 
     /// Shared desktop-menu style and window-edge placement.
     fn context_menu<'a>(&self, items: Column<'a, Msg>, at: iced::Point, height: f32) -> Element<'a, Msg> {
-        const WIDTH: f32 = 220.0;
-        let x = at.x.min(self.window_width - WIDTH - 4.0).max(0.0);
-        let y = at.y.min(self.window_height - height - 4.0).max(0.0);
-        let panel = container(items.spacing(1)).width(WIDTH).padding(4).style(|_| container::Style {
-            background: Some(p().sidebar.into()),
-            text_color: Some(p().fg),
-            border: iced::Border { color: p().border, width: 1.0, radius: 6.0.into() },
-            shadow: iced::Shadow {
-                color: Color::BLACK.scale_alpha(0.25),
-                offset: iced::Vector::new(0.0, 4.0),
-                blur_radius: 16.0,
-            },
-            ..Default::default()
-        });
+        let width = 220.0_f32.min((self.window_width - 8.0).max(1.0));
+        let max_height = (self.window_height - 8.0).max(1.0);
+        let x = at.x.min(self.window_width - width - 4.0).max(0.0);
+        let y = at.y.min(self.window_height - height.min(max_height) - 4.0).max(0.0);
+        let panel = container(ui::scroll(items.spacing(1)).height(Length::Shrink))
+            .width(width)
+            .max_height(max_height)
+            .padding(4)
+            .style(ui::floating);
         iced::widget::pin(iced::widget::opaque(panel)).x(x).y(y).into()
     }
 
@@ -2143,14 +2113,14 @@ impl App {
                 }
             };
             let close = tip(
-                button(text("×").size(14)).padding([4, 6]).style(theme::tab(active)).on_press(Msg::CloseTab(i)),
+                button(text("×").size(14)).padding([4, 6]).style(ui::document_tab(active)).on_press(Msg::CloseTab(i)),
                 "Close (Ctrl+W)",
             );
             let tab = container(
                 row![
                     button(text(title).size(UI).wrapping(text::Wrapping::None))
                         .padding(Padding { top: 6.0, right: 4.0, bottom: 6.0, left: 12.0 })
-                        .style(theme::tab(active))
+                        .style(ui::document_tab(active))
                         .on_press(Msg::SelectTab(i)),
                     close,
                 ]
@@ -2218,7 +2188,7 @@ impl App {
                     .width(Length::Fill)
                     .height(Length::Fill),
             )
-            .padding(24)
+            .padding(ui::DIALOG_INSET)
             .into(),
         };
         column![
@@ -2323,7 +2293,7 @@ impl App {
         };
         let step = |forward: bool| any.then_some(Msg::FindStep(forward));
         let bar = row![
-            text_input("Find", &f.query)
+            ui::field("Find", &f.query)
                 .id(FIND_INPUT)
                 .on_input(Msg::FindQuery)
                 .on_submit(Msg::FindSubmit)
@@ -2518,7 +2488,7 @@ impl App {
             None => "Comment on this file… (click a line to anchor)".to_string(),
         };
         let comment = row![
-            text_input(&place, &self.comment)
+            ui::field(&place, &self.comment)
                 .on_input_maybe((!self.sending_comment).then_some(Msg::Comment))
                 .on_submit(Msg::SendComment)
                 .size(UI)
@@ -3026,6 +2996,53 @@ mod tests {
         let std::task::Poll::Ready(Some(mut renderer)) = new.as_mut().poll(&mut cx) else {
             panic!("headless renderer")
         };
+        // Check the actual product surfaces at the widths affected by the design migration.
+        // The isolated fixture above keeps terminals and persisted state away from the desktop.
+        fn assert_bounds(node: &layout::Node, origin: Point, size: Size, vertical: bool) {
+            let bounds = node.bounds();
+            let at = Point::new(origin.x + bounds.x, origin.y + bounds.y);
+            assert!(at.x + bounds.width <= size.width + 0.1, "horizontal overflow at {at:?}: {bounds:?}");
+            if vertical {
+                assert!(at.y + bounds.height <= size.height + 0.1, "vertical overflow at {at:?}: {bounds:?}");
+            }
+            for child in node.children() {
+                assert_bounds(child, at, size, vertical);
+            }
+        }
+        let old_width = app.inspector_width;
+        let old_loaded = app.git_loaded;
+        app.git_loaded = true;
+        for width in [240.0, 360.0, 480.0] {
+            app.inspector_width = width;
+            for inspector in [Inspector::Changes, Inspector::Search, Inspector::Files] {
+                app.inspector = inspector;
+                let mut element = app.view_inspector();
+                let mut tree = Tree::new(&element);
+                let size = Size::new(width, 900.0);
+                let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size));
+                assert_bounds(&node, Point::ORIGIN, size, false);
+            }
+        }
+        app.inspector_width = old_width;
+        app.git_loaded = old_loaded;
+        app.inspector = Inspector::Changes;
+        let edge_menu = CommitMenu {
+            hash: Arc::clone(&app.git.log[0].hash),
+            subject: app.git.log[0].subject.clone(),
+            at: Point::new(app.window_width - 1.0, app.window_height - 1.0),
+        };
+        let mut element = app.view_history_menu(&edge_menu);
+        let mut tree = Tree::new(&element);
+        let size = Size::new(app.window_width, app.window_height);
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size));
+        assert_bounds(&node, Point::ORIGIN, size, true);
+        drop(element);
+        let file_menu = ExplorerMenu { path: root.join("sample.txt"), is_dir: false, is_root: false, at: edge_menu.at };
+        let mut element = app.view_explorer_menu(&file_menu);
+        let mut tree = Tree::new(&element);
+        let node = element.as_widget_mut().layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, size));
+        assert_bounds(&node, Point::ORIGIN, size, true);
+        drop(element);
         let click = |mut element: Element<'_, Msg>, renderer: &mut iced::Renderer, file: bool, button| {
             let mut tree = Tree::new(&element);
             let node = element.as_widget_mut().layout(
@@ -3154,8 +3171,7 @@ mod tests {
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         let std::task::Poll::Ready(Some(renderer)) = new.as_mut().poll(&mut cx) else { panic!("headless renderer") };
         for width in [140.0, 220.0, 320.0] {
-            let mut element =
-                badge("origin/feature/FRED-296-FRED-298-locations-frontend, feature/Freddys-Demo", p().accent);
+            let mut element = badge("origin/feature/FRED-296-FRED-298-locations-frontend, feature/Freddys-Demo");
             let mut tree = Tree::new(&element);
             let node = element.as_widget_mut().layout(
                 &mut tree,

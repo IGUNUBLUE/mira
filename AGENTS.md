@@ -128,6 +128,11 @@ sits around that loop: review what the agents changed, edit, search, commit.
 
 ## Conventions
 
+- Read [`design.md`](design.md) before changing UI. It defines the Rust/UI-derived visual language,
+  LAGC color roles, compact geometry, component states, and visual review scenarios. The isolated
+  shared primitives in `src/theme/ui.rs` are used by the product and the `examples/design_system/`
+  specimen. Reuse those primitives rather than duplicating styles in individual views. Keep the
+  guide, specimen, and accepted screenshots in sync; source findings are in `docs/design-reference/rust-ui-review.md`.
 - Blocking work (git, search, diff, sockets) runs via `blocking()` (`spawn_blocking`) and returns a `Msg`.
 - Colors only through `theme::p().<field>`; never literal colors in views (themes switch at runtime). Text uses
   `fg`, `muted` or the `warn_text`/`error_text`/`added_text` variants (4.5:1, tested); `line_no` only for gutters.

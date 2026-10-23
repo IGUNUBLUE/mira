@@ -1,0 +1,401 @@
+{
+  "captured": "2026-10-23",
+  "viewport": {
+    "width": 1440,
+    "height": 1100,
+    "device_pixel_ratio": 1
+  },
+  "method": "Chromium via agent-browser, computed styles; source reference measurements, not mira tokens",
+  "pages": [
+    {
+      "elements": [
+        {
+          "disabled": false,
+          "label": "Button",
+          "styles": {
+            "backgroundColor": "lab(7.78201 -0.0000149012 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(98.26 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Default",
+          "styles": {
+            "backgroundColor": "lab(7.78201 -0.0000149012 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(98.26 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Secondary",
+          "styles": {
+            "backgroundColor": "lab(90.72 0.0000298023 -0.0000119209)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(7.78201 -0.0000149012 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Outline",
+          "styles": {
+            "backgroundColor": "lab(100 0 0)",
+            "borderRadius": "8px",
+            "borderWidth": "1px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(2.75381 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Ghost",
+          "styles": {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "none",
+            "color": "lab(2.75381 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Destructive",
+          "styles": {
+            "backgroundColor": "lab(48.4493 77.4328 61.5452)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "rgb(255, 255, 255)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Link",
+          "styles": {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "none",
+            "color": "lab(7.78201 -0.0000149012 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Small",
+          "styles": {
+            "backgroundColor": "lab(7.78201 -0.0000149012 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(98.26 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "6px",
+            "height": "32px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "0px 12px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Default",
+          "styles": {
+            "backgroundColor": "lab(7.78201 -0.0000149012 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(98.26 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Large",
+          "styles": {
+            "backgroundColor": "lab(7.78201 -0.0000149012 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(98.26 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "40px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "0px 24px"
+          }
+        },
+        {
+          "disabled": false,
+          "label": "Normal",
+          "styles": {
+            "backgroundColor": "lab(7.78201 -0.0000149012 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(98.26 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "1",
+            "padding": "8px 16px"
+          }
+        },
+        {
+          "disabled": true,
+          "label": "Disabled",
+          "styles": {
+            "backgroundColor": "lab(7.78201 -0.0000149012 0)",
+            "borderRadius": "8px",
+            "borderWidth": "0px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(98.26 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "8px",
+            "height": "36px",
+            "lineHeight": "20px",
+            "opacity": "0.5",
+            "padding": "8px 16px"
+          }
+        }
+      ],
+      "rootFontSize": "16px",
+      "theme": "",
+      "tokens": {
+        "--background": "lab(100% 0 0)",
+        "--border": "lab(90.952% 0 -.0000119209)",
+        "--font-sans": "\"Inter\", sans-serif",
+        "--foreground": "lab(2.75381% 0 0)",
+        "--muted": "lab(98.26% 0 0)",
+        "--muted-foreground": "lab(48.496% 0 0)",
+        "--primary": "lab(7.78201% -.0000149012 0)",
+        "--primary-foreground": "lab(98.26% 0 0)",
+        "--radius": ".625rem",
+        "--ring": "lab(66.128% -.0000298023 .0000119209)",
+        "--secondary": "lab(90.72% .0000298023 -.0000119209)",
+        "--spacing": ".25rem"
+      },
+      "url": "https://rust-ui.com/docs/components/button",
+      "viewport": {
+        "dpr": 1,
+        "height": 1100,
+        "width": 1440
+      }
+    },
+    {
+      "elements": [
+        {
+          "label": "Default input",
+          "styles": {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "borderRadius": "8px",
+            "borderWidth": "1px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(2.75381 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "height": "36px",
+            "lineHeight": "20px",
+            "padding": "4px 12px"
+          }
+        },
+        {
+          "label": "Email input",
+          "styles": {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "borderRadius": "8px",
+            "borderWidth": "1px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(2.75381 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "height": "36px",
+            "lineHeight": "20px",
+            "padding": "4px 12px"
+          }
+        },
+        {
+          "label": "Password input",
+          "styles": {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "borderRadius": "8px",
+            "borderWidth": "1px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+            "color": "lab(2.75381 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "400",
+            "height": "36px",
+            "lineHeight": "20px",
+            "padding": "4px 12px"
+          }
+        }
+      ],
+      "theme": "",
+      "url": "https://rust-ui.com/docs/components/input"
+    },
+    {
+      "focused": true,
+      "styles": {
+        "backgroundColor": "oklab(0.999998 -0.00000980496 0.0000234246 / 0.045)",
+        "borderColor": "lab(48.496 0 0)",
+        "borderRadius": "8px",
+        "borderWidth": "1px",
+        "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.555999 -0.00000530481 0.000012964 / 0.418555) 0px 0px 0px 1.67422px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px",
+        "color": "oklab(0.918688 -0.00000892488 0.00002146)",
+        "fontFamily": "Inter, sans-serif",
+        "fontSize": "14px",
+        "fontWeight": "400",
+        "height": "36px",
+        "lineHeight": "20px",
+        "padding": "4px 12px"
+      },
+      "theme": "dark",
+      "url": "https://rust-ui.com/docs/components/input"
+    },
+    {
+      "elements": [
+        {
+          "label": "AccountPassword",
+          "role": "TabsList",
+          "state": null,
+          "styles": {
+            "backgroundColor": "lab(15.204 0 -0.00000596046)",
+            "borderRadius": "10px",
+            "borderWidth": "0px",
+            "boxShadow": "none",
+            "color": "lab(66.128 -0.0000298023 0.0000119209)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "16px",
+            "fontWeight": "400",
+            "gap": "normal",
+            "height": "32px",
+            "lineHeight": "24px",
+            "padding": "3px"
+          }
+        },
+        {
+          "label": "Account",
+          "role": "TabsTrigger",
+          "state": "Active",
+          "styles": {
+            "backgroundColor": "oklab(0.999998 -0.00000980496 0.0000234246 / 0.045)",
+            "borderRadius": "8px",
+            "borderWidth": "1px",
+            "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.1) 0px 1px 3px 0px, rgba(0, 0, 0, 0.1) 0px 1px 2px -1px",
+            "color": "lab(98.26 0 0)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "6px",
+            "height": "25px",
+            "lineHeight": "20px",
+            "padding": "2px 6px"
+          }
+        },
+        {
+          "label": "Password",
+          "role": "TabsTrigger",
+          "state": "Inactive",
+          "styles": {
+            "backgroundColor": "rgba(0, 0, 0, 0)",
+            "borderRadius": "8px",
+            "borderWidth": "1px",
+            "boxShadow": "none",
+            "color": "oklab(0.984998 -0.00000956654 0.0000230074 / 0.6)",
+            "fontFamily": "Inter, sans-serif",
+            "fontSize": "14px",
+            "fontWeight": "500",
+            "gap": "6px",
+            "height": "25px",
+            "lineHeight": "20px",
+            "padding": "2px 6px"
+          }
+        }
+      ],
+      "theme": "dark",
+      "url": "https://rust-ui.com/docs/components/tabs"
+    }
+  ]
+}

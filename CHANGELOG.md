@@ -6,6 +6,24 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0]
+
+### Added
+
+- Share visual rules across buttons, inputs, menus, badges, dialogs and document tabs,
+  with a native component gallery and a documented design guide adapted from Rust/UI.
+
+### Changed
+
+- Use medium-weight text, consistent control sizes and clearer section hierarchy
+  across Changes, History, Search, Files and Settings in all four LAGC palettes.
+- Keep inspector navigation readable at narrow widths and let long History labels wrap.
+
+### Fixed
+
+- Preserve readable Git status text on hovered and selected rows in every palette.
+- Keep context menus inside short windows with consistent rows and scrolling.
+
 ## [0.9.0]
 
 ### Added

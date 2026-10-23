@@ -1,0 +1,59 @@
+{
+  "date": "2026-10-23",
+  "sourceCommit": "7120636e68556ddd023a4ec8e083663c7b745318",
+  "dialog": {
+    "ariaModal": null,
+    "focus": "Open Dialog",
+    "focusInside": false,
+    "role": null,
+    "styles": {
+      "borderRadius": "16px",
+      "borderWidth": "1px",
+      "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.1) 0px 10px 15px -3px, rgba(0, 0, 0, 0.1) 0px 4px 6px -4px",
+      "gap": "normal",
+      "maxHeight": "935px",
+      "padding": "24px",
+      "width": "1408px"
+    },
+    "url": "https://rust-ui.com/docs/components/dialog",
+    "escapeClosed": true
+  },
+  "contextMenu": {
+    "items": [
+      {
+        "fontSize": "14px",
+        "height": 32,
+        "padding": "6px 8px",
+        "text": "Back"
+      },
+      {
+        "fontSize": "14px",
+        "height": 32,
+        "padding": "6px 8px",
+        "text": "Forward"
+      },
+      {
+        "fontSize": "14px",
+        "height": 32,
+        "padding": "6px 8px",
+        "text": "Reload"
+      },
+      {
+        "fontSize": "14px",
+        "height": 32,
+        "padding": "6px 8px",
+        "text": "Show Bookmarks Bar"
+      }
+    ],
+    "role": null,
+    "styles": {
+      "borderRadius": "8px",
+      "borderWidth": "1px",
+      "boxShadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.1) 0px 4px 6px -1px, rgba(0, 0, 0, 0.1) 0px 2px 4px -2px",
+      "padding": "4px",
+      "width": "200px"
+    },
+    "url": "https://rust-ui.com/docs/components/context-menu",
+    "escapeClosed": true
+  }
+}
