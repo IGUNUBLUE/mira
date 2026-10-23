@@ -77,6 +77,10 @@ Use 8 px between closely related controls, 12 px between fields or groups inside
 panel padding, and 24 px between independent specimen sections. List rows can use 8–12 px horizontal
 insets and 4–8 px vertical padding. Avoid padding that scales with window width.
 
+Fixed-height buttons use `ui::control` (or `ui::action` / `ui::primary_wide`). Center the
+whole content vertically in the available height, including icon/label rows and segmented choices;
+aligning the children of a row alone does not center that row inside its button.
+
 Controls use a 6 px radius; small badges use 4 px; contained surfaces use 8 px. Window and split-pane
 edges remain structural. Use a 1 px border for surfaces and controls that need an edge. Avoid nested
 cards around every subsection: the specimen's component cards are a catalog presentation, not a
@@ -91,7 +95,7 @@ and Calm Dark. Preserve the existing ANSI palettes and syntax colors.
 |---|---|---|
 | Main / input surface | `bg` | Terminal, editor, fields, selected tabs |
 | Supporting surface | `sidebar` | Inspector and secondary chrome |
-| Group surface | `section` | Segmented-control track and secondary buttons with ordinary foreground labels |
+| Group surface | `section` | Secondary buttons with ordinary foreground labels |
 | Divider / quiet outline | `border` | Structural separation |
 | Main text | `fg` | Names, subjects, control labels |
 | Secondary text | `muted` | Paths, help, timestamps; retain readable contrast |
@@ -140,8 +144,9 @@ on its border. Errors use a written explanation and the semantic error color.
 ### Tabs and segmented choices
 
 Distinguish navigation (Changes / Search / Files, document tabs) from choices within a view
-(Files / By agent run). Group related choices on one quiet track; give the active choice its own
-surface and outline. Do not rely on an accent-colored label alone. Use the same height and spacing
+(Files / By agent run). Place related choices directly on the panel surface, without an enclosing
+border, background or padded track. Give only the active choice its own surface and outline, avoiding
+nested boxes. Do not rely on an accent-colored label alone. Use the same height and spacing
 across sibling tabs. Preserve document close affordances and existing drag/focus behavior.
 
 Below a 320 px inspector width, show navigation labels without their decorative icons/counters so

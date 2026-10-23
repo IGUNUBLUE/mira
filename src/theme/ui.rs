@@ -73,12 +73,17 @@ pub fn button_style(c: &Palette, variant: Variant, status: button::Status) -> bu
     }
 }
 
+/// Fixed-height controls share one content alignment rule, including icon/label rows.
+pub fn control<'a, M: Clone + 'a>(content: impl Into<Element<'a, M>>) -> button::Button<'a, M> {
+    button(container(content).center_y(Length::Fill)).height(CONTROL)
+}
+
 pub fn action<'a, M: Clone + 'a>(
     label: impl text::IntoFragment<'a>,
     variant: Variant,
     message: Option<M>,
 ) -> button::Button<'a, M> {
-    button(text(label).size(BODY).line_height(1.25).center())
+    control(text(label).size(BODY).line_height(1.25).center())
         .height(CONTROL)
         .padding([4, 12])
         .style(move |_, status| button_style(theme::p(), variant, status))
@@ -86,7 +91,7 @@ pub fn action<'a, M: Clone + 'a>(
 }
 
 pub fn primary_wide<'a, M: Clone + 'a>(label: &'a str, message: Option<M>) -> button::Button<'a, M> {
-    button(text(label).size(BODY).line_height(1.25).width(iced::Length::Fill).center())
+    control(text(label).size(BODY).line_height(1.25).width(iced::Length::Fill).center())
         .width(iced::Length::Fill)
         .height(CONTROL)
         .padding([4, 12])
@@ -275,6 +280,55 @@ mod tests {
                         assert!(contrast >= 4.5, "{} selected={active} {state:?}: {contrast:.2}:1", palette.name);
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_height_buttons_center_their_labels() {
+        use iced::advanced::{layout, renderer::Headless, widget::Tree};
+        use iced::{Pixels, Size};
+        use std::future::Future as _;
+
+        let mut new =
+            std::pin::pin!(<iced::Renderer as Headless>::new(theme::ui_font(), Pixels(14.0), Some("tiny-skia")));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let std::task::Poll::Ready(Some(renderer)) = new.as_mut().poll(&mut cx) else {
+            panic!("headless renderer");
+        };
+        fn check(node: &layout::Node, parent_y: f32, center: f32) {
+            let y = parent_y + node.bounds().y;
+            if node.children().is_empty() {
+                let offset = y + node.size().height / 2.0 - center;
+                assert!(offset.abs() < 0.01, "button content is vertically offset by {offset}px");
+            }
+            for child in node.children() {
+                check(child, y, center);
+            }
+        }
+        for height in [COMPACT, CONTROL, DIALOG_CONTROL] {
+            let buttons: [Element<'_, ()>; 4] = [
+                control(
+                    iced::widget::row![text("✓").size(14).line_height(1.0), text("Commit").size(BODY)]
+                        .spacing(GAP)
+                        .align_y(iced::Alignment::Center),
+                )
+                .height(height)
+                .padding([4, 8])
+                .into(),
+                action("Commit", Variant::Primary, Some(())).height(height).into(),
+                primary_wide("Commit", Some(())).height(height).into(),
+                control(text("Files").size(META)).height(height).padding([4, 8]).into(),
+            ];
+            for mut element in buttons {
+                let mut tree = Tree::new(&element);
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &layout::Limits::new(Size::ZERO, Size::new(220.0, 100.0)),
+                );
+                assert_eq!(node.size().height, height);
+                check(&node, 0.0, height / 2.0);
             }
         }
     }

@@ -6,6 +6,13 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.10.1]
+
+### Fixed
+
+- Center button labels and icon rows vertically across controls, menus and segmented choices.
+- Remove redundant frames around inspector navigation and the Files / By agent run selector.
+
 ## [0.10.0]
 
 ### Added
