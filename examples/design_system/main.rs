@@ -257,7 +257,7 @@ impl Specimen {
         .spacing(GAP)
         .align_y(Alignment::Center);
         let field = column![
-            text("Commit message").size(BODY),
+            text("Commit message (required)").size(BODY),
             text_input("Describe the change", &self.input)
                 .size(BODY)
                 .line_height(iced::widget::text::LineHeight::Absolute(iced::Pixels(18.0)))
