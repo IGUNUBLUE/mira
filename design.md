@@ -2,7 +2,7 @@
 
 Status: implemented in mira's shared native styles and product views, with a runnable Iced specimen.
 The initial visual direction was approved; the latest product captures remain available for review.
-This describes the local implementation, not an installed release or complete keyboard accessibility.
+This records implementation rules and validation evidence; it does not establish complete keyboard accessibility.
 
 ## Purpose and priorities
 
@@ -38,6 +38,8 @@ component stylesheet.
 The [deeper review](docs/design-reference/rust-ui-review.md) covers sixteen component families,
 including dialogs, menus, fields, command palettes, tooltips and scrolling. It records the source
 revision and observed behavior separately from the native adaptation.
+The [UX refinement review](docs/design-reference/ux-refinements.md) records the later W3C, Fluent,
+Microsoft, NN/G and VS Code research and the limited changes adopted from it.
 
 Keep measured reference values separate from mira decisions:
 
@@ -100,7 +102,8 @@ and Calm Dark. Preserve the existing ANSI palettes and syntax colors.
 | Main text | `fg` | Names, subjects, control labels |
 | Secondary text | `muted` | Paths, help, timestamps; retain readable contrast |
 | Primary action | `button`, `button_hover`, `on_accent` | One primary action per task area |
-| Focus / activity | `accent` | Focus outline and active operation indicator |
+| Field focus | `focus` | A 2 px outline contrasted against the idle border, field and panel |
+| Activity / emphasis | `accent` | Active operation indicator and existing interaction emphasis |
 | Selection | `selection` | Existing editor/terminal selection; adapt list selection with readable text |
 | Modified / warning | `warn_text` | Written status paired with this color |
 | Added / success | `added_text` | Written status paired with this color |
@@ -138,8 +141,16 @@ stays quiet. Do not add scale, bounce, or continuous animations to ordinary cont
 
 Use a persistent label above the field when its purpose would otherwise disappear after typing.
 Place help and validation below it. Use 14 px medium text with an 18 px line height and 7 px vertical
-padding for the 32 px field. Share this geometry with adjacent buttons. A focused input uses `accent`
-on its border. Errors use a written explanation and the semantic error color.
+padding for the 32 px field. Share this geometry with adjacent buttons. Mark required input in its
+persistent label, as in Commit message (required). A focused field or commit editor uses the palette's
+`focus` color and a 2 px border; the idle border stays 1 px. Require at least 3:1 contrast against the
+idle border, field background and surrounding panel in each palette. The border is paint-only: keep
+padding, text position and control bounds unchanged. Errors use a written explanation and the semantic
+error color. This is a native visual rule inspired by W3C focus guidance, not a claim of WCAG compliance.
+
+An app shortcut handled inside a focused editor must publish its command before Iced's printable-text
+fallback. For example, Ctrl+, opens Settings and never inserts a comma; an ordinary comma still types.
+Unfocused editors must not capture shortcuts belonging to the active widget.
 
 ### Tabs and segmented choices
 
@@ -167,13 +178,23 @@ History subjects also wrap; their length must not obscure adjacent controls.
 
 Menus use the same body text and compact row scale. Group related commands, align shortcuts on the
 right, and preserve keyboard dismissal. Shadows, if needed, belong to floating surfaces only.
+Optional tooltips use `ui::help`: show after 500 ms of hover, or 700 ms for full row/path/commit
+details. Dismiss when the pointer leaves; wrap long names within a bounded surface. Keep action labels,
+required input and loading/empty/error state visible without hover. A disabled action's tooltip explains
+the current blocker instead of promising an available action. Use Iced's one-shot redraw scheduling;
+do not add a polling timer for hover help.
+
 Menu placement includes row heights, item gaps, separators, and padding. Constrain oversized menus
 to the viewport and allow their contents to scroll instead of placing actions beyond the window.
 
 Dialogs have a title, a short explanation, affected targets, and clearly ordered actions. Keep the
 existing folder-bound, one-shot confirmation machinery and Cancel-first selection. Visible errors
 remain readable/copyable until dismissed. Empty states explain what will appear or how to proceed
-without a large illustration. Status text must fit or wrap; it must not hide actions.
+without a large illustration. Use `ui::empty_state` for a short title and one actionable explanation,
+directly on the panel with no extra card, icon or button. Distinguish a clean working tree, history
+before its first commit and a completed search with no matches. Never show a completed empty result
+while loading or after an error. Preserve previous results during a running search. Status text must
+fit or wrap; it must not hide actions.
 
 ## Composition in mira
 
@@ -198,7 +219,7 @@ Changes to surrounding chrome must not alter the terminal's keyboard routing or 
 
 ## Native implementation and present limits
 
-[`src/theme/ui.rs`](src/theme/ui.rs) owns shared geometry, button variants, fields, selection, badges,
+[`src/theme/ui.rs`](src/theme/ui.rs) owns shared geometry, button variants, fields, delayed hover help, empty states, selection, badges,
 scrollbars, input/editor surfaces, menu measurements and floating surfaces. `src/theme.rs` retains
 the palette and compatibility style entry points. [`src/view.rs`](src/view.rs) composes these primitives
 in Changes/History, Search, Files, Settings, branch/quick-open pickers, menus, confirmations, sign-in,

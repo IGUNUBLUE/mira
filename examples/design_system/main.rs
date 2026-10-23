@@ -8,7 +8,7 @@ mod components;
 #[path = "../../src/theme.rs"]
 mod theme;
 
-use components::{BODY, COMPACT, GAP, INSET, META, Variant, action, badge};
+use components::{BODY, COMPACT, GAP, INSET, META, Variant, action, badge, empty_state};
 use iced::keyboard::{self, key::Named};
 use iced::widget::{column, container, opaque, row, scrollable, space, stack, text, text_input};
 use iced::{Alignment, Element, Length, Subscription, Task, window};
@@ -282,11 +282,7 @@ impl Specimen {
             section(
                 "Empty state",
                 "A useful explanation within the panel",
-                column![
-                    text("No changes").size(BODY),
-                    text("Agent edits will appear here.").size(META).color(theme::p().muted)
-                ]
-                .spacing(4)
+                empty_state("Working tree clean", "Saved changes from you or your agents will appear here.")
             ),
         ]
         .spacing(16)

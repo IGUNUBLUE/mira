@@ -6,6 +6,18 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.10.2]
+
+### Fixed
+
+- Open Settings from file and commit editors with Ctrl+, without inserting a comma.
+
+### Changed
+
+- Make field focus clearer in every palette without moving text or resizing controls.
+- Delay optional hover help and clarify clean, empty-search and first-commit states.
+- Mark required commit input and explain the current reason Commit is unavailable.
+
 ## [0.10.1]
 
 ### Fixed
