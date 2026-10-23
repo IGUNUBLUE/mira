@@ -4,6 +4,9 @@
 //! The current palette is a process-wide setting read through [`p`], so style
 //! closures always draw with the palette active at draw time.
 
+#[path = "theme/ui.rs"]
+pub mod ui;
+
 use iced::font::{Family, Weight};
 use iced::widget::{button, container, text_input};
 use iced::{Background, Border, Color, Font, Theme, color};
@@ -18,6 +21,7 @@ pub struct Palette {
     pub sidebar: Color,
     pub section: Color,
     pub border: Color,
+    pub shadow: Color,
     pub fg: Color,
     pub muted: Color,
     pub line_no: Color,
@@ -65,6 +69,7 @@ pub const PALETTES: [Palette; 4] = [
         sidebar: color!(0xE3EEF1),
         section: color!(0xD4E3E8),
         border: color!(0xB2CBD3),
+        shadow: a(Color::BLACK, 0.18),
         fg: color!(0x10242C),
         muted: color!(0x37505C),
         line_no: color!(0x526571),
@@ -97,6 +102,7 @@ pub const PALETTES: [Palette; 4] = [
         sidebar: color!(0x122638),
         section: color!(0x193448),
         border: color!(0x204756),
+        shadow: a(Color::BLACK, 0.4),
         fg: color!(0xDDEEF2),
         muted: color!(0xB1C2C9),
         line_no: color!(0x7A8E99),
@@ -129,6 +135,7 @@ pub const PALETTES: [Palette; 4] = [
         sidebar: color!(0xEAE3D5),
         section: color!(0xDDD2BE),
         border: color!(0xC9BCA6),
+        shadow: a(Color::BLACK, 0.18),
         fg: color!(0x2E2923),
         muted: color!(0x574E43),
         line_no: color!(0x7A6C5C),
@@ -161,6 +168,7 @@ pub const PALETTES: [Palette; 4] = [
         sidebar: color!(0x352E29),
         section: color!(0x3E362F),
         border: color!(0x4A423B),
+        shadow: a(Color::BLACK, 0.4),
         fg: color!(0xE9DFCE),
         muted: color!(0xB5A796),
         line_no: color!(0x8C7D6C),
@@ -338,7 +346,7 @@ pub fn bordered(bg: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style {
         background: Some(bg.into()),
         text_color: Some(p().fg),
-        border: Border { color: p().border, width: 1.0, radius: 4.0.into() },
+        border: Border { color: p().border, width: 1.0, radius: ui::RADIUS.into() },
         ..Default::default()
     }
 }
@@ -347,112 +355,40 @@ pub fn bg(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_| container::Style { background: Some(Background::Color(color)), ..Default::default() }
 }
 
-/// Flat list row / icon button. `active` keeps it highlighted.
+/// List selection and pointer feedback share one treatment across all inspectors.
 pub fn flat(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_, status| {
-        let c = p();
-        let background = match (active, status) {
-            (true, _) => Some(c.selection.scale_alpha(0.7).into()),
-            (false, button::Status::Hovered | button::Status::Pressed) => Some(c.section.into()),
-            _ => None,
-        };
-        // Disabled (e.g. while git is busy): dimmed, so it doesn't read as clickable.
-        let text_color = if status == button::Status::Disabled { c.muted.scale_alpha(0.55) } else { c.fg };
-        button::Style { background, text_color, border: Border::default().rounded(3), ..Default::default() }
-    }
+    move |_, status| ui::row_style(p(), active, status)
 }
 
-/// `flat(false)` as a plain fn, so it can share a type with `danger`.
 pub fn flat_fn(t: &Theme, status: button::Status) -> button::Style {
     flat(false)(t, status)
 }
 
-/// Outlined icon button (e.g. generate commit message). `busy` keeps the
-/// accent border while its action runs.
-pub fn outline(busy: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+/// Outlined actions retain the accent while selected or working.
+pub fn outline(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| {
-        let c = p();
-        let (background, border) = match status {
-            button::Status::Hovered => (Some(c.section.into()), c.accent),
-            button::Status::Pressed => (Some(mix(c.section, c.fg, 0.08).into()), c.accent),
-            button::Status::Disabled => (None, c.border.scale_alpha(0.5)),
-            button::Status::Active => (Some(c.bg.into()), if busy { c.accent } else { c.border }),
-        };
-        button::Style {
-            background,
-            text_color: c.fg,
-            border: Border { color: border, width: 1.0, radius: 4.0.into() },
-            ..Default::default()
+        let mut style = ui::button_style(p(), ui::Variant::Outline, status);
+        if active && status != button::Status::Disabled {
+            style.border.color = p().accent;
         }
+        style
     }
 }
 
-fn filled(base: Color, status: button::Status) -> button::Style {
-    let c = p();
-    let bg = match status {
-        button::Status::Hovered | button::Status::Pressed => mix(base, c.fg, 0.15),
-        button::Status::Disabled => base.scale_alpha(0.45),
-        button::Status::Active => base,
-    };
-    button::Style {
-        background: Some(bg.into()),
-        text_color: c.on_accent,
-        border: Border::default().rounded(4),
-        ..Default::default()
-    }
-}
-
-/// Destructive action awaiting confirmation.
 pub fn danger(_: &Theme, status: button::Status) -> button::Style {
-    filled(p().deleted, status)
+    ui::button_style(p(), ui::Variant::Danger, status)
 }
 
 pub fn primary(_: &Theme, status: button::Status) -> button::Style {
-    let c = p();
-    match status {
-        button::Status::Hovered | button::Status::Pressed => {
-            button::Style { background: Some(c.button_hover.into()), ..filled(c.button, button::Status::Active) }
-        }
-        s => filled(c.button, s),
-    }
-}
-
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a }
+    ui::button_style(p(), ui::Variant::Primary, status)
 }
 
 pub fn tab(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_, status| {
-        let c = p();
-        button::Style {
-            background: Some(
-                if active {
-                    c.bg
-                } else if matches!(status, button::Status::Hovered) {
-                    c.section
-                } else {
-                    c.sidebar
-                }
-                .into(),
-            ),
-            text_color: if active { c.fg } else { c.muted },
-            border: Border::default(),
-            ..Default::default()
-        }
-    }
+    ui::selected(active)
 }
 
-pub fn input(_: &Theme, status: text_input::Status) -> text_input::Style {
-    let c = p();
-    let focused = matches!(status, text_input::Status::Focused { .. });
-    text_input::Style {
-        background: c.bg.into(),
-        border: Border { color: if focused { c.accent } else { c.border }, width: 1.0, radius: 4.0.into() },
-        icon: c.muted,
-        placeholder: c.muted,
-        value: c.fg,
-        selection: c.selection,
-    }
+pub fn input(t: &Theme, status: text_input::Status) -> text_input::Style {
+    ui::input(t, status)
 }
 
 #[cfg(test)]
