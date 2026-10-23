@@ -328,7 +328,7 @@ impl Specimen {
         };
         column![
             row![text("Inspector").size(BODY), space::horizontal(), widths].align_y(Alignment::Center),
-            container(tabs).padding(4).style(theme::bordered(theme::p().section)),
+            tabs,
             scrollable(content)
                 .direction(scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(4).scroller_width(4)))
                 .height(Length::Fill),

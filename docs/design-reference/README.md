@@ -61,6 +61,14 @@ The production layout test checks Changes/Search/Files at 240/360/480 px and bot
 menus at the lower window edge. Shared row tests cover all semantic text colors on idle, hover,
 pressed, selected and disabled backgrounds; they reproduced and fixed sub-4.5:1 hover contrast.
 
+## Control refinement
+
+The [refined controls](product-controls-refined.png) crop records the follow-up to 0.10.0: vertically
+center the complete content of fixed-height buttons and remove the enclosing frames around inspector
+navigation and Files / By agent run. The active choice retains its own surface and outline. This is a
+crop of the same native product fixture, not a mockup. The four palettes and existing interaction flow
+were checked again; layout tests cover label and icon/label content at 28, 32 and 36 px.
+
 ## Native Iced specimen
 
 The example imports the same palette and primitive implementation as mira, with static fixture data. It runs independently

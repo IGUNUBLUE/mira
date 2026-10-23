@@ -66,7 +66,7 @@ fn icon_button<'a>(i: Icon, msg: Msg) -> Element<'a, Msg> {
 
 /// Icon button, disabled (dimmed) without a message.
 fn icon_button_maybe<'a>(i: Icon, msg: Option<Msg>) -> Element<'a, Msg> {
-    button(container(ico(i, 15)).center(Length::Fill))
+    ui::control(container(ico(i, 15)).center(Length::Fill))
         .width(ui::COMPACT)
         .height(ui::COMPACT)
         .padding(0)
@@ -77,7 +77,7 @@ fn icon_button_maybe<'a>(i: Icon, msg: Option<Msg>) -> Element<'a, Msg> {
 
 /// Small button with a leading icon.
 fn icon_label<'a>(i: Icon, label: impl text::IntoFragment<'a>, msg: Option<Msg>) -> Element<'a, Msg> {
-    button(row![ico(i, 14), text(label).size(UI)].spacing(ui::GAP).align_y(Alignment::Center))
+    ui::control(row![ico(i, 14), text(label).size(UI)].spacing(ui::GAP).align_y(Alignment::Center))
         .height(ui::COMPACT)
         .padding([4, 8])
         .style(theme::flat(false))
@@ -118,7 +118,7 @@ fn hdivider<'a>(d: Divider, active: bool) -> Element<'a, Msg> {
 /// A search option toggle (`Aa`, `ab`, `.*`), as in VSCodium.
 fn option_toggle<'a>(label: &'static str, on: bool, msg: Msg, name: &'static str) -> Element<'a, Msg> {
     tip(
-        button(text(label).size(SMALL).font(theme::mono_font()))
+        ui::control(text(label).size(SMALL).font(theme::mono_font()))
             .height(ui::CONTROL)
             .padding([7, 5])
             .style(theme::tab(on))
@@ -166,7 +166,7 @@ fn popup<'a>(items: impl Into<Element<'a, Msg>>, width: f32) -> Element<'a, Msg>
 }
 
 fn choice_button<'a>(label: String, on: bool, choice: Setting) -> Element<'a, Msg> {
-    button(text(label).size(UI))
+    ui::control(text(label).size(UI))
         .height(ui::CONTROL)
         .padding([4, 10])
         .style(theme::tab(on))
@@ -429,7 +429,7 @@ impl App {
         }
         let win = |icon: Icon, msg: Msg, label: &'static str, close: bool| {
             tip(
-                button(container(ico(icon, 14)).center(Length::Fill))
+                ui::control(container(ico(icon, 14)).center(Length::Fill))
                     .width(42)
                     .height(Length::Fill)
                     .padding(0)
@@ -478,7 +478,7 @@ impl App {
     /// The gear's menu, above it at the bottom right.
     fn view_gear_menu(&self) -> Element<'_, Msg> {
         let item = |label: &'static str, hint: &'static str, msg: Msg| -> Element<'_, Msg> {
-            button(
+            ui::control(
                 row![text(label).size(UI), space::horizontal(), text(hint).size(SMALL).color(p().muted)]
                     .align_y(Alignment::Center),
             )
@@ -522,7 +522,7 @@ impl App {
             ]
             .spacing(2);
             list = list.push(row_tip(
-                button(container(label).width(Length::Fill).clip(true))
+                ui::control(container(label).width(Length::Fill).clip(true))
                     .height(52)
                     .width(Length::Fill)
                     .padding([7, 10])
@@ -642,12 +642,12 @@ impl App {
         content = content.push(
             row![
                 space::horizontal(),
-                button(text("Cancel").size(UI))
+                ui::control(text("Cancel").size(UI))
                     .height(ui::DIALOG_CONTROL)
                     .padding([6, 14])
                     .style(theme::outline(!selected))
                     .on_press(Msg::ConfirmCancel),
-                button(text(pending.accept).size(UI))
+                ui::control(text(pending.accept).size(UI))
                     .height(ui::DIALOG_CONTROL)
                     .padding([6, 14])
                     .style(move |theme, status| {
@@ -911,7 +911,7 @@ impl App {
 
     /// The working button keeps its place and cannot be clicked twice.
     fn git_button<'a>(&self, icon: Icon, msg: Msg) -> Element<'a, Msg> {
-        button(container(self.action_icon(icon, &msg, 15)).center(Length::Fill))
+        ui::control(container(self.action_icon(icon, &msg, 15)).center(Length::Fill))
             .width(ui::COMPACT)
             .height(ui::COMPACT)
             .padding(0)
@@ -921,12 +921,14 @@ impl App {
     }
 
     fn git_label<'a>(&self, icon: Icon, label: &'a str, msg: Msg) -> Element<'a, Msg> {
-        button(row![self.action_icon(icon, &msg, 14), text(label).size(UI)].spacing(ui::GAP).align_y(Alignment::Center))
-            .height(ui::COMPACT)
-            .padding([4, 8])
-            .style(theme::flat(false))
-            .on_press_maybe((!self.git_busy).then_some(msg))
-            .into()
+        ui::control(
+            row![self.action_icon(icon, &msg, 14), text(label).size(UI)].spacing(ui::GAP).align_y(Alignment::Center),
+        )
+        .height(ui::COMPACT)
+        .padding([4, 8])
+        .style(theme::flat(false))
+        .on_press_maybe((!self.git_busy).then_some(msg))
+        .into()
     }
 
     /// Quick open: the query, then the best matching files (or go to line after `:`).
@@ -1115,7 +1117,7 @@ impl App {
             if alert && !compact {
                 r = r.push(ico(Icon::DotFilled, 8).color(p().modified));
             }
-            button(container(r).center_x(Length::Fill))
+            ui::control(container(r).center_x(Length::Fill))
                 .width(Length::Fill)
                 .height(ui::CONTROL)
                 .padding([4, 6])
@@ -1133,16 +1135,11 @@ impl App {
             Inspector::Search => self.view_search(),
             Inspector::Files => self.view_explorer(),
         };
-        container(column![
-            container(container(tabs).padding(4).style(theme::bordered(p().section)))
-                .padding([8, 12])
-                .width(Length::Fill),
-            body,
-        ])
-        .width(self.inspector_shown_width())
-        .height(Length::Fill)
-        .style(theme::panel(p().sidebar))
-        .into()
+        container(column![container(tabs).padding([8, 12]).width(Length::Fill), body,])
+            .width(self.inspector_shown_width())
+            .height(Length::Fill)
+            .style(theme::panel(p().sidebar))
+            .into()
     }
 
     /// One changed file. `origin`: show which agent run last changed it.
@@ -1501,7 +1498,7 @@ impl App {
                 column![
                     row![
                         tip(
-                            button(
+                            ui::control(
                                 container(
                                     row![
                                         if matches!(self.busy_op, Some(BusyOp::Branches | BusyOp::SwitchBranch(_))) {
@@ -1539,7 +1536,7 @@ impl App {
                             if self.git.upstream.is_some() { "Push to configured remote" } else { "Publish branch…" }
                         ),
                         tip(
-                            button(if self.manual_refresh { self.spinner(15) } else { ico(Icon::Refresh, 15) })
+                            ui::control(if self.manual_refresh { self.spinner(15) } else { ico(Icon::Refresh, 15) })
                                 .width(ui::COMPACT)
                                 .height(ui::COMPACT)
                                 .padding(5)
@@ -1579,7 +1576,7 @@ impl App {
                                 _ => Binding::from_key_press(kp),
                             }),
                         tooltip(
-                            button(
+                            ui::control(
                                 container(if generating {
                                     self.spinner(16)
                                 } else {
@@ -1608,7 +1605,7 @@ impl App {
                     .spacing(ui::GAP)
                     .align_y(Alignment::Start),
                     tip(
-                        button(
+                        ui::control(
                             container(
                                 row![
                                     if self.busy_op == Some(BusyOp::Commit) {
@@ -1672,18 +1669,14 @@ impl App {
     /// `Files | By agent run` switch and "mark all seen".
     fn view_changes_toolbar(&self) -> Element<'_, Msg> {
         let seg = |label: &'static str, on: bool, msg: Msg| {
-            button(text(label).size(SMALL)).height(ui::COMPACT).padding([4, 8]).style(theme::tab(on)).on_press(msg)
+            ui::control(text(label).size(SMALL)).height(ui::COMPACT).padding([4, 8]).style(theme::tab(on)).on_press(msg)
         };
         let mut bar = row![
-            container(
-                row![
-                    seg("Files", !self.group_by_run, Msg::GroupByRun(false)),
-                    seg("By agent run", self.group_by_run, Msg::GroupByRun(true)),
-                ]
-                .spacing(2)
-            )
-            .padding(3)
-            .style(theme::bordered(p().section)),
+            row![
+                seg("Files", !self.group_by_run, Msg::GroupByRun(false)),
+                seg("By agent run", self.group_by_run, Msg::GroupByRun(true)),
+            ]
+            .spacing(2),
             space::horizontal(),
         ]
         .spacing(2)
@@ -2016,7 +2009,7 @@ impl App {
     /// The Files context menu, near the pointer and kept inside the window.
     fn view_explorer_menu(&self, menu: &ExplorerMenu) -> Element<'_, Msg> {
         let item = |label: &'static str, action: MenuAction, danger: bool| -> Element<'_, Msg> {
-            button(text(label).size(UI).color(if danger { p().error_text } else { p().fg }))
+            ui::control(text(label).size(UI).color(if danger { p().error_text } else { p().fg }))
                 .width(Length::Fill)
                 .height(ui::MENU_ROW)
                 .padding([4, 12])
@@ -2055,7 +2048,7 @@ impl App {
 
     fn view_history_menu(&self, menu: &CommitMenu) -> Element<'_, Msg> {
         let item = |label: &'static str, action| {
-            button(text(label).size(UI).color(p().fg))
+            ui::control(text(label).size(UI).color(p().fg))
                 .width(Length::Fill)
                 .height(ui::MENU_ROW)
                 .padding([4, 12])
