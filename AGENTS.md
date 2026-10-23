@@ -10,9 +10,13 @@ sits around that loop: review what the agents changed, edit, search, commit.
 - **Light and fast.** Rust, low RAM, no Electron, no extension host. New features must keep memory low;
   avoid heavy dependencies.
 - **No vendor lock-in, community-friendly.** Don't depend on a single company or service. No telemetry. mira's
-  only network access is commit-message generation, only when the user clicks ✦, only to the provider they chose
-  (ChatGPT subscription, OpenAI API key) and only the next commit's diff and `--stat`; a local `commit_command`
-  keeps it fully offline. Network goes through `curl` (no HTTP/TLS crates), secrets on curl's stdin.
+  network access is commit-message generation on ✦ to the selected provider, plus explicit update checks/downloads.
+  Automatic update checks require `update_checks = "on"` (off by default), run at startup/focus at most daily,
+  and contact only GitHub release endpoints. Never send project data with update requests. Updates require
+  pinned-key Ed25519 signatures, bounded sizes and SHA-256 checks, an installer-owned user binary, and explicit
+  Update and restart. Preserve edits and herdr sessions. Network goes through `curl` (no HTTP/TLS crates),
+  secrets on curl's stdin; OpenSSL 3 verifies release signatures. A local `commit_command` plus disabled
+  update checks keeps mira fully offline.
 - **Integrate, don't re-implement.** herdr owns agents, workspaces, panes, status and persistence; mira uses it
   through its socket API and runs it in the terminal. Don't rebuild what a tool in the stack already does well.
 - **Never patch or monkey-patch dependencies.** No forks, no `[patch]`, no vendored copies of

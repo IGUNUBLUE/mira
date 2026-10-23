@@ -25,6 +25,8 @@ mod review;
 mod scm;
 mod settings;
 mod terminal;
+mod updates;
+pub use updates::{Event as UpdateEvent, Phase as UpdatePhase, Updates};
 
 pub use branches::BranchPicker;
 pub use commits::{CommitMenu, CommitMenuAction, CommitView};
@@ -61,6 +63,7 @@ use std::time::{Duration, Instant};
 pub const CODE_SIZE: u32 = 14;
 
 pub struct App {
+    pub updates: Updates,
     pub root: PathBuf,
     pub center: pane_grid::State<CenterPane>,
     pub doc_ratio: f32,
@@ -215,6 +218,7 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
+    Update(UpdateEvent),
     /// Shortcut: show this inspector and focus its input (Search's query, the
     /// commit box). Never hides it.
     Inspector(Inspector),
@@ -489,6 +493,7 @@ impl App {
         let runs = if fresh { Vec::new() } else { persist::load(&root).map(|s| s.runs).unwrap_or_default() };
 
         let mut app = Self {
+            updates: Updates::new(),
             inspector_width: width("inspector_width", 400.0),
             window_width: 1400.0,
             window_height: 900.0,
@@ -590,7 +595,7 @@ impl App {
         let term = app.spawn_terminal();
         let refresh = app.refresh_git();
         let files = app.load_all_run_files();
-        (app, Task::batch([term, refresh, files]))
+        (app, Task::batch([term, refresh, files, updates::load()]))
     }
 
     pub fn title(&self) -> String {
@@ -612,6 +617,7 @@ impl App {
             || self.manual_refresh
             || self.replacing
             || self.sending_comment
+            || self.updates.visual_busy()
         {
             subs.push(iced::time::every(Duration::from_millis(80)).map(|_| Msg::Spin));
         }
@@ -637,6 +643,7 @@ impl App {
             }
             _ => None,
         }));
+        subs.push(iced::window::open_events().map(|_| Msg::Update(UpdateEvent::WindowOpened)));
         // Only follow the mouse while a divider is being dragged.
         if self.dragging.is_some() {
             subs.push(iced::event::listen_with(|event, _, _| match event {
@@ -778,7 +785,14 @@ impl App {
 
     fn dispatch(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
+            Msg::Update(event) => self.update_updates(event),
             Msg::CloseRequested => {
+                if matches!(self.updates.phase, UpdatePhase::Saving | UpdatePhase::Installing | UpdatePhase::Restarting)
+                {
+                    return Task::none();
+                }
+
+                self.updates.cancel_network();
                 if self.autosave != AutoSave::Off {
                     self.save_dirty_tabs();
                 }

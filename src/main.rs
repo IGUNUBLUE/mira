@@ -29,6 +29,7 @@ mod term;
 mod termio;
 mod textfind;
 mod theme;
+mod updater;
 mod view;
 
 use std::path::PathBuf;
@@ -58,7 +59,7 @@ fn pick_renderer() {
 enum Cli {
     Help,
     Version,
-    Run { fresh: bool, dir: Option<std::ffi::OsString> },
+    Run { fresh: bool, dir: Option<std::ffi::OsString>, health: Option<String> },
 }
 
 const USAGE: &str = "Usage: mira [--fresh] [DIRECTORY]\n\nOpens DIRECTORY in mira and focuses its herdr workspace. Without one,\n\
@@ -68,7 +69,7 @@ const USAGE: &str = "Usage: mira [--fresh] [DIRECTORY]\n\nOpens DIRECTORY in mir
 
 /// Arguments as the OS gives them: a folder name needn't be UTF-8.
 fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Cli, String> {
-    let (mut fresh, mut dir, mut only_paths) = (false, None, false);
+    let (mut fresh, mut dir, mut only_paths, mut health) = (false, None, false, None);
     for arg in args {
         match arg.to_str() {
             Some("--") if !only_paths => only_paths = true,
@@ -77,17 +78,24 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Cli,
             Some("--fresh") if !only_paths => fresh = true,
             // `--pick` used to ask for a folder; herdr's workspaces decide now. Accepted for old launchers.
             Some("--pick") if !only_paths => {}
+            Some(flag) if flag.starts_with("--update-health=") && !only_paths => {
+                let token = flag.trim_start_matches("--update-health=");
+                if health.is_some() || !updater::valid_health_token(token) {
+                    return Err("invalid update startup token".into());
+                }
+                health = Some(token.to_owned());
+            }
             Some(flag) if flag.starts_with('-') && !only_paths => return Err(format!("unknown option {flag}")),
             _ if dir.is_some() => return Err("only one directory can be opened".into()),
             _ => dir = Some(arg),
         }
     }
-    Ok(Cli::Run { fresh, dir })
+    Ok(Cli::Run { fresh, dir, health })
 }
 
 fn main() -> iced::Result {
     pick_renderer();
-    let (fresh, arg) = match parse_args(std::env::args_os().skip(1)) {
+    let (fresh, arg, health) = match parse_args(std::env::args_os().skip(1)) {
         Ok(Cli::Help) => {
             println!("{USAGE}");
             return Ok(());
@@ -96,7 +104,7 @@ fn main() -> iced::Result {
             println!("mira {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        Ok(Cli::Run { fresh, dir }) => (fresh, dir),
+        Ok(Cli::Run { fresh, dir, health }) => (fresh, dir, health),
         Err(e) => {
             eprintln!("mira: {e}\n\n{USAGE}");
             std::process::exit(2);
@@ -126,6 +134,12 @@ fn main() -> iced::Result {
         }
     };
 
+    if let Some(token) = health
+        && let Err(e) = updater::register_health(token)
+    {
+        eprintln!("mira: {e}");
+        std::process::exit(2);
+    }
     let window = iced::window::Settings {
         size: iced::Size::new(1400.0, 900.0),
         // mira saves edited files before closing (see `Msg::CloseRequested`).
@@ -163,15 +177,15 @@ mod tests {
 
     #[test]
     fn arguments_are_read_as_given() {
-        assert_eq!(parse(&[]), Ok(Cli::Run { fresh: false, dir: None }));
-        assert_eq!(parse(&["--fresh", "a"]), Ok(Cli::Run { fresh: true, dir: Some("a".into()) }));
+        assert_eq!(parse(&[]), Ok(Cli::Run { fresh: false, dir: None, health: None }));
+        assert_eq!(parse(&["--fresh", "a"]), Ok(Cli::Run { fresh: true, dir: Some("a".into()), health: None }));
         assert_eq!(parse(&["a", "-h"]), Ok(Cli::Help));
-        assert_eq!(parse(&["--pick"]), Ok(Cli::Run { fresh: false, dir: None }));
-        assert_eq!(parse(&["--", "-dir"]), Ok(Cli::Run { fresh: false, dir: Some("-dir".into()) }));
+        assert_eq!(parse(&["--pick"]), Ok(Cli::Run { fresh: false, dir: None, health: None }));
+        assert_eq!(parse(&["--", "-dir"]), Ok(Cli::Run { fresh: false, dir: Some("-dir".into()), health: None }));
         assert!(parse(&["--foo"]).unwrap_err().contains("--foo"));
         assert!(parse(&["a", "b"]).is_err());
         // A Latin-1 folder name: no panic, passed on as is.
         let latin1 = OsString::from_vec(b"caf\xe9".to_vec());
-        assert_eq!(parse_args([latin1.clone()]), Ok(Cli::Run { fresh: false, dir: Some(latin1) }));
+        assert_eq!(parse_args([latin1.clone()]), Ok(Cli::Run { fresh: false, dir: Some(latin1), health: None }));
     }
 }

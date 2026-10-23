@@ -1,10 +1,10 @@
 # Privacy and network
 
-mira has **no telemetry**, no update checks, and no account is required.
+mira has **no telemetry**, and no account is required. Automatic update checks are off by default.
 
-## The one network request
+## Commit-message requests
 
-mira only goes online when you click ✦ to generate a commit message, and only to the provider
+Clicking ✦ generates a commit message through the provider
 you configured:
 
 | Provider | Endpoint |
@@ -21,6 +21,21 @@ else (other files, paths outside the repository, settings) is sent.
 Requests are made with your system's `curl`, so mira ships no HTTP or TLS code of its own.
 Tokens and keys reach `curl` on its standard input, never on its command line, where other
 processes could read them.
+
+## Optional updates
+
+**Check for updates** contacts `api.github.com/repos/IGUNUBLUE/mira/releases/latest` and, when a newer
+stable release exists, downloads small signed metadata files from that repository's GitHub Releases.
+**Download update** fetches its archive from GitHub's release asset infrastructure. HTTPS redirects
+are allowed only to HTTPS. Requests include Mira's version, the platform's release asset name and a
+cached ETag; GitHub also sees the normal IP address. No project files, paths, prompts, account tokens
+or device identifier are sent. GitHub is the current distribution host, not a runtime requirement:
+you can build from source and keep checks disabled.
+
+Enable **Automatic checks** in Settings to check in the background at startup or on focus, at most
+once per day. There is no timer or download in the background. **Update and restart** is explicit;
+Mira verifies a pinned Ed25519 signature and signed archive/binary checksums with OpenSSL 3 before
+replacing an installer-owned user binary. Other installations must use their installer/package manager.
 
 ## ChatGPT sign-in
 
@@ -40,4 +55,4 @@ and may change.
 - Snapshots are git objects in your repository; they are not committed or pushed.
 - The terminal never answers clipboard read requests (OSC 52) from programs running in it.
 
-To stay fully offline, use `commit_provider = "command"` with a local model, or don't click ✦.
+To stay fully offline, use `commit_provider = "command"` with a local model, or don't click ✦. Leave automatic updates off and do not use Check for updates.

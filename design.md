@@ -276,3 +276,12 @@ evidence README records what has actually been checked and the remaining accepta
 For Rust changes, run the repository quality gate; shared and example checks run in `cargo test`.
 Keep screenshots limited to useful reference states. No commits,
 installation, or restarts are implied by updating this document.
+
+
+### Update feedback
+
+Update checks never take focus or open a dialog automatically. Show availability as a quiet
+status-bar action. Keep Download and Update and restart separate, explicit steps; no countdown,
+forced restart, repeated toast or progress animation for background checks. The Updates dialog
+uses shared controls, plain progress text and persistent copyable errors. Explain any unsaved
+work that postpones restarting and retain the verified download for later.

@@ -6,6 +6,21 @@ All notable changes to mira are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0]
+
+### Added
+
+- Optional startup/focus update checks, at most daily, with manual checks and quiet availability notices.
+- Explicit download and restart with pinned Ed25519 signatures, signed archive and binary checksums,
+  bounded downloads, persistent staging and rollback when the updated process cannot start.
+- Installer ownership records, authenticated release metadata for both Linux architectures and
+  release signing in CI. Automatic checks remain off by default; no project data is sent.
+
+### Changed
+
+- Preserve edited workspace tabs, commit drafts, current Git operations and herdr sessions during updates.
+- Update dependency notices with the executable and keep the previous binary until startup succeeds.
+
 ## [0.10.2]
 
 ### Fixed

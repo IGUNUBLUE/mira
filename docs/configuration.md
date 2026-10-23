@@ -67,3 +67,12 @@ mira [--fresh] [FOLDER]
 
 Nothing is written inside your projects. Snapshot trees are ordinary git objects in the
 repository's object store, not referenced by any branch; `git gc` cleans them up eventually.
+
+
+### Updates
+
+`update_checks = "off"` is the default. Set it to `"on"` (or use Settings → Updates) to
+check GitHub releases in the background on startup/focus, at most once per 24 hours. Downloads
+and installation always require an explicit action. See [Updates](guide.md#updates) and
+[Privacy](privacy.md#optional-updates). In-app installation is available only for user-owned
+installations registered by the current `install.sh`; other installations use their original tool.

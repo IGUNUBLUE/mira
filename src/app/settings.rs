@@ -21,6 +21,7 @@ pub enum Dialog {
     Settings,
     Shortcuts,
     About,
+    Updates,
 }
 
 /// What the gear menu offers.
@@ -160,7 +161,7 @@ impl App {
                     MenuItem::Settings => self.update(Msg::OpenDialog(Dialog::Settings)),
                     MenuItem::Shortcuts => self.update(Msg::OpenDialog(Dialog::Shortcuts)),
                     MenuItem::About => self.update(Msg::OpenDialog(Dialog::About)),
-                    MenuItem::Updates => self.open_link(&format!("{REPO_URL}/releases")),
+                    MenuItem::Updates => self.update_updates(super::updates::Event::CheckAndOpen),
                 };
             }
             Msg::OpenDialog(d) => {
